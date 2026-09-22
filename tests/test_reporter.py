@@ -138,12 +138,11 @@ def test_build_quarto_report_shows_overall_models_and_tasks():
     report = reporter.build_quarto_report(results)
 
     assert 'title: "skilldiff: api-skill"' in report
-    assert "## Overall result" in report
+    assert "::: {.callout-tip}" in report
     assert "Skill improved task score by **50 percentage points**" in report
+    assert "## Summary" in report
     assert "claude-sonnet-5" in report
-    assert "fix-parser" in report
-    assert "| 50% | 100% | +50 pp |" in report
-    assert "## Key Takeaways" in report
+    assert "| fix-parser | 50% | 100% | +50 pp |" in report
 
 
 def test_calculate_metrics_computes_totals():
@@ -240,15 +239,100 @@ def test_build_quarto_report_with_runs_table_and_takeaways():
     }
 
     report = reporter.build_quarto_report(results)
-    assert "## Key Takeaways" in report
-    assert "Task Accuracy & Success Rate" in report
-    assert "Execution Speed & Latency" in report
-    assert "Token Economy & Context Efficiency" in report
-    assert "## Detailed run breakdown" in report
-    assert "Checks Passed" in report
-    assert "| **t1** | Control | 100% | 1/1 | 60.0s | 80,000 | 4,000 | 3/3 |" in report
-    assert "| **t1** | Treatment | 80% | 0/1 | 50.0s | 70,000 | 3,500 | 2/3 |" in report
-    assert "| **Overall** | **Control** |" in report
-    assert "| **Overall** | **Treatment** |" in report
-    assert "| **Difference** | |" in report
+    assert "## Key takeaways" in report
+    assert "**Accuracy.**" in report
+    assert "lower in 1, and tied in 0 of 1" in report
+    assert "**Sample size.**" in report
+    assert "## Run details" in report
+    assert "| t1 | 1 | Control | ok | 100% | 3/3 | ? | $0.00 | 60s | - | 84k | 0 |" in report
+    assert "| t1 | 1 | Skill | ok | 80% | 2/3 | ? | $0.00 | 50s | - | 74k | 0 |" in report
+    assert "One pair can't separate a real effect from noise" in report
 
+
+def _runs(arm: str, scores: list[float], cost: float, skill_invoked=None) -> list[dict]:
+    return [
+        {
+            "model": "m",
+            "task_id": "t",
+            "repetition": i + 1,
+            "arm": arm,
+            "status": "ok",
+            "score": sc,
+            "success": sc == 1.0,
+            "cost": cost,
+            "duration": 10.0,
+            "input_tokens": 100,
+            "cache_read_tokens": 1000,
+            "output_tokens": 50,
+            "num_turns": 4,
+            "skill_invoked": skill_invoked,
+            "artifacts": f"m/t/{arm}/{i + 1:03d}",
+        }
+        for i, sc in enumerate(scores)
+    ]
+
+
+def _results(control: list[dict], treatment: list[dict], **extra) -> dict:
+    return {
+        "name": "exp",
+        "timestamp": "2026-09-22T000000Z",
+        "harness": "claude",
+        "models": ["m"],
+        "tasks": ["t"],
+        "tasks_count": 1,
+        "runs_per_arm": len(control),
+        "runs": {"control": control, "treatment": treatment},
+        **extra,
+    }
+
+
+def test_report_verdict_uses_confidence_interval():
+    control = _runs("control", [0.0] * 6, 0.5)
+    treatment = _runs("treatment", [1.0] * 6, 0.25, skill_invoked=True)
+    md = reporter.build_markdown_report(_results(control, treatment))
+    assert "> [!TIP]" in md
+    assert "improved task score by **+100 pp** (95% CI +100 to +100 pp, 6 paired runs)" in md
+    assert "With the skill, runs cost 50% less, summed over all pairs." in md
+    assert "| Skill used | unknown | 6/6 |" in md
+    assert "**Adoption.** The agent used the skill in 6 of 6 skill runs" in md
+
+
+def test_report_flags_unclear_effect_and_warnings(tmp_path):
+    control = _runs("control", [1.0, 0.0, 1.0, 0.0], 0.5)
+    treatment = _runs("treatment", [0.0, 1.0, 1.0, 0.0], 0.5, skill_invoked=False)
+    results = _results(control, treatment, warnings=["The agent did not use the skill"])
+    md = reporter.build_markdown_report(results, run_root=tmp_path)
+    assert "No clear task-score effect" in md
+    assert "> [!WARNING]" in md
+    assert "The agent did not use the skill" in md
+    assert "[transcript](m/t/control/001/transcript.txt)" in md
+
+
+def test_html_report_is_self_contained(tmp_path):
+    control = _runs("control", [0.5, 0.5], 0.5)
+    treatment = _runs("treatment", [1.0, 1.0], 0.4, skill_invoked=True)
+    paths = reporter.create_reports(_results(control, treatment), tmp_path)
+    html_text = paths["html"].read_text()
+    assert html_text.startswith("<!doctype html>")
+    assert "<style>" in html_text and "<script" not in html_text
+    assert 'class="r good"' in html_text
+    assert paths["md"].exists() and paths["qmd"].exists()
+
+
+def test_report_handles_summary_only_results():
+    # Older results.json files had metrics but no run records.
+    results = {
+        "name": "old",
+        "models": ["m"],
+        "tasks_count": 1,
+        "runs_per_arm": 1,
+        "overall": {
+            "control": {"task_score": 1.0, "success_count": 1, "total_count": 1,
+                        "median_cost": 0.0, "median_time": 60.0},
+            "skill": {"task_score": 0.8, "success_count": 0, "total_count": 1,
+                      "median_cost": 0.0, "median_time": 50.0},
+        },
+        "by_model": {},
+    }
+    md = reporter.build_markdown_report(results)
+    assert "Skill reduced task score by **20 percentage points**" in md

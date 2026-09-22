@@ -1,9 +1,29 @@
+"""Metrics and reports for skilldiff experiments.
+
+A report is built once as a list of simple blocks and rendered to three formats:
+`report.html` (self-contained, no dependencies), `report.md` (renders on GitHub, handy
+for pull requests), and `report.qmd` (for customizing with Quarto).
+"""
+
+import html
 import json
-import shutil
+import re
 import statistics
-import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Union
+
+from skilldiff.stats import classify_effect, paired_comparison
+
+# --------------------------------------------------------------------------- metrics
+
+
+def _total_tokens(run: dict[str, Any]) -> int:
+    return (
+        int(run.get("input_tokens", 0) or 0)
+        + int(run.get("cache_read_tokens", 0) or 0)
+        + int(run.get("cache_creation_tokens", 0) or 0)
+        + int(run.get("output_tokens", 0) or 0)
+    )
 
 
 def calculate_metrics(runs_data: list[dict[str, Any]]) -> dict[str, Any]:
@@ -14,38 +34,55 @@ def calculate_metrics(runs_data: list[dict[str, Any]]) -> dict[str, Any]:
             "total_count": 0,
             "median_cost": 0.0,
             "median_time": 0.0,
+            "median_tokens": 0,
+            "median_turns": 0,
             "total_duration": 0.0,
             "total_cost": 0.0,
             "total_input_tokens": 0,
             "total_output_tokens": 0,
+            "total_cache_read_tokens": 0,
+            "total_cache_creation_tokens": 0,
+            "total_tokens": 0,
             "total_tool_calls": 0,
+            "skill_used_count": 0,
+            "skill_known_count": 0,
+            "error_count": 0,
         }
 
-    scores = [r.get("score", 0.0) for r in runs_data]
-    successes = [1 if r.get("success") else 0 for r in runs_data]
-    costs = [r.get("cost", 0.0) for r in runs_data]
-    times = [r.get("duration", 0.0) for r in runs_data]
-    input_tokens = [int(r.get("input_tokens", 0) or 0) for r in runs_data]
-    output_tokens = [int(r.get("output_tokens", 0) or 0) for r in runs_data]
-    tool_calls = [int(r.get("tool_calls", 0) or 0) for r in runs_data]
-
-    total = len(runs_data)
-    avg_score = statistics.mean(scores) if scores else 0.0
-    med_cost = statistics.median(costs) if costs else 0.0
-    med_time = statistics.median(times) if times else 0.0
+    scores = [float(r.get("score", 0.0) or 0.0) for r in runs_data]
+    costs = [float(r.get("cost", 0.0) or 0.0) for r in runs_data]
+    times = [float(r.get("duration", 0.0) or 0.0) for r in runs_data]
+    tokens = [_total_tokens(r) for r in runs_data]
+    turns = [int(r.get("num_turns", 0) or 0) for r in runs_data]
+    known = [r for r in runs_data if r.get("skill_invoked") is not None]
 
     return {
-        "task_score": avg_score,
-        "success_count": sum(successes),
-        "total_count": total,
-        "median_cost": med_cost,
-        "median_time": med_time,
+        "task_score": statistics.mean(scores),
+        "success_count": sum(1 for r in runs_data if r.get("success")),
+        "total_count": len(runs_data),
+        "median_cost": statistics.median(costs),
+        "median_time": statistics.median(times),
+        "median_tokens": statistics.median(tokens),
+        "median_turns": statistics.median(turns),
         "total_duration": sum(times),
         "total_cost": round(sum(costs), 4),
-        "total_input_tokens": sum(input_tokens),
-        "total_output_tokens": sum(output_tokens),
-        "total_tool_calls": sum(tool_calls),
+        "total_input_tokens": sum(int(r.get("input_tokens", 0) or 0) for r in runs_data),
+        "total_output_tokens": sum(int(r.get("output_tokens", 0) or 0) for r in runs_data),
+        "total_cache_read_tokens": sum(
+            int(r.get("cache_read_tokens", 0) or 0) for r in runs_data
+        ),
+        "total_cache_creation_tokens": sum(
+            int(r.get("cache_creation_tokens", 0) or 0) for r in runs_data
+        ),
+        "total_tokens": sum(tokens),
+        "total_tool_calls": sum(int(r.get("tool_calls", 0) or 0) for r in runs_data),
+        "skill_used_count": sum(1 for r in known if r.get("skill_invoked")),
+        "skill_known_count": len(known),
+        "error_count": sum(1 for r in runs_data if r.get("status") not in (None, "ok")),
     }
+
+
+# ------------------------------------------------------------------------ formatting
 
 
 def format_pp_diff(diff_pct: int) -> str:
@@ -59,13 +96,57 @@ def format_count_diff(diff_cnt: int) -> str:
 
 
 def format_cost_diff(diff_val: float) -> str:
-    sign = "+" if diff_val > 0 else ("-" if diff_val < 0 else "")
+    sign = "+" if diff_val > 0.005 else ("-" if diff_val < -0.005 else "")
     return f"{sign}${abs(diff_val):.2f}"
 
 
 def format_time_diff(diff_val: int) -> str:
     sign = "+" if diff_val > 0 else ""
     return f"{sign}{diff_val}s"
+
+
+def _fmt_tokens(value: float) -> str:
+    value = float(value)
+    if abs(value) >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if abs(value) >= 10_000:
+        return f"{value / 1000:.0f}k"
+    if abs(value) >= 1000:
+        return f"{value / 1000:.1f}k"
+    return f"{value:.0f}"
+
+
+def _signed_tokens(value: float) -> str:
+    text = _fmt_tokens(abs(value))
+    return f"+{text}" if value > 0.5 else (f"-{text}" if value < -0.5 else "0")
+
+
+def _fmt_ci(metric: dict[str, Any], kind: str) -> str:
+    lo, hi = metric.get("ci_low"), metric.get("ci_high")
+    if lo is None or hi is None:
+        return "n/a"
+    if kind == "score":
+        return f"{lo * 100:+.0f} to {hi * 100:+.0f} pp"
+    if kind == "cost":
+        return f"{format_cost_diff(lo)} to {format_cost_diff(hi)}"
+    if kind == "duration":
+        return f"{lo:+.0f}s to {hi:+.0f}s"
+    return f"{_signed_tokens(lo)} to {_signed_tokens(hi)}"
+
+
+def _score_percent(metrics: dict[str, Any]) -> int:
+    return round(metrics.get("task_score", 0.0) * 100)
+
+
+def _score_difference(control: dict[str, Any], skill: dict[str, Any]) -> int:
+    return _score_percent(skill) - _score_percent(control)
+
+
+def _skill_usage(metrics: dict[str, Any]) -> str:
+    known = metrics.get("skill_known_count", 0)
+    if not known:
+        return "unknown"
+    return f"{metrics.get('skill_used_count', 0)}/{known}"
 
 
 def render_report_table(
@@ -76,9 +157,11 @@ def render_report_table(
     tasks_count: int,
     runs_per_arm: int,
     model_name: str | None = None,
+    paired: dict[str, Any] | None = None,
 ) -> str:
-    c_score_pct = round(control_metrics["task_score"] * 100)
-    s_score_pct = round(skill_metrics["task_score"] * 100)
+    """Plain-text summary for the terminal."""
+    c_score_pct = _score_percent(control_metrics)
+    s_score_pct = _score_percent(skill_metrics)
     diff_score = s_score_pct - c_score_pct
 
     c_succ = f"{control_metrics['success_count']}/{control_metrics['total_count']}"
@@ -93,61 +176,177 @@ def render_report_table(
     s_time = f"{round(skill_metrics['median_time'])}s"
     diff_time = round(skill_metrics["median_time"]) - round(control_metrics["median_time"])
 
-    title = experiment_name
-    if model_name:
-        title = f"{experiment_name} ({model_name})"
+    title = f"{experiment_name} ({model_name})" if model_name else experiment_name
 
-    score_diff_str = format_pp_diff(diff_score)
+    def row(label: str, c: str, s: str, d: str) -> str:
+        return f"{label:<18} {c:>8} {s:>10} {d:>16}"
+
     lines = [
         title,
         "",
         f"{'Metric':<18} {'Control':>8} {'Skill':>10} {'Difference':>16}",
-        f"{'Task score':<18} {f'{c_score_pct}%':>8} {f'{s_score_pct}%':>10} {score_diff_str:>16}",
-        f"{'Success':<18} {c_succ:>8} {s_succ:>10} {format_count_diff(diff_succ):>16}",
-        f"{'Median cost':<18} {c_cost:>8} {s_cost:>10} {format_cost_diff(diff_cost):>16}",
-        f"{'Median time':<18} {c_time:>8} {s_time:>10} {format_time_diff(diff_time):>16}",
-        "",
-        f"Models: {models_count}    Tasks: {tasks_count}    Runs per arm: {runs_per_arm}",
+        row("Task score", f"{c_score_pct}%", f"{s_score_pct}%", format_pp_diff(diff_score)),
+        row("Success", c_succ, s_succ, format_count_diff(diff_succ)),
+        row("Median cost", c_cost, s_cost, format_cost_diff(diff_cost)),
+        row("Median time", c_time, s_time, format_time_diff(diff_time)),
     ]
+    if control_metrics.get("median_tokens") or skill_metrics.get("median_tokens"):
+        c_tok = control_metrics.get("median_tokens", 0)
+        s_tok = skill_metrics.get("median_tokens", 0)
+        lines.append(
+            row(
+                "Median tokens",
+                _fmt_tokens(c_tok),
+                _fmt_tokens(s_tok),
+                _signed_tokens(s_tok - c_tok),
+            )
+        )
+    if skill_metrics.get("skill_known_count"):
+        lines.append(row("Skill used", "-", _skill_usage(skill_metrics), ""))
+    lines.extend(
+        ["", f"Models: {models_count}    Tasks: {tasks_count}    Runs per arm: {runs_per_arm}"]
+    )
+    if paired and paired.get("pairs"):
+        verdict, _ = _verdict(paired)
+        lines.append(_strip_inline(verdict))
     return "\n".join(lines)
 
 
-def _markdown_cell(value: object) -> str:
-    return str(value).replace("|", "\\|").replace("\n", " ")
+# ------------------------------------------------------------------- report blocks
+
+Cell = Union[str, tuple[str, Optional[str]]]  # text, or (text, tone) with tone good/bad
 
 
-def _score_percent(metrics: dict[str, Any]) -> int:
-    return round(metrics.get("task_score", 0.0) * 100)
+def _tone(value: float, higher_is_better: bool, eps: float = 1e-9) -> Optional[str]:
+    if abs(value) <= eps:
+        return None
+    return "good" if (value > 0) == higher_is_better else "bad"
 
 
-def _score_difference(control: dict[str, Any], skill: dict[str, Any]) -> int:
-    return _score_percent(skill) - _score_percent(control)
+def _verdict(paired: dict[str, Any]) -> tuple[str, str]:
+    """Return (sentence, callout kind) for the task-score effect."""
+    n = paired.get("pairs", 0)
+    score = paired["score"]
+    effect = classify_effect(score)
+    mean_pp = round(score["mean_diff"] * 100)
+    ci = _fmt_ci(score, "score")
+    pairs_txt = f"{n} paired run{'s' if n != 1 else ''}"
+    if n < 2:
+        if mean_pp == 0:
+            return f"No task-score difference in {pairs_txt}. Add repetitions.", "note"
+        return (
+            f"Task score changed by **{format_pp_diff(mean_pp)}** in {pairs_txt}. "
+            "One pair can't separate a real effect from noise.",
+            "note",
+        )
+    if effect == "better":
+        return (
+            f"The skill improved task score by **{format_pp_diff(mean_pp)}** "
+            f"(95% CI {ci}, {pairs_txt}).",
+            "tip",
+        )
+    if effect == "worse":
+        return (
+            f"The skill reduced task score by **{abs(mean_pp)} pp** "
+            f"(95% CI {ci}, {pairs_txt}).",
+            "warning",
+        )
+    if mean_pp == 0 and score["ci_low"] == score["ci_high"] == 0:
+        return f"No task-score difference: both arms scored the same in all {pairs_txt}.", "note"
+    return (
+        f"No clear task-score effect: **{format_pp_diff(mean_pp)}**, but the 95% CI "
+        f"({ci}) includes zero ({pairs_txt}).",
+        "note",
+    )
 
 
-def _quarto_metric_rows(
-    control: dict[str, Any], skill: dict[str, Any]
-) -> list[str]:
+def _efficiency_sentence(paired: dict[str, Any]) -> Optional[str]:
+    phrases: list[str] = []
+    for key, less, more in (
+        ("cost", "cost {}% less", "cost {}% more"),
+        ("duration", "took {}% less time", "took {}% more time"),
+        ("tokens", "used {}% fewer tokens", "used {}% more tokens"),
+    ):
+        metric = paired.get(key) or {}
+        rel = metric.get("relative_change")
+        if rel is None or abs(rel) < 0.005:
+            continue
+        text = (less if rel < 0 else more).format(f"{abs(rel) * 100:.0f}")
+        if classify_effect(metric) == "unclear":
+            text += " (within noise)"
+        phrases.append(text)
+    if not phrases:
+        return None
+    joined = phrases[0] if len(phrases) == 1 else ", ".join(phrases[:-1]) + " and " + phrases[-1]
+    return f"With the skill, runs {joined}, summed over all pairs."
+
+
+def _metric_rows(
+    control: dict[str, Any], skill: dict[str, Any], paired: dict[str, Any]
+) -> list[list[Cell]]:
     score_diff = _score_difference(control, skill)
     success_diff = skill.get("success_count", 0) - control.get("success_count", 0)
     cost_diff = skill.get("median_cost", 0.0) - control.get("median_cost", 0.0)
-    time_diff = skill.get("median_time", 0.0) - control.get("median_time", 0.0)
-    control_success = f"{control.get('success_count', 0)}/{control.get('total_count', 0)}"
-    skill_success = f"{skill.get('success_count', 0)}/{skill.get('total_count', 0)}"
-    control_score = _score_percent(control)
-    skill_score = _score_percent(skill)
-    control_cost = control.get("median_cost", 0.0)
-    skill_cost = skill.get("median_cost", 0.0)
-    control_time = round(control.get("median_time", 0.0))
-    skill_time = round(skill.get("median_time", 0.0))
-    return [
-        f"| Task score | {control_score}% | {skill_score}% | "
-        f"{format_pp_diff(score_diff)} |",
-        f"| Success | {control_success} | {skill_success} | {format_count_diff(success_diff)} |",
-        f"| Median cost | ${control_cost:.2f} | ${skill_cost:.2f} | "
-        f"{format_cost_diff(cost_diff)} |",
-        f"| Median time | {control_time}s | {skill_time}s | "
-        f"{format_time_diff(round(time_diff))} |",
+    time_diff = round(skill.get("median_time", 0.0)) - round(control.get("median_time", 0.0))
+    tok_diff = skill.get("median_tokens", 0) - control.get("median_tokens", 0)
+    has_cost = bool(control.get("total_cost") or skill.get("total_cost") or
+                    control.get("median_cost") or skill.get("median_cost"))
+    rows: list[list[Cell]] = [
+        [
+            "Task score",
+            f"{_score_percent(control)}%",
+            f"{_score_percent(skill)}%",
+            (format_pp_diff(score_diff), _tone(score_diff, True)),
+            _fmt_ci(paired.get("score", {}), "score"),
+        ],
+        [
+            "Success",
+            f"{control.get('success_count', 0)}/{control.get('total_count', 0)}",
+            f"{skill.get('success_count', 0)}/{skill.get('total_count', 0)}",
+            (format_count_diff(success_diff), _tone(success_diff, True)),
+            "",
+        ],
+        [
+            "Median cost",
+            f"${control.get('median_cost', 0.0):.2f}",
+            f"${skill.get('median_cost', 0.0):.2f}",
+            (format_cost_diff(cost_diff), _tone(round(cost_diff, 2), False)),
+            _fmt_ci(paired.get("cost", {}), "cost"),
+        ],
+        [
+            "Median time",
+            f"{round(control.get('median_time', 0.0))}s",
+            f"{round(skill.get('median_time', 0.0))}s",
+            (format_time_diff(time_diff), _tone(time_diff, False)),
+            _fmt_ci(paired.get("duration", {}), "duration"),
+        ],
     ]
+    if not has_cost:
+        rows = [r for r in rows if r[0] != "Median cost"]
+    if control.get("median_tokens") or skill.get("median_tokens"):
+        rows.append(
+            [
+                "Median tokens",
+                _fmt_tokens(control.get("median_tokens", 0)),
+                _fmt_tokens(skill.get("median_tokens", 0)),
+                (_signed_tokens(tok_diff), _tone(tok_diff, False, eps=0.5)),
+                _fmt_ci(paired.get("tokens", {}), "tokens"),
+            ]
+        )
+    if control.get("median_turns") or skill.get("median_turns"):
+        turn_diff = skill.get("median_turns", 0) - control.get("median_turns", 0)
+        rows.append(
+            [
+                "Median turns",
+                f"{control.get('median_turns', 0):g}",
+                f"{skill.get('median_turns', 0):g}",
+                (f"{turn_diff:+g}", _tone(turn_diff, False)),
+                "",
+            ]
+        )
+    if skill.get("skill_known_count") or control.get("skill_known_count"):
+        rows.append(["Skill used", _skill_usage(control), _skill_usage(skill), "", ""])
+    return rows
 
 
 def _format_checks_passed(run: dict[str, Any]) -> str:
@@ -156,7 +355,7 @@ def _format_checks_passed(run: dict[str, Any]) -> str:
         data: dict[str, Any] | None = None
         if isinstance(fb, str):
             try:
-                data = json.loads(fb)
+                data = json.loads(fb.strip().splitlines()[-1]) if fb.strip() else None
             except Exception:
                 data = None
         elif isinstance(fb, dict):
@@ -195,446 +394,566 @@ def _load_runs_for_report(
         for run_file in sorted(sdir.rglob("run.json")):
             try:
                 d = json.loads(run_file.read_text(encoding="utf-8"))
-                if d.get("arm") == "control":
-                    c_runs.append(d)
-                elif d.get("arm") in {"treatment", "skill"}:
-                    t_runs.append(d)
             except Exception:
                 continue
+            d.setdefault("artifacts", str(run_file.parent.relative_to(sdir)))
+            if d.get("arm") == "control":
+                c_runs.append(d)
+            elif d.get("arm") in {"treatment", "skill"}:
+                t_runs.append(d)
         if c_runs or t_runs:
             return {"control": c_runs, "treatment": t_runs}
 
     return {"control": [], "treatment": []}
 
 
+def _run_status(run: dict[str, Any]) -> Cell:
+    status = str(run.get("status") or "ok")
+    return ("ok", None) if status == "ok" else (status, "bad")
+
+
+def _skill_cell(run: dict[str, Any]) -> Cell:
+    invoked = run.get("skill_invoked")
+    if invoked is None:
+        return "?"
+    if run.get("arm") == "control":
+        return ("yes", "bad") if invoked else "no"
+    return "yes" if invoked else ("no", "bad")
+
+
 def _build_runs_table(
     control_runs: list[dict[str, Any]],
     treatment_runs: list[dict[str, Any]],
-    runs_per_arm: int = 1,
+    multi_model: bool = False,
+    link_artifacts: bool = True,
+) -> tuple[list[str], list[list[Cell]]]:
+    headers = ["Task", "Run", "Arm", "Status", "Score", "Checks", "Skill used",
+               "Cost", "Time", "Turns", "Tokens", "Files"]
+    if multi_model:
+        headers.insert(0, "Model")
+    if link_artifacts:
+        headers.append("Artifacts")
+
+    def key(r: dict[str, Any]) -> tuple[str, str, int]:
+        return (str(r.get("model", "")), str(r.get("task_id", "")), int(r.get("repetition", 1)))
+
+    ctrl_map = {key(r): r for r in control_runs}
+    treat_map = {key(r): r for r in treatment_runs}
+    ordered_keys = list(dict.fromkeys([key(r) for r in control_runs + treatment_runs]))
+
+    rows: list[list[Cell]] = []
+    for k in ordered_keys:
+        for arm_label, run in (("Control", ctrl_map.get(k)), ("Skill", treat_map.get(k))):
+            if run is None:
+                continue
+            row: list[Cell] = [
+                str(run.get("task_id", "")),
+                str(run.get("repetition", 1)),
+                arm_label,
+                _run_status(run),
+                f"{round(float(run.get('score', 0.0)) * 100)}%",
+                _format_checks_passed(run),
+                _skill_cell(run),
+                f"${float(run.get('cost', 0.0) or 0.0):.2f}",
+                f"{float(run.get('duration', 0.0) or 0.0):.0f}s",
+                str(run.get("num_turns") or "-"),
+                _fmt_tokens(_total_tokens(run)),
+                str(len(run.get("files_changed") or [])),
+            ]
+            if multi_model:
+                row.insert(0, str(run.get("model", "")))
+            if link_artifacts:
+                art = run.get("artifacts")
+                row.append(
+                    f"[transcript]({art}/transcript.txt) · [diff]({art}/diff.patch)" if art else ""
+                )
+            rows.append(row)
+    return headers, rows
+
+
+def _key_takeaways(
+    results: dict[str, Any],
+    control_runs: list[dict[str, Any]],
+    treatment_runs: list[dict[str, Any]],
 ) -> list[str]:
-    if not control_runs and not treatment_runs:
-        return []
+    paired = paired_comparison(control_runs, treatment_runs)
+    control = calculate_metrics(control_runs)
+    skill = calculate_metrics(treatment_runs)
+    bullets: list[str] = []
 
-    lines = [
-        "| Task | Arm | Score | Success | Duration | Input Tokens | "
-        "Output Tokens | Checks Passed |",
-        "|:---|:---|---:|---:|---:|---:|---:|---:|",
-    ]
+    n = paired["pairs"]
+    if n:
+        bullets.append(
+            f"**Accuracy.** Control averaged {_score_percent(control)}% and the skill "
+            f"{_score_percent(skill)}%. Pair by pair, the skill scored higher in "
+            f"{paired['wins']}, lower in {paired['losses']}, and tied in {paired['ties']} "
+            f"of {n}."
+        )
 
-    ctrl_map: dict[tuple[str, int], dict[str, Any]] = {
-        (str(r.get("task_id", "")), int(r.get("repetition", 1))): r for r in control_runs
-    }
-    treat_map: dict[tuple[str, int], dict[str, Any]] = {
-        (str(r.get("task_id", "")), int(r.get("repetition", 1))): r for r in treatment_runs
-    }
+    efficiency = _efficiency_sentence(paired)
+    if efficiency:
+        totals = [f"time {control['total_duration']:.0f}s → {skill['total_duration']:.0f}s"]
+        if control["total_cost"] or skill["total_cost"]:
+            totals.insert(0, f"cost ${control['total_cost']:.2f} → ${skill['total_cost']:.2f}")
+        bullets.append(f"**Efficiency.** {efficiency} Totals: {', '.join(totals)}.")
 
-    all_keys = sorted(
-        set(ctrl_map.keys()) | set(treat_map.keys()),
-        key=lambda k: (k[0], k[1]),
+    if skill.get("skill_known_count"):
+        used, known = skill["skill_used_count"], skill["skill_known_count"]
+        text = f"**Adoption.** The agent used the skill in {used} of {known} skill runs"
+        c_used = control.get("skill_used_count", 0)
+        text += (
+            f"; {c_used} control run(s) also referenced it." if c_used
+            else "; no control run referenced it."
+        )
+        if used < known:
+            text += (
+                " Runs where the skill was ignored dilute any effect. A sharper "
+                "`description` usually fixes this."
+            )
+        bullets.append(text)
+
+    task_effects: list[tuple[float, str]] = []
+    for task_id in results.get("tasks") or sorted({r["task_id"] for r in control_runs}):
+        tc = [r for r in control_runs if r["task_id"] == task_id]
+        tt = [r for r in treatment_runs if r["task_id"] == task_id]
+        if tc and tt:
+            task_effects.append((paired_comparison(tc, tt)["score"]["mean_diff"], task_id))
+    if len(task_effects) > 1:
+        best = max(task_effects)
+        worst = min(task_effects)
+        if best[0] > 0:
+            bullets.append(
+                f"**Biggest gain:** `{best[1]}` ({format_pp_diff(round(best[0] * 100))})."
+            )
+        if worst[0] < 0:
+            bullets.append(
+                f"**Biggest regression:** `{worst[1]}` "
+                f"({format_pp_diff(round(worst[0] * 100))})."
+            )
+    if task_effects and all(
+        abs(e) < 1e-9 for e, _ in task_effects
+    ) and _score_percent(control) >= 95:
+        bullets.append(
+            "**Ceiling effect.** Control already solves these tasks, so accuracy can't "
+            "improve. Add harder tasks the skill is designed for, such as obscure APIs, "
+            "recent changes, or house conventions."
+        )
+
+    runs_per_arm = int(results.get("runs_per_arm") or 1)
+    if n and (runs_per_arm < 5 or n < 5):
+        bullets.append(
+            f"**Sample size.** {n} pair(s) with {runs_per_arm} repetition(s) per task "
+            "gives wide error bars. Use `runs: 5` or more before treating the result "
+            "as conclusive."
+        )
+    return bullets
+
+
+def build_report_blocks(
+    results: dict[str, Any], run_root: Path | None = None
+) -> tuple[str, list[tuple]]:
+    name = str(results.get("name", "experiment"))
+    runs_data = _load_runs_for_report(results, run_root)
+    control_runs = runs_data["control"]
+    treatment_runs = runs_data["treatment"]
+
+    if control_runs or treatment_runs:
+        control = calculate_metrics(control_runs)
+        skill = calculate_metrics(treatment_runs)
+        paired = paired_comparison(control_runs, treatment_runs)
+    else:  # Summary-only results (older versions or hand-built input).
+        overall = results.get("overall", {})
+        control = {**calculate_metrics([]), **overall.get("control", {})}
+        skill = {**calculate_metrics([]), **overall.get("skill", {})}
+        paired = overall.get("paired") or {}
+
+    blocks: list[tuple] = []
+
+    if paired.get("pairs"):
+        verdict, kind = _verdict(paired)
+    else:
+        diff = _score_difference(control, skill)
+        if diff > 0:
+            verdict, kind = f"Skill improved task score by **{diff} percentage points**.", "tip"
+        elif diff < 0:
+            verdict = f"Skill reduced task score by **{abs(diff)} percentage points**."
+            kind = "warning"
+        else:
+            verdict, kind = "No measured task-score change between control and skill.", "note"
+    body = [verdict]
+    efficiency = _efficiency_sentence(paired) if paired.get("pairs") else None
+    if efficiency:
+        body.append(efficiency)
+    blocks.append(("callout", kind, "Verdict", body))
+
+    warnings = list(results.get("warnings") or [])
+    if warnings:
+        blocks.append(("callout", "warning", "Check before trusting this result", warnings))
+
+    models = results.get("models", [])
+    blocks.append(("h", 2, "Summary"))
+    blocks.append(
+        (
+            "table",
+            ["Metric", "Control", "Skill", "Difference", "95% CI"],
+            _metric_rows(control, skill, paired),
+            ["l", "r", "r", "r", "r"],
+        )
+    )
+    blocks.append(
+        (
+            "p",
+            f"**Harness:** {results.get('harness', 'claude')} · **Models:** {len(models)} · "
+            f"**Tasks:** {results.get('tasks_count', 0)} · "
+            f"**Runs per arm:** {results.get('runs_per_arm', 0)}",
+        )
     )
 
-    for task_id, rep in all_keys:
-        task_label = f"**{task_id}**"
-        if runs_per_arm > 1:
-            task_label = f"**{task_id} (run {rep})**"
+    if control_runs:
+        takeaways = _key_takeaways(results, control_runs, treatment_runs)
+        if takeaways:
+            blocks.append(("h", 2, "Key takeaways"))
+            blocks.append(("ul", takeaways))
 
-        if (task_id, rep) in ctrl_map:
-            cr = ctrl_map[(task_id, rep)]
-            score_str = f"{round(float(cr.get('score', 0.0)) * 100)}%"
-            succ_str = "1/1" if cr.get("success") else "0/1"
-            dur_str = f"{float(cr.get('duration', 0.0)):.1f}s"
-            in_tok = f"{int(cr.get('input_tokens', 0) or 0):,}"
-            out_tok = f"{int(cr.get('output_tokens', 0) or 0):,}"
-            checks_str = _format_checks_passed(cr)
-            lines.append(
-                f"| {task_label} | Control | {score_str} | {succ_str} | "
-                f"{dur_str} | {in_tok} | {out_tok} | {checks_str} |"
-            )
+    by_model = results.get("by_model", {})
+    if len(models) > 1:
+        blocks.append(("h", 2, "By model"))
+        rows: list[list[Cell]] = []
+        for model in models:
+            if control_runs:
+                mc = [r for r in control_runs if r.get("model") == model]
+                mt = [r for r in treatment_runs if r.get("model") == model]
+                m_control, m_skill = calculate_metrics(mc), calculate_metrics(mt)
+                m_paired = paired_comparison(mc, mt)
+            else:
+                m_control = by_model.get(model, {}).get("control", {})
+                m_skill = by_model.get(model, {}).get("skill", {})
+                m_paired = {}
+            rows.append(_group_row(model, m_control, m_skill, m_paired))
+        blocks.append(("table", _group_headers("Model"), rows, _GROUP_ALIGN))
 
-        if (task_id, rep) in treat_map:
-            tr = treat_map[(task_id, rep)]
-            score_str = f"{round(float(tr.get('score', 0.0)) * 100)}%"
-            succ_str = "1/1" if tr.get("success") else "0/1"
-            dur_str = f"{float(tr.get('duration', 0.0)):.1f}s"
-            in_tok = f"{int(tr.get('input_tokens', 0) or 0):,}"
-            out_tok = f"{int(tr.get('output_tokens', 0) or 0):,}"
-            checks_str = _format_checks_passed(tr)
-            lines.append(
-                f"| {task_label} | Treatment | {score_str} | {succ_str} | "
-                f"{dur_str} | {in_tok} | {out_tok} | {checks_str} |"
-            )
+    blocks.append(("h", 2, "By task"))
+    task_rows: list[list[Cell]] = []
+    for model in models:
+        task_ids = results.get("tasks") or list(by_model.get(model, {}).get("by_task", {}).keys())
+        for task_id in task_ids:
+            if control_runs:
+                tc = [
+                    r for r in control_runs
+                    if r.get("model") == model and r.get("task_id") == task_id
+                ]
+                tt = [
+                    r for r in treatment_runs
+                    if r.get("model") == model and r.get("task_id") == task_id
+                ]
+                t_control, t_skill = calculate_metrics(tc), calculate_metrics(tt)
+                t_paired = paired_comparison(tc, tt)
+            else:
+                task_data = by_model.get(model, {}).get("by_task", {}).get(task_id, {})
+                t_control, t_skill = task_data.get("control", {}), task_data.get("skill", {})
+                t_paired = {}
+            label = f"{task_id} ({model})" if len(models) > 1 else task_id
+            task_rows.append(_group_row(label, t_control, t_skill, t_paired))
+    blocks.append(("table", _group_headers("Task"), task_rows, _GROUP_ALIGN))
 
-    c_scores = [float(r.get("score", 0.0)) for r in control_runs]
-    t_scores = [float(r.get("score", 0.0)) for r in treatment_runs]
-    c_score_pct = round((sum(c_scores) / len(c_scores) * 100)) if c_scores else 0
-    t_score_pct = round((sum(t_scores) / len(t_scores) * 100)) if t_scores else 0
-    diff_score_pct = t_score_pct - c_score_pct
+    if control_runs or treatment_runs:
+        headers, run_rows = _build_runs_table(
+            control_runs,
+            treatment_runs,
+            multi_model=len(models) > 1,
+            link_artifacts=run_root is not None,
+        )
+        blocks.append(("h", 2, "Run details"))
+        randomized = any("run_order" in r for r in control_runs)
+        blocks.append(
+            ("p", "Each pair ran in identical fresh workspaces"
+             + (", in random order" if randomized else "")
+             + ". Only the skill arm had the skill installed.")
+        )
+        align = ["r" if h in _NUMERIC_RUN_COLUMNS else "l" for h in headers]
+        blocks.append(("table", headers, run_rows, align))
 
-    c_succ = sum(1 for r in control_runs if r.get("success"))
-    t_succ = sum(1 for r in treatment_runs if r.get("success"))
-    c_tot = len(control_runs)
-    t_tot = len(treatment_runs)
-    diff_succ = t_succ - c_succ
+    blocks.append(("h", 2, "Setup"))
+    setup_items = [
+        f"**Skill:** `{results.get('skill', '')}`"
+        + (
+            f" (names: {', '.join(f'`{n}`' for n in results['skill_names'])})"
+            if results.get("skill_names") else ""
+        ),
+        f"**Models:** {', '.join(f'`{m}`' for m in models)}",
+    ]
+    for key, value in (results.get("settings") or {}).items():
+        if key == "harness":
+            continue
+        shown = ", ".join(f"`{v}`" for v in value) if isinstance(value, list) else f"`{value}`"
+        setup_items.append(f"**{key}:** {shown}")
+    if results.get("skilldiff_version"):
+        setup_items.append(f"**skilldiff:** {results['skilldiff_version']}")
+    blocks.append(("ul", setup_items))
 
-    c_dur = sum(float(r.get("duration", 0.0)) for r in control_runs)
-    t_dur = sum(float(r.get("duration", 0.0)) for r in treatment_runs)
-    diff_dur = t_dur - c_dur
-    if c_dur > 0:
-        dur_pct = (diff_dur / c_dur) * 100
-        dur_diff_str = f"{diff_dur:+.1f}s ({dur_pct:+.1f}%)"
-    else:
-        dur_diff_str = f"{diff_dur:+.1f}s"
+    blocks.append(("h", 2, "How to read this report"))
+    blocks.append(
+        (
+            "ul",
+            [
+                "Differences are **skill minus control**. Higher scores are better; lower "
+                "cost, time, and tokens are better.",
+                "The 95% CI is a bootstrap interval over paired runs. If it includes zero, "
+                "the difference could be noise.",
+                "Tokens include cached input where the harness reports it. Claude's cost "
+                "is the API-equivalent price, even on a subscription.",
+                "*Skill used* comes from the harness's tool calls (Claude) or from "
+                "references to the skill's files in the transcript (other harnesses).",
+            ],
+        )
+    )
+    return f"skilldiff: {name}", blocks
 
-    c_in = sum(int(r.get("input_tokens", 0) or 0) for r in control_runs)
-    t_in = sum(int(r.get("input_tokens", 0) or 0) for r in treatment_runs)
-    diff_in = t_in - c_in
-    if c_in > 0:
-        in_pct = (diff_in / c_in) * 100
-        in_diff_str = f"{diff_in:+,} ({in_pct:+.1f}%)"
-    else:
-        in_diff_str = f"{diff_in:+,}"
 
-    c_out = sum(int(r.get("output_tokens", 0) or 0) for r in control_runs)
-    t_out = sum(int(r.get("output_tokens", 0) or 0) for r in treatment_runs)
-    diff_out = t_out - c_out
-    if c_out > 0:
-        out_pct = (diff_out / c_out) * 100
-        out_diff_str = f"{diff_out:+,} ({out_pct:+.1f}%)"
-    else:
-        out_diff_str = f"{diff_out:+,}"
+_NUMERIC_RUN_COLUMNS = {"Run", "Score", "Checks", "Cost", "Time", "Turns", "Tokens", "Files"}
 
-    score_diff_str = format_pp_diff(diff_score_pct)
-    succ_diff_str = format_count_diff(diff_succ)
 
-    lines.extend([
-        f"| **Overall** | **Control** | **{c_score_pct}%** | **{c_succ}/{c_tot}** | "
-        f"**{c_dur:.1f}s** | **{c_in:,}** | **{c_out:,}** | - |",
-        f"| **Overall** | **Treatment** | **{t_score_pct}%** | **{t_succ}/{t_tot}** | "
-        f"**{t_dur:.1f}s** | **{t_in:,}** | **{t_out:,}** | - |",
-        f"| **Difference** | | **{score_diff_str}** | **{succ_diff_str}** | "
-        f"**{dur_diff_str}** | **{in_diff_str}** | **{out_diff_str}** | |",
-    ])
+def _group_headers(first: str) -> list[str]:
+    return [first, "Control", "Skill", "Δ score", "Better/worse/tie", "Δ cost", "Δ time",
+            "Skill used"]
+
+
+_GROUP_ALIGN = ["l", "r", "r", "r", "r", "r", "r", "r"]
+
+
+def _group_row(
+    label: str, control: dict[str, Any], skill: dict[str, Any], paired: dict[str, Any]
+) -> list[Cell]:
+    score_diff = _score_difference(control, skill)
+    cost_diff = skill.get("median_cost", 0.0) - control.get("median_cost", 0.0)
+    time_diff = round(skill.get("median_time", 0.0) - control.get("median_time", 0.0))
+    wlt = (
+        f"{paired.get('wins', 0)}/{paired.get('losses', 0)}/{paired.get('ties', 0)}"
+        if paired.get("pairs") else "-"
+    )
+    return [
+        label,
+        f"{_score_percent(control)}%",
+        f"{_score_percent(skill)}%",
+        (format_pp_diff(score_diff), _tone(score_diff, True)),
+        wlt,
+        (format_cost_diff(cost_diff), _tone(round(cost_diff, 2), False)),
+        (format_time_diff(time_diff), _tone(time_diff, False)),
+        _skill_usage(skill),
+    ]
+
+
+# ------------------------------------------------------------------------ renderers
+
+
+def _cell_text(cell: Cell) -> str:
+    return cell[0] if isinstance(cell, tuple) else cell
+
+
+def _markdown_cell(value: object) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _md_table(headers: list[str], rows: list[list[Cell]], align: Optional[list[str]]) -> list[str]:
+    align = align or ["l"] + ["r"] * (len(headers) - 1)
+    if len(align) < len(headers):
+        align = align + ["l"] * (len(headers) - len(align))
+    sep = ["---:" if a == "r" else ":---" for a in align[: len(headers)]]
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "|" + "|".join(sep) + "|",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(_markdown_cell(_cell_text(c)) for c in row) + " |")
     return lines
 
 
-def _build_key_takeaways(
-    results: dict[str, Any],
-    control_runs: list[dict[str, Any]] | None = None,
-    treatment_runs: list[dict[str, Any]] | None = None,
-) -> list[str]:
-    overall = results.get("overall", {})
-    control = overall.get("control", {})
-    skill = overall.get("skill", {})
-
-    c_score = round(control.get("task_score", 0.0) * 100)
-    s_score = round(skill.get("task_score", 0.0) * 100)
-    score_diff = s_score - c_score
-    c_succ = control.get("success_count", 0)
-    c_tot = control.get("total_count", 0)
-    s_succ = skill.get("success_count", 0)
-    s_tot = skill.get("total_count", 0)
-
-    c_runs = control_runs or []
-    t_runs = treatment_runs or []
-
-    c_dur = (
-        sum(float(r.get("duration", 0.0)) for r in c_runs)
-        if c_runs
-        else float(control.get("total_duration") or control.get("median_time", 0.0))
-    )
-    s_dur = (
-        sum(float(r.get("duration", 0.0)) for r in t_runs)
-        if t_runs
-        else float(skill.get("total_duration") or skill.get("median_time", 0.0))
-    )
-    diff_dur = s_dur - c_dur
-    dur_pct = (diff_dur / c_dur * 100) if c_dur > 0 else 0.0
-
-    med_c_time = round(control.get("median_time", 0.0))
-    med_s_time = round(skill.get("median_time", 0.0))
-    med_time_diff = med_s_time - med_c_time
-
-    c_in = (
-        sum(int(r.get("input_tokens", 0) or 0) for r in c_runs)
-        if c_runs
-        else int(control.get("total_input_tokens", 0) or 0)
-    )
-    s_in = (
-        sum(int(r.get("input_tokens", 0) or 0) for r in t_runs)
-        if t_runs
-        else int(skill.get("total_input_tokens", 0) or 0)
-    )
-    diff_in = s_in - c_in
-    in_pct = (diff_in / c_in * 100) if c_in > 0 else 0.0
-
-    c_out = (
-        sum(int(r.get("output_tokens", 0) or 0) for r in c_runs)
-        if c_runs
-        else int(control.get("total_output_tokens", 0) or 0)
-    )
-    s_out = (
-        sum(int(r.get("output_tokens", 0) or 0) for r in t_runs)
-        if t_runs
-        else int(skill.get("total_output_tokens", 0) or 0)
-    )
-    diff_out = s_out - c_out
-    out_pct = (diff_out / c_out * 100) if c_out > 0 else 0.0
-
-    bullets: list[str] = []
-
-    if score_diff > 0:
-        bullets.append(
-            f"- **Task Accuracy & Success Rate**: The skill improved the task score by "
-            f"**{format_pp_diff(score_diff)}** ({c_score}% → {s_score}%), achieving "
-            f"{s_succ}/{s_tot} successful runs compared to {c_succ}/{c_tot} in control."
-        )
-    elif score_diff == 0:
-        bullets.append(
-            f"- **Task Accuracy & Success Rate**: The skill maintained parity on task score at "
-            f"**{s_score}%** ({s_succ}/{s_tot} successes for skill vs "
-            f"{c_succ}/{c_tot} for control)."
-        )
-    else:
-        bullets.append(
-            f"- **Task Accuracy & Success Rate**: The skill achieved a **{s_score}%** overall "
-            f"task score ({s_succ}/{s_tot} passes) compared to **{c_score}%** ({c_succ}/{c_tot} "
-            f"passes) in control ({format_pp_diff(score_diff)})."
-        )
-
-    if diff_dur < 0:
-        bullets.append(
-            f"- **Execution Speed & Latency**: Total execution time was "
-            f"**{abs(dur_pct):.1f}% faster** with the skill (saving {abs(diff_dur):.1f}s "
-            f"total duration; median task duration decreased from {med_c_time}s to {med_s_time}s, "
-            f"saving {abs(med_time_diff)}s per task)."
-        )
-    elif diff_dur > 0:
-        bullets.append(
-            f"- **Execution Speed & Latency**: Total execution time was "
-            f"**{abs(dur_pct):.1f}% longer** with the skill (+{abs(diff_dur):.1f}s "
-            f"total duration; median task duration was {med_s_time}s vs {med_c_time}s in control)."
-        )
-    else:
-        bullets.append(
-            f"- **Execution Speed & Latency**: Execution time was comparable between arms "
-            f"(median duration: {med_s_time}s)."
-        )
-
-    if c_in > 0 or s_in > 0:
-        if diff_in < 0:
-            bullets.append(
-                f"- **Token Economy & Context Efficiency**: Providing the skill reduced input "
-                f"token consumption by **{abs(in_pct):.1f}%** ({diff_in:,} tokens) and output "
-                f"tokens by **{abs(out_pct):.1f}%** ({diff_out:,} tokens), demonstrating that "
-                f"structured local documentation eliminates expensive exploratory file searches "
-                f"across the repository."
-            )
-        else:
-            bullets.append(
-                f"- **Token Economy**: Input tokens changed by {diff_in:+,} ({in_pct:+.1f}%) and "
-                f"output tokens changed by {diff_out:+,} ({out_pct:+.1f}%)."
-            )
-
-    if diff_in < 0 and diff_dur < 0:
-        bullets.append(
-            "- **Behavioral Impact**: Having targeted documentation directly in the agent's "
-            "workspace enables more focused and autonomous execution, eliminating speculative "
-            "tool calls and guesswork."
-        )
-    else:
-        bullets.append(
-            "- **Behavioral Impact**: The skill equips the agent with domain-specific "
-            "conventions, APIs, and guidelines directly inside the workspace."
-        )
-
-    return [
-        "## Key Takeaways",
-        "",
-        *bullets,
-    ]
-
-
-def build_quarto_report(
-    results: dict[str, Any], run_root: Path | None = None
-) -> str:
-    name = str(results.get("name", "experiment"))
-    overall = results.get("overall", {})
-    control = overall.get("control", {})
-    skill = overall.get("skill", {})
-    score_diff = _score_difference(control, skill)
-    if score_diff > 0:
-        verdict = f"Skill improved task score by **{score_diff} percentage points**."
-        callout = "tip"
-    elif score_diff < 0:
-        verdict = f"Skill reduced task score by **{abs(score_diff)} percentage points**."
-        callout = "warning"
-    else:
-        verdict = "No measured task-score change between control and skill."
-        callout = "note"
-
-    lines = [
-        "---",
-        f"title: {json.dumps(f'skilldiff: {name}')}",
-        f"date: {json.dumps(str(results.get('timestamp', '')))}",
-        "format:",
-        "  html:",
-        "    theme: cosmo",
-        "    toc: true",
-        "    embed-resources: true",
-        "    code-fold: true",
-        "---",
-        "",
-        "## Overall result",
-        "",
-        f"::: {{.callout-{callout}}}",
-        "## Verdict",
-        verdict,
-        ":::",
-        "",
-        "| Metric | Control | Skill | Difference |",
-        "|---|---:|---:|---:|",
-        *_quarto_metric_rows(control, skill),
-        "",
-        f"**Models:** {len(results.get('models', []))}  ",
-        f"**Tasks:** {results.get('tasks_count', 0)}  ",
-        f"**Runs per arm:** {results.get('runs_per_arm', 0)}",
-    ]
-
-    runs_data = _load_runs_for_report(results, run_root)
-    control_runs = runs_data.get("control", [])
-    treatment_runs = runs_data.get("treatment", [])
-
-    key_takeaways = _build_key_takeaways(results, control_runs, treatment_runs)
-    if key_takeaways:
-        lines.extend(["", *key_takeaways])
-
-    runs_table = _build_runs_table(control_runs, treatment_runs, results.get("runs_per_arm", 1))
-    if runs_table:
-        lines.extend([
-            "",
-            "## Detailed run breakdown",
-            "",
-            *runs_table,
-        ])
-
-    lines.extend([
-        "",
-        "## Model comparison",
-        "",
-        "| Model | Control score | Skill score | Difference | Control success | "
-        "Skill success | Cost difference | Time difference |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
-    ])
-
-    by_model = results.get("by_model", {})
-    for model in results.get("models", []):
-        model_data = by_model.get(model, {})
-        model_control = model_data.get("control", {})
-        model_skill = model_data.get("skill", {})
-        model_score_diff = _score_difference(model_control, model_skill)
-        model_cost_diff = model_skill.get("median_cost", 0.0) - model_control.get(
-            "median_cost", 0.0
-        )
-        model_time_diff = model_skill.get("median_time", 0.0) - model_control.get(
-            "median_time", 0.0
-        )
-        model_control_success = (
-            f"{model_control.get('success_count', 0)}/"
-            f"{model_control.get('total_count', 0)}"
-        )
-        model_skill_success = (
-            f"{model_skill.get('success_count', 0)}/"
-            f"{model_skill.get('total_count', 0)}"
-        )
-        lines.append(
-            "| "
-            + " | ".join(
-                [
-                    _markdown_cell(model),
-                    f"{_score_percent(model_control)}%",
-                    f"{_score_percent(model_skill)}%",
-                    format_pp_diff(model_score_diff),
-                    model_control_success,
-                    model_skill_success,
-                    format_cost_diff(model_cost_diff),
-                    format_time_diff(round(model_time_diff)),
-                ]
-            )
-            + " |"
-        )
-
-    for model in results.get("models", []):
-        model_data = by_model.get(model, {})
+def _render_markdown(title: str, blocks: list[tuple], flavor: str, date: str) -> str:
+    lines: list[str] = []
+    if flavor == "quarto":
         lines.extend(
             [
+                "---",
+                f"title: {json.dumps(title)}",
+                f"date: {json.dumps(date)}",
+                "format:",
+                "  html:",
+                "    theme: cosmo",
+                "    toc: true",
+                "    embed-resources: true",
+                "---",
                 "",
-                f"## {_markdown_cell(model)}",
-                "",
-                "### Task breakdown",
-                "",
-                "| Task | Control score | Skill score | Difference | Control success | "
-                "Skill success |",
-                "|---|---:|---:|---:|---:|---:|",
             ]
         )
-        for task_id, task_data in model_data.get("by_task", {}).items():
-            task_control = task_data.get("control", {})
-            task_skill = task_data.get("skill", {})
-            task_control_success = (
-                f"{task_control.get('success_count', 0)}/"
-                f"{task_control.get('total_count', 0)}"
+    else:
+        lines.extend([f"# {title}", "", f"_{date}_", ""])
+
+    for block in blocks:
+        kind = block[0]
+        if kind == "h":
+            lines.extend(["#" * block[1] + " " + block[2], ""])
+        elif kind == "p":
+            lines.extend([block[1], ""])
+        elif kind == "ul":
+            lines.extend([f"- {item}" for item in block[1]] + [""])
+        elif kind == "table":
+            lines.extend(_md_table(block[1], block[2], block[3]) + [""])
+        elif kind == "callout":
+            _, ctype, ctitle, body = block
+            bullets = len(body) > 1 and ctype == "warning"
+            if flavor == "quarto":
+                lines.append(f"::: {{.callout-{ctype}}}")
+                lines.append(f"## {ctitle}")
+                lines.extend([f"- {b}" for b in body] if bullets else body)
+                lines.extend([":::", ""])
+            else:
+                gh = {"tip": "TIP", "warning": "WARNING", "note": "NOTE"}.get(ctype, "NOTE")
+                lines.append(f"> [!{gh}]")
+                lines.append(f"> **{ctitle}**")
+                for b in body:
+                    lines.append(f"> - {b}" if bullets else f"> {b}")
+                    if not bullets:
+                        lines.append(">")
+                if lines[-1] == ">":
+                    lines.pop()
+                lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def build_quarto_report(results: dict[str, Any], run_root: Path | None = None) -> str:
+    title, blocks = build_report_blocks(results, run_root)
+    return _render_markdown(title, blocks, "quarto", str(results.get("timestamp", "")))
+
+
+def build_markdown_report(results: dict[str, Any], run_root: Path | None = None) -> str:
+    title, blocks = build_report_blocks(results, run_root)
+    return _render_markdown(title, blocks, "gfm", str(results.get("timestamp", "")))
+
+
+_INLINE = re.compile(r"\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)|_(.+?)_(?!\w)")
+
+
+def _inline_html(text: str) -> str:
+    out: list[str] = []
+    pos = 0
+    for m in _INLINE.finditer(text):
+        out.append(html.escape(text[pos:m.start()]))
+        bold, code, link_text, link_url, italic = m.groups()
+        if bold is not None:
+            out.append(f"<strong>{_inline_html(bold)}</strong>")
+        elif code is not None:
+            out.append(f"<code>{html.escape(code)}</code>")
+        elif link_text is not None:
+            href = html.escape(link_url, quote=True)
+            out.append(f'<a href="{href}">{html.escape(link_text)}</a>')
+        else:
+            out.append(f"<em>{_inline_html(italic)}</em>")
+        pos = m.end()
+    out.append(html.escape(text[pos:]))
+    return "".join(out)
+
+
+def _strip_inline(text: str) -> str:
+    return re.sub(r"\*\*(.+?)\*\*", r"\1", text).replace("`", "")
+
+
+_CSS = """
+:root{--bg:#fff;--fg:#1f2328;--muted:#59636e;--line:#d1d9e0;--soft:#f6f8fa;
+--good:#1a7f37;--bad:#cf222e;--tip:#1a7f37;--warning:#9a6700;--note:#0969da}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#9198a1;
+--line:#3d444d;--soft:#151b23;--good:#3fb950;--bad:#f85149;--tip:#3fb950;
+--warning:#d29922;--note:#4493f8}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:32px 24px 64px}
+h1{font-size:28px;margin:0 0 4px}h2{font-size:20px;margin:36px 0 12px;
+padding-bottom:6px;border-bottom:1px solid var(--line)}
+.date{color:var(--muted);margin:0 0 24px}
+.callout{border-left:4px solid var(--note);background:var(--soft);padding:12px 16px;
+margin:16px 0;border-radius:6px}
+.callout.tip{border-color:var(--tip)}.callout.warning{border-color:var(--warning)}
+.callout-title{font-weight:600;margin:0 0 6px}.callout p{margin:4px 0}
+.callout ul{margin:4px 0;padding-left:20px}
+.table-wrap{overflow-x:auto;margin:8px 0 16px}
+table{border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums}
+th,td{padding:6px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{text-align:left;color:var(--muted);font-weight:600;background:var(--soft)}
+td.r,th.r{text-align:right}.good{color:var(--good);font-weight:600}
+.bad{color:var(--bad);font-weight:600}
+code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--soft);
+padding:1px 5px;border-radius:4px}
+a{color:var(--note)}li{margin:4px 0}
+"""
+
+
+def build_html_report(results: dict[str, Any], run_root: Path | None = None) -> str:
+    title, blocks = build_report_blocks(results, run_root)
+    parts = [
+        "<!doctype html>",
+        '<html lang="en"><head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width,initial-scale=1">',
+        f"<title>{html.escape(title)}</title><style>{_CSS}</style></head><body><main>",
+        f"<h1>{html.escape(title)}</h1>",
+        f'<p class="date">{html.escape(str(results.get("timestamp", "")))}</p>',
+    ]
+    for block in blocks:
+        kind = block[0]
+        if kind == "h":
+            parts.append(f"<h{block[1]}>{_inline_html(block[2])}</h{block[1]}>")
+        elif kind == "p":
+            parts.append(f"<p>{_inline_html(block[1])}</p>")
+        elif kind == "ul":
+            items = "".join(f"<li>{_inline_html(i)}</li>" for i in block[1])
+            parts.append(f"<ul>{items}</ul>")
+        elif kind == "table":
+            headers, rows, align = block[1], block[2], block[3]
+            align = align or ["l"] + ["r"] * (len(headers) - 1)
+            align = align + ["l"] * (len(headers) - len(align))
+            head = "".join(
+                f'<th class="{a}">{html.escape(h)}</th>' for h, a in zip(headers, align)
             )
-            task_skill_success = (
-                f"{task_skill.get('success_count', 0)}/"
-                f"{task_skill.get('total_count', 0)}"
+            body_rows = []
+            for row in rows:
+                cells = []
+                for cell, a in zip(row, align):
+                    text, tone = (cell if isinstance(cell, tuple) else (cell, None))
+                    cls = " ".join(c for c in (a, tone or "") if c)
+                    cells.append(f'<td class="{cls}">{_inline_html(text)}</td>')
+                body_rows.append("<tr>" + "".join(cells) + "</tr>")
+            parts.append(
+                f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead>'
+                f"<tbody>{''.join(body_rows)}</tbody></table></div>"
             )
-            lines.append(
-                "| "
-                + " | ".join(
-                    [
-                        _markdown_cell(task_id),
-                        f"{_score_percent(task_control)}%",
-                        f"{_score_percent(task_skill)}%",
-                        format_pp_diff(_score_difference(task_control, task_skill)),
-                        task_control_success,
-                        task_skill_success,
-                    ]
-                )
-                + " |"
+        elif kind == "callout":
+            _, ctype, ctitle, body = block
+            if len(body) > 1 and ctype == "warning":
+                inner = "<ul>" + "".join(f"<li>{_inline_html(b)}</li>" for b in body) + "</ul>"
+            else:
+                inner = "".join(f"<p>{_inline_html(b)}</p>" for b in body)
+            parts.append(
+                f'<div class="callout {ctype}"><p class="callout-title">'
+                f"{html.escape(ctitle)}</p>{inner}</div>"
             )
-
-    lines.extend(
-        [
-            "",
-            "## How to read this report",
-            "",
-            "Task-score and success differences are **skill minus control**, so higher is better. ",
-            "Cost and time differences are also skill minus control, so negative values "
-            "are better.",
-            "",
-        ]
-    )
-    return "\n".join(lines)
+    parts.append("</main></body></html>")
+    return "\n".join(parts)
 
 
-def create_quarto_report(
-    results: dict[str, Any], run_root: Path
-) -> tuple[Path, Path | None]:
-    qmd_path = run_root / "report.qmd"
-    qmd_path.write_text(build_quarto_report(results, run_root=run_root), encoding="utf-8")
+def create_reports(results: dict[str, Any], run_root: Path) -> dict[str, Path]:
+    """Write report.html, report.md, and report.qmd into run_root."""
+    builders = {
+        "html": ("report.html", build_html_report),
+        "md": ("report.md", build_markdown_report),
+        "qmd": ("report.qmd", build_quarto_report),
+    }
+    paths: dict[str, Path] = {}
+    for key, (filename, build) in builders.items():
+        paths[key] = run_root / filename
+        paths[key].write_text(build(results, run_root), encoding="utf-8")
+    return paths
 
-    quarto_bin = shutil.which("quarto")
-    if not quarto_bin:
-        return qmd_path, None
 
-    html_path = run_root / "report.html"
-    proc = subprocess.run(
-        [quarto_bin, "render", qmd_path.name, "--output", html_path.name],
-        cwd=run_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0 or not html_path.exists():
-        return qmd_path, None
-    return qmd_path, html_path
+def create_quarto_report(results: dict[str, Any], run_root: Path) -> tuple[Path, Path | None]:
+    """Backward-compatible wrapper around create_reports."""
+    paths = create_reports(results, run_root)
+    return paths["qmd"], paths["html"]
