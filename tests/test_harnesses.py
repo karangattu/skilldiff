@@ -271,6 +271,8 @@ def test_agent_runner_dispatches_opencode(tmp_path: Path):
         call_args = mock_subproc.call_args[0][0]
         assert "opencode-mock" in call_args
         assert "run" in call_args
+        assert "--dir" in call_args
+        assert str(tmp_path) in call_args
         assert "--format" in call_args
         assert "json" in call_args
         assert "--dangerously-skip-permissions" in call_args

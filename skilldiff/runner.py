@@ -331,7 +331,7 @@ class AgentRunner:
         elif "/" not in target_model and opencode_cfg.provider:
             target_model = f"{opencode_cfg.provider}/{target_model}"
 
-        cmd = [bin_path, "run", "--format", "json", "-m", target_model]
+        cmd = [bin_path, "run", "--dir", str(cwd), "--format", "json", "-m", target_model]
         if opencode_cfg.dangerously_skip_permissions:
             cmd.append("--dangerously-skip-permissions")
         if opencode_cfg.variant:
@@ -382,12 +382,17 @@ class AgentRunner:
                             response_texts.append(text)
                         tokens = part.get("tokens")
                         if isinstance(tokens, dict):
-                            input_tokens = int(tokens.get("input") or input_tokens)
-                            output_tokens = int(tokens.get("output") or output_tokens)
+                            input_tokens += int(tokens.get("input") or 0)
+                            output_tokens += int(tokens.get("output") or 0)
+                        if "cost" in part:
+                            try:
+                                cost += float(part["cost"])
+                            except (ValueError, TypeError):
+                                pass
 
                     if "cost" in item:
                         try:
-                            cost = float(item["cost"])
+                            cost += float(item["cost"])
                         except (ValueError, TypeError):
                             pass
 
@@ -397,6 +402,7 @@ class AgentRunner:
                     pass
 
             response = "\n".join(response_texts) if response_texts else stdout
+            cost = round(cost, 6)
 
             return RunResult(
                 prompt=prompt,
