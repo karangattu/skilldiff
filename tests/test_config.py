@@ -81,3 +81,28 @@ def test_load_experiment_no_tasks(tmp_path: Path):
 
     with pytest.raises(ValueError, match="No task files matched"):
         load_experiment(exp_file)
+
+
+def test_load_experiment_reads_claude_permissions(tmp_path: Path):
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Test")
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    (tasks_dir / "task.yaml").write_text("id: one\nprompt: Do it\n")
+    exp_file = tmp_path / "skilldiff.yaml"
+    exp_file.write_text(
+        "name: test\n"
+        "skill: ./skill\n"
+        "models:\n  - sonnet\n"
+        "tasks:\n  - ./tasks/*.yaml\n"
+        "claude:\n"
+        "  permission_mode: acceptEdits\n"
+        "  allowed_tools:\n"
+        "    - Bash(shiny docs *)\n"
+    )
+
+    config, _ = load_experiment(exp_file)
+
+    assert config.claude.permission_mode == "acceptEdits"
+    assert config.claude.allowed_tools == ["Bash(shiny docs *)"]

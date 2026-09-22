@@ -7,7 +7,7 @@ Both runs use the same model, prompt, effort, and input files.
 
 ## Install
 
-Requirements: Python 3.10+, Git, and [Claude Code](https://code.claude.com/docs/en/overview) with authentication configured.
+Requirements: Python 3.10+, Git, and [Claude Code](https://code.claude.com/docs/en/overview) with authentication configured. [Quarto](https://quarto.org/) is optional; when installed, `skilldiff` renders an HTML report automatically.
 
 ```bash
 git clone https://github.com/karangattu/skilldiff.git
@@ -33,9 +33,14 @@ runs: 3
 claude:
   effort: high
   max_budget_usd: 2.00
+  permission_mode: acceptEdits
+  allowed_tools:
+    - Bash(my-tool *)
 ```
 
 The budget applies to each Claude invocation. One model, one task, and three repetitions produce six invocations.
+
+`acceptEdits` lets unattended Claude sessions edit the disposable control and treatment workspaces. Commands that a skill needs must be explicitly allow-listed with Claude Code tool patterns. For example, a skill that calls `shiny docs` should use `Bash(shiny docs *)`. The same permissions apply to both arms. Avoid `bypassPermissions` unless every task, fixture, and command is trusted, because shell commands can access files outside the temporary workspace.
 
 Replace `tasks/review-auth.yaml` with a task for your skill:
 
@@ -90,6 +95,15 @@ skilldiff run                # Use the repetition count from skilldiff.yaml
 skilldiff results            # Show the latest report
 skilldiff results --json     # Export the latest report as JSON
 ```
+
+Each completed run writes:
+
+- `results.json` for programmatic analysis;
+- `report.qmd`, a readable Quarto source report;
+- `report.html` when Quarto is installed;
+- per-run responses, transcripts, diffs, and scores.
+
+The Quarto report starts with an overall verdict, followed by model and task comparison tables. `skilldiff run` and `skilldiff results` print the report path.
 
 For a separate experiment file, run `skilldiff run --config sonnet.yaml`.
 

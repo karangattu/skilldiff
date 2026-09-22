@@ -24,6 +24,8 @@ claude:
   effort: high
   max_turns: 30
   max_budget_usd: 2.00
+  permission_mode: acceptEdits
+  allowed_tools: []
 """
 
 STARTER_TASK_YAML = """id: review-auth
@@ -99,6 +101,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     results = runner.run()
 
     print("\n" + _format_results(results))
+    report = results.get("report", {})
+    report_path = report.get("html") or report.get("qmd")
+    if report_path:
+        print(f"\nQuarto report: {report_path}")
     return 0
 
 
@@ -130,6 +136,10 @@ def cmd_results(args: argparse.Namespace) -> int:
         return 0
 
     print(_format_results(results))
+    report = results.get("report", {})
+    report_path = report.get("html") or report.get("qmd")
+    if report_path:
+        print(f"\nQuarto report: {report_path}")
     return 0
 
 

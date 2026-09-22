@@ -1,3 +1,4 @@
+import skilldiff.reporter as reporter
 from skilldiff.reporter import (
     calculate_metrics,
     format_cost_diff,
@@ -70,3 +71,75 @@ def test_render_report_table():
     assert "88s" in table
     assert "-7s" in table
     assert "Models: 1    Tasks: 3    Runs per arm: 3" in table
+
+
+def test_build_quarto_report_shows_overall_models_and_tasks():
+    results = {
+        "name": "api-skill",
+        "timestamp": "2026-09-22T120000Z",
+        "models": ["claude-sonnet-5"],
+        "tasks_count": 1,
+        "runs_per_arm": 2,
+        "overall": {
+            "control": {
+                "task_score": 0.5,
+                "success_count": 1,
+                "total_count": 2,
+                "median_cost": 0.4,
+                "median_time": 30.0,
+            },
+            "skill": {
+                "task_score": 1.0,
+                "success_count": 2,
+                "total_count": 2,
+                "median_cost": 0.3,
+                "median_time": 20.0,
+            },
+        },
+        "by_model": {
+            "claude-sonnet-5": {
+                "control": {
+                    "task_score": 0.5,
+                    "success_count": 1,
+                    "total_count": 2,
+                    "median_cost": 0.4,
+                    "median_time": 30.0,
+                },
+                "skill": {
+                    "task_score": 1.0,
+                    "success_count": 2,
+                    "total_count": 2,
+                    "median_cost": 0.3,
+                    "median_time": 20.0,
+                },
+                "runs_count": 2,
+                "by_task": {
+                    "fix-parser": {
+                        "control": {
+                            "task_score": 0.5,
+                            "success_count": 1,
+                            "total_count": 2,
+                            "median_cost": 0.4,
+                            "median_time": 30.0,
+                        },
+                        "skill": {
+                            "task_score": 1.0,
+                            "success_count": 2,
+                            "total_count": 2,
+                            "median_cost": 0.3,
+                            "median_time": 20.0,
+                        },
+                    }
+                },
+            }
+        },
+    }
+
+    report = reporter.build_quarto_report(results)
+
+    assert 'title: "skilldiff: api-skill"' in report
+    assert "## Overall result" in report
+    assert "Skill improved task score by **50 percentage points**" in report
+    assert "claude-sonnet-5" in report
+    assert "fix-parser" in report
+    assert "| 50% | 100% | +50 pp |" in report

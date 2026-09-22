@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import yaml
+
 from skilldiff.cli import cmd_init, cmd_results, cmd_run
 
 
@@ -18,6 +20,9 @@ def test_cli_init_and_overwrite(tmp_path: Path, monkeypatch):
     assert (tmp_path / "skilldiff.yaml").exists()
     assert (tmp_path / "tasks" / "review-auth.yaml").exists()
     assert (tmp_path / "skills" / "code-review" / "SKILL.md").exists()
+    generated_config = yaml.safe_load((tmp_path / "skilldiff.yaml").read_text())
+    assert generated_config["claude"]["permission_mode"] == "acceptEdits"
+    assert generated_config["claude"]["allowed_tools"] == []
 
     ret_no_force = cmd_init(args)
     assert ret_no_force == 1
@@ -51,11 +56,13 @@ def test_cli_run_and_results(tmp_path: Path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "test-exp" in captured.out
     assert "Task score" in captured.out
+    assert "Quarto report:" in captured.out
 
     ret_results = cmd_results(Args(run_dir=None, json=False))
     assert ret_results == 0
     captured_res = capsys.readouterr()
     assert "test-exp" in captured_res.out
+    assert "Quarto report:" in captured_res.out
 
     ret_json = cmd_results(Args(run_dir=None, json=True))
     assert ret_json == 0

@@ -47,6 +47,10 @@ class AgentRunner:
             "--output-format",
             "json",
         ]
+        if claude_cfg.permission_mode:
+            cmd.extend(["--permission-mode", claude_cfg.permission_mode])
+        if claude_cfg.allowed_tools:
+            cmd.extend(["--allowedTools", ",".join(claude_cfg.allowed_tools)])
         if claude_cfg.effort:
             cmd.extend(["--effort", str(claude_cfg.effort)])
         if claude_cfg.max_budget_usd is not None:

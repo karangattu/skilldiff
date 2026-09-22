@@ -1,4 +1,8 @@
+import json
+import shutil
 import statistics
+import subprocess
+from pathlib import Path
 from typing import Any
 
 
@@ -93,3 +97,205 @@ def render_report_table(
         f"Models: {models_count}    Tasks: {tasks_count}    Runs per arm: {runs_per_arm}",
     ]
     return "\n".join(lines)
+
+
+def _markdown_cell(value: object) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _score_percent(metrics: dict[str, Any]) -> int:
+    return round(metrics.get("task_score", 0.0) * 100)
+
+
+def _score_difference(control: dict[str, Any], skill: dict[str, Any]) -> int:
+    return _score_percent(skill) - _score_percent(control)
+
+
+def _quarto_metric_rows(
+    control: dict[str, Any], skill: dict[str, Any]
+) -> list[str]:
+    score_diff = _score_difference(control, skill)
+    success_diff = skill.get("success_count", 0) - control.get("success_count", 0)
+    cost_diff = skill.get("median_cost", 0.0) - control.get("median_cost", 0.0)
+    time_diff = skill.get("median_time", 0.0) - control.get("median_time", 0.0)
+    control_success = f"{control.get('success_count', 0)}/{control.get('total_count', 0)}"
+    skill_success = f"{skill.get('success_count', 0)}/{skill.get('total_count', 0)}"
+    control_score = _score_percent(control)
+    skill_score = _score_percent(skill)
+    control_cost = control.get("median_cost", 0.0)
+    skill_cost = skill.get("median_cost", 0.0)
+    control_time = round(control.get("median_time", 0.0))
+    skill_time = round(skill.get("median_time", 0.0))
+    return [
+        f"| Task score | {control_score}% | {skill_score}% | "
+        f"{format_pp_diff(score_diff)} |",
+        f"| Success | {control_success} | {skill_success} | {format_count_diff(success_diff)} |",
+        f"| Median cost | ${control_cost:.2f} | ${skill_cost:.2f} | "
+        f"{format_cost_diff(cost_diff)} |",
+        f"| Median time | {control_time}s | {skill_time}s | "
+        f"{format_time_diff(round(time_diff))} |",
+    ]
+
+
+def build_quarto_report(results: dict[str, Any]) -> str:
+    name = str(results.get("name", "experiment"))
+    overall = results.get("overall", {})
+    control = overall.get("control", {})
+    skill = overall.get("skill", {})
+    score_diff = _score_difference(control, skill)
+    if score_diff > 0:
+        verdict = f"Skill improved task score by **{score_diff} percentage points**."
+        callout = "tip"
+    elif score_diff < 0:
+        verdict = f"Skill reduced task score by **{abs(score_diff)} percentage points**."
+        callout = "warning"
+    else:
+        verdict = "No measured task-score change between control and skill."
+        callout = "note"
+
+    lines = [
+        "---",
+        f"title: {json.dumps(f'skilldiff: {name}')}",
+        f"date: {json.dumps(str(results.get('timestamp', '')))}",
+        "format:",
+        "  html:",
+        "    theme: cosmo",
+        "    toc: true",
+        "    embed-resources: true",
+        "    code-fold: true",
+        "---",
+        "",
+        "## Overall result",
+        "",
+        f"::: {{.callout-{callout}}}",
+        "## Verdict",
+        verdict,
+        ":::",
+        "",
+        "| Metric | Control | Skill | Difference |",
+        "|---|---:|---:|---:|",
+        *_quarto_metric_rows(control, skill),
+        "",
+        f"**Models:** {len(results.get('models', []))}  ",
+        f"**Tasks:** {results.get('tasks_count', 0)}  ",
+        f"**Runs per arm:** {results.get('runs_per_arm', 0)}",
+        "",
+        "## Model comparison",
+        "",
+        "| Model | Control score | Skill score | Difference | Control success | "
+        "Skill success | Cost difference | Time difference |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+
+    by_model = results.get("by_model", {})
+    for model in results.get("models", []):
+        model_data = by_model.get(model, {})
+        model_control = model_data.get("control", {})
+        model_skill = model_data.get("skill", {})
+        model_score_diff = _score_difference(model_control, model_skill)
+        model_cost_diff = model_skill.get("median_cost", 0.0) - model_control.get(
+            "median_cost", 0.0
+        )
+        model_time_diff = model_skill.get("median_time", 0.0) - model_control.get(
+            "median_time", 0.0
+        )
+        model_control_success = (
+            f"{model_control.get('success_count', 0)}/"
+            f"{model_control.get('total_count', 0)}"
+        )
+        model_skill_success = (
+            f"{model_skill.get('success_count', 0)}/"
+            f"{model_skill.get('total_count', 0)}"
+        )
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_cell(model),
+                    f"{_score_percent(model_control)}%",
+                    f"{_score_percent(model_skill)}%",
+                    format_pp_diff(model_score_diff),
+                    model_control_success,
+                    model_skill_success,
+                    format_cost_diff(model_cost_diff),
+                    format_time_diff(round(model_time_diff)),
+                ]
+            )
+            + " |"
+        )
+
+    for model in results.get("models", []):
+        model_data = by_model.get(model, {})
+        lines.extend(
+            [
+                "",
+                f"## {_markdown_cell(model)}",
+                "",
+                "### Task breakdown",
+                "",
+                "| Task | Control score | Skill score | Difference | Control success | "
+                "Skill success |",
+                "|---|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for task_id, task_data in model_data.get("by_task", {}).items():
+            task_control = task_data.get("control", {})
+            task_skill = task_data.get("skill", {})
+            task_control_success = (
+                f"{task_control.get('success_count', 0)}/"
+                f"{task_control.get('total_count', 0)}"
+            )
+            task_skill_success = (
+                f"{task_skill.get('success_count', 0)}/"
+                f"{task_skill.get('total_count', 0)}"
+            )
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        _markdown_cell(task_id),
+                        f"{_score_percent(task_control)}%",
+                        f"{_score_percent(task_skill)}%",
+                        format_pp_diff(_score_difference(task_control, task_skill)),
+                        task_control_success,
+                        task_skill_success,
+                    ]
+                )
+                + " |"
+            )
+
+    lines.extend(
+        [
+            "",
+            "## How to read this report",
+            "",
+            "Task-score and success differences are **skill minus control**, so higher is better. ",
+            "Cost and time differences are also skill minus control, so negative values "
+            "are better.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def create_quarto_report(
+    results: dict[str, Any], run_root: Path
+) -> tuple[Path, Path | None]:
+    qmd_path = run_root / "report.qmd"
+    qmd_path.write_text(build_quarto_report(results), encoding="utf-8")
+
+    quarto_bin = shutil.which("quarto")
+    if not quarto_bin:
+        return qmd_path, None
+
+    html_path = run_root / "report.html"
+    proc = subprocess.run(
+        [quarto_bin, "render", qmd_path.name, "--output", html_path.name],
+        cwd=run_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not html_path.exists():
+        return qmd_path, None
+    return qmd_path, html_path

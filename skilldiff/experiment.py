@@ -8,7 +8,7 @@ from typing import Any
 
 from skilldiff.config import ExperimentConfig, TaskConfig
 from skilldiff.grader import Grader
-from skilldiff.reporter import calculate_metrics
+from skilldiff.reporter import calculate_metrics, create_quarto_report
 from skilldiff.runner import AgentRunner
 from skilldiff.workspace import Workspace
 
@@ -164,10 +164,23 @@ class ExperimentRunner:
 
             c_metrics = calculate_metrics(model_control_runs)
             s_metrics = calculate_metrics(model_treatment_runs)
+            task_metrics: dict[str, dict[str, Any]] = {}
+            for task in self.tasks:
+                task_control_runs = [
+                    run for run in model_control_runs if run["task_id"] == task.id
+                ]
+                task_treatment_runs = [
+                    run for run in model_treatment_runs if run["task_id"] == task.id
+                ]
+                task_metrics[task.id] = {
+                    "control": calculate_metrics(task_control_runs),
+                    "skill": calculate_metrics(task_treatment_runs),
+                }
             results_by_model[model] = {
                 "control": c_metrics,
                 "skill": s_metrics,
                 "runs_count": len(model_control_runs),
+                "by_task": task_metrics,
             }
 
         overall_control = calculate_metrics(all_control_runs)
@@ -185,6 +198,12 @@ class ExperimentRunner:
                 "control": overall_control,
                 "skill": overall_skill,
             },
+        }
+
+        qmd_path, html_path = create_quarto_report(full_results, run_root)
+        full_results["report"] = {
+            "qmd": str(qmd_path),
+            "html": str(html_path) if html_path else None,
         }
 
         with open(run_root / "results.json", "w", encoding="utf-8") as f:

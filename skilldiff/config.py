@@ -11,6 +11,8 @@ class ClaudeConfig:
     effort: Optional[str] = "high"
     max_turns: Optional[int] = 30
     max_budget_usd: Optional[float] = 2.0
+    permission_mode: Optional[str] = "acceptEdits"
+    allowed_tools: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -117,6 +119,8 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         effort=claude_data.get("effort", "high"),
         max_turns=claude_data.get("max_turns", 30),
         max_budget_usd=float(budget_val) if budget_val is not None else 2.0,
+        permission_mode=claude_data.get("permission_mode", "acceptEdits"),
+        allowed_tools=[str(tool) for tool in claude_data.get("allowed_tools", [])],
     )
 
     exp_config = ExperimentConfig(

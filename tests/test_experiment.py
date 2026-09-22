@@ -43,10 +43,12 @@ def test_experiment_runner_end_to_end(tmp_path: Path, monkeypatch):
     assert results["name"] == "test-run"
     assert results["runs_per_arm"] == 2
     assert "haiku" in results["by_model"]
+    assert results["by_model"]["haiku"]["by_task"]["t1"]["control"]["total_count"] == 2
 
     run_dir = Path(results["run_dir"])
     assert (run_dir / "experiment.json").exists()
     assert (run_dir / "results.json").exists()
+    assert (run_dir / "report.qmd").exists()
     assert (run_dir / "haiku" / "t1" / "control" / "001" / "run.json").exists()
     assert (run_dir / "haiku" / "t1" / "control" / "001" / "diff.patch").exists()
     assert (run_dir / "haiku" / "t1" / "treatment" / "001" / "run.json").exists()
