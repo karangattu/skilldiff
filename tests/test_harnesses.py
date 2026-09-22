@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -14,7 +14,7 @@ from skilldiff.config import (
     load_experiment,
 )
 from skilldiff.experiment import ExperimentRunner
-from skilldiff.runner import AgentRunner
+from skilldiff.runner import AgentRunner, ExecResult
 from skilldiff.workspace import Workspace
 
 
@@ -210,12 +210,10 @@ def test_agent_runner_dispatches_codex(tmp_path: Path):
         '"usage": {"input_tokens": 120, "output_tokens": 45}}\n'
     )
 
-    with patch("subprocess.run") as mock_subproc:
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.stdout = mock_stdout
-        mock_proc.stderr = ""
-        mock_subproc.return_value = mock_proc
+    with patch.object(AgentRunner, "_exec") as mock_subproc:
+        mock_subproc.return_value = ExecResult(
+            stdout=mock_stdout, stderr="", exit_code=0, duration=1.0
+        )
 
         res = runner.run(
             prompt="Do task",
@@ -249,12 +247,10 @@ def test_agent_runner_dispatches_opencode(tmp_path: Path):
         '{"type": "message", "part": {"text": "Updated code", "tokens": {"output": 35}}}\n'
     )
 
-    with patch("subprocess.run") as mock_subproc:
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.stdout = mock_stdout
-        mock_proc.stderr = ""
-        mock_subproc.return_value = mock_proc
+    with patch.object(AgentRunner, "_exec") as mock_subproc:
+        mock_subproc.return_value = ExecResult(
+            stdout=mock_stdout, stderr="", exit_code=0, duration=1.0
+        )
 
         res = runner.run(
             prompt="Refactor code",
@@ -293,12 +289,10 @@ def test_agent_runner_dispatches_antigravity(tmp_path: Path):
         }
     )
 
-    with patch("subprocess.run") as mock_subproc:
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.stdout = mock_stdout
-        mock_proc.stderr = ""
-        mock_subproc.return_value = mock_proc
+    with patch.object(AgentRunner, "_exec") as mock_subproc:
+        mock_subproc.return_value = ExecResult(
+            stdout=mock_stdout, stderr="", exit_code=0, duration=1.0
+        )
 
         res = runner.run(
             prompt="Plan task",
@@ -366,12 +360,13 @@ def test_opencode_go_subscription_routing(tmp_path: Path):
     runner = AgentRunner(opencode_bin="opencode-mock")
     cfg_go = OpenCodeConfig(service="go")
 
-    with patch("subprocess.run") as mock_subproc:
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.stdout = '{"type": "message", "part": {"text": "ok"}}\n'
-        mock_proc.stderr = ""
-        mock_subproc.return_value = mock_proc
+    with patch.object(AgentRunner, "_exec") as mock_subproc:
+        mock_subproc.return_value = ExecResult(
+            stdout='{"type": "message", "part": {"text": "ok"}}\n',
+            stderr="",
+            exit_code=0,
+            duration=1.0,
+        )
 
         runner.run(
             prompt="Test",
@@ -405,12 +400,13 @@ def test_opencode_go_subscription_routing(tmp_path: Path):
         assert call_args[model_idx] == "anthropic/claude-3-5-sonnet"
 
     cfg_zen = OpenCodeConfig(service="zen", provider="opencode")
-    with patch("subprocess.run") as mock_subproc:
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.stdout = '{"type": "message", "part": {"text": "ok"}}\n'
-        mock_proc.stderr = ""
-        mock_subproc.return_value = mock_proc
+    with patch.object(AgentRunner, "_exec") as mock_subproc:
+        mock_subproc.return_value = ExecResult(
+            stdout='{"type": "message", "part": {"text": "ok"}}\n',
+            stderr="",
+            exit_code=0,
+            duration=1.0,
+        )
 
         runner.run(
             prompt="Test",
