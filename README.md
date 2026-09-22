@@ -38,7 +38,14 @@ claude:
 
 The budget applies to each Claude invocation. One model, one task, and three repetitions produce six invocations.
 
-Subscription authentication is the default. Run `claude auth login` once before the experiment. In subscription mode, `skilldiff` removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from each Claude subprocess so an exported API credential cannot silently take precedence over your Claude Code subscription.
+Subscription authentication is the default. Sign in to Claude Code once before the first experiment. Unsetting API credentials for these commands ensures Claude checks and creates the subscription login instead of selecting API-key authentication:
+
+```bash
+env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN claude auth login
+env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN claude auth status
+```
+
+Confirm that the status reports `"loggedIn": true`. In subscription mode, `skilldiff` removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from each Claude subprocess so an exported API credential cannot silently take precedence over your Claude Code subscription.
 
 To bill an experiment through the Anthropic API instead, set `auth: api_key` and export `ANTHROPIC_API_KEY` before running `skilldiff`:
 
