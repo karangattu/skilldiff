@@ -10,6 +10,10 @@ runs without the skill and the **skill** arm runs with it. Then skilldiff grades
 and reports the paired difference in score, cost, time, tokens, and skill adoption.
 Your job: design a fair experiment, run it, and explain the result honestly.
 
+If the user invoked this skill with arguments (for example `/skilldiff ./skills/my-skill`
+or `$skilldiff ./skills/my-skill`), treat the first path as the skill under test. Treat
+any other words as extra instructions, such as the models or harness to use.
+
 ## 1. Install and locate
 
 ```bash
@@ -78,9 +82,22 @@ the skill arm load the skill? Did the grader score what you expected?
 
 **Cost:** each run starts `models × tasks × runs × 2` agent sessions. `check` prints
 this count and, for Claude, the maximum spend. **Confirm with the user before you run
-more than a smoke test.** A long run can take longer than your shell tool's timeout.
-In that case, run it in the background and poll `skilldiff results`. You can also give
-the user the command to run.
+more than a smoke test.**
+
+**Running from inside an agent:** skilldiff starts separate, non-interactive agent
+sessions (`claude -p`, `codex exec`, and so on). They need network access and a
+signed-in CLI. Keep these points in mind:
+
+- A full run usually takes longer than your shell tool's timeout. Start it in the
+  background, redirect its output to a log file, and poll the log or
+  `skilldiff results`.
+- If your sandbox blocks network access or starting other agent CLIs, the sessions
+  fail with auth or connection errors. The report lists them as errors. Don't retry
+  in a loop. Give the user the exact `skilldiff run ...` command to run in their own
+  terminal, then read the results with `skilldiff results`.
+- If `check` reports that the harness CLI is missing, or a smoke run fails with "Not
+  logged in", ask the user to sign in (for example `claude auth login`). Never ask for
+  or handle their credentials yourself.
 
 ## 5. Full run and interpretation
 

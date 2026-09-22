@@ -38,24 +38,81 @@ Each run writes `report.html` (self-contained), `report.md` (renders on GitHub, 
 can paste it into a PR), `report.qmd` (for Quarto), and `results.json`. It also saves the
 transcript and diff for every session.
 
-## Let your agent do it
+## Use it from your agent
 
-skilldiff ships as an agent skill. The skill teaches your coding agent to design fair
-tasks, write graders, run the experiment, and interpret the result.
+skilldiff ships as an agent skill. You can ask your coding agent to test a skill: it
+designs fair tasks, writes graders, runs the experiment, and explains the result. The
+agent installs the `skilldiff` CLI itself if it's missing.
 
-**Claude Code** (plugin):
+### 1. Install the skill
 
-```text
-/plugin marketplace add karangattu/skilldiff
-/plugin install skilldiff@skilldiff
+| Agent | Install | Invoke |
+|---|---|---|
+| Claude Code | `/plugin marketplace add karangattu/skilldiff`, then `/plugin install skilldiff@skilldiff` | `/skilldiff:skilldiff <path>` |
+| Codex | Copy to `~/.agents/skills/skilldiff` (all repos) or `.agents/skills/skilldiff` (one repo) | `$skilldiff <path>`, or pick it from `/skills` |
+| OpenCode | Copy to `~/.config/opencode/skills/skilldiff` (it also reads `~/.agents/skills` and `~/.claude/skills`) | Ask for it by name |
+| Gemini CLI | Copy to `~/.gemini/skills/skilldiff` or `~/.agents/skills/skilldiff` | Ask for it by name. Check with `/skills list` |
+
+To copy the skill once for every agent that reads `~/.agents/skills`:
+
+```bash
+git clone --depth 1 https://github.com/karangattu/skilldiff /tmp/skilldiff
+mkdir -p ~/.agents/skills && cp -R /tmp/skilldiff/skills/skilldiff ~/.agents/skills/
 ```
 
-Then ask: *"Use skilldiff to test whether my `shiny-docs` skill helps."*
+For Claude Code without the plugin, copy the folder to `~/.claude/skills/skilldiff`
+instead and invoke it with `/skilldiff <path>`. You can also run
+`npx skills add karangattu/skilldiff` to install it for several agents.
 
-**Codex, OpenCode, Gemini, and other agents:** copy
-[`skills/skilldiff`](skills/skilldiff/SKILL.md) into the agent's skills directory
-(`~/.codex/skills/`, `~/.agents/skills/`, `.claude/skills/`, …), or use
-`npx skills add karangattu/skilldiff`.
+### 2. Ask for an evaluation
+
+Invoke the skill with the path to the skill you want to test, then add instructions in
+plain language:
+
+```text
+/skilldiff:skilldiff ~/code/py-shiny/.claude/skills/shiny-docs
+Test whether this skill helps sonnet and opus write current Shiny APIs.
+```
+
+```text
+$skilldiff ./skills
+Evaluate every skill this package ships, using the codex harness.
+```
+
+Prompts without a slash command work too:
+
+- *"Use skilldiff to check whether my `changelog-style` skill changes anything."*
+- *"Run the skilldiff experiment in `./shiny-eval` again with 5 runs and summarize the report."*
+- *"Read the latest skilldiff results and tell me whether the skill is worth its token cost."*
+
+The agent you talk to and the harness you test can differ. For example, you can ask
+Claude Code to set up an experiment that runs Codex sessions.
+
+### 3. What the agent does
+
+1. Reads the skill to learn what it claims to improve.
+2. Runs `skilldiff init --skill <path>` in a separate folder, outside the skill's own
+   repository.
+3. Writes 2–5 tasks, small fixtures, and graders that accept every valid solution.
+4. Runs `skilldiff check` until it's clean, then a smoke test with `--runs 1`.
+5. **Asks you before the full run**, and shows the session count and maximum spend.
+6. Summarizes the report: the verdict with its confidence interval, skill adoption,
+   efficiency, and warnings.
+
+### Requirements when an agent runs skilldiff
+
+- **Shell access.** The agent must be allowed to run `skilldiff`. In Claude Code you can
+  allow it with the permission rule `Bash(skilldiff *)`.
+- **A signed-in agent CLI.** skilldiff starts separate `claude -p`, `codex exec`, and
+  similar sessions, which use your normal login. Sign in once in a terminal, for
+  example with `claude auth login`. When skilldiff runs inside Claude Code, it removes
+  the parent session's environment variables, so each run is independent.
+- **Network access.** If the agent's sandbox blocks network access or starting other
+  CLIs, the sessions fail and the report lists them as errors. In that case the agent
+  gives you the `skilldiff run` command to run in your own terminal, and reads the
+  results afterwards.
+- **Time.** A full run can take longer than the agent's shell timeout, so the agent
+  runs it in the background and checks progress with `skilldiff results`.
 
 ## How it keeps the comparison fair
 
