@@ -322,7 +322,16 @@ class AgentRunner:
         opencode_cfg: OpenCodeConfig,
     ) -> RunResult:
         bin_path = opencode_cfg.bin_path or self.opencode_bin
-        cmd = [bin_path, "run", "--format", "json", "-m", model]
+        target_model = model
+        if opencode_cfg.service == "go" or opencode_cfg.provider == "opencode-go":
+            if target_model.startswith("opencode/"):
+                target_model = f"opencode-go/{target_model[len('opencode/'):]}"
+            elif "/" not in target_model:
+                target_model = f"opencode-go/{target_model}"
+        elif "/" not in target_model and opencode_cfg.provider:
+            target_model = f"{opencode_cfg.provider}/{target_model}"
+
+        cmd = [bin_path, "run", "--format", "json", "-m", target_model]
         if opencode_cfg.dangerously_skip_permissions:
             cmd.append("--dangerously-skip-permissions")
         if opencode_cfg.variant:

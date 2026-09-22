@@ -354,3 +354,82 @@ def test_experiment_runner_end_to_end_codex_mock(tmp_path: Path, monkeypatch):
     assert results["name"] == "codex-experiment"
     assert "o3-mini" in results["by_model"]
     assert results["by_model"]["o3-mini"]["runs_count"] == 1
+
+
+def test_opencode_go_subscription_routing(tmp_path: Path):
+    runner = AgentRunner(opencode_bin="opencode-mock")
+    cfg_go = OpenCodeConfig(service="go")
+
+    with patch("subprocess.run") as mock_subproc:
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = '{"type": "message", "part": {"text": "ok"}}\n'
+        mock_proc.stderr = ""
+        mock_subproc.return_value = mock_proc
+
+        runner.run(
+            prompt="Test",
+            cwd=tmp_path,
+            model="deepseek-v4-pro",
+            config=cfg_go,
+        )
+        call_args = mock_subproc.call_args[0][0]
+        assert "-m" in call_args
+        model_idx = call_args.index("-m") + 1
+        assert call_args[model_idx] == "opencode-go/deepseek-v4-pro"
+
+        runner.run(
+            prompt="Test",
+            cwd=tmp_path,
+            model="opencode/deepseek-v4-pro",
+            config=cfg_go,
+        )
+        call_args = mock_subproc.call_args[0][0]
+        model_idx = call_args.index("-m") + 1
+        assert call_args[model_idx] == "opencode-go/deepseek-v4-pro"
+
+        runner.run(
+            prompt="Test",
+            cwd=tmp_path,
+            model="anthropic/claude-3-5-sonnet",
+            config=cfg_go,
+        )
+        call_args = mock_subproc.call_args[0][0]
+        model_idx = call_args.index("-m") + 1
+        assert call_args[model_idx] == "anthropic/claude-3-5-sonnet"
+
+    cfg_zen = OpenCodeConfig(service="zen", provider="opencode")
+    with patch("subprocess.run") as mock_subproc:
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = '{"type": "message", "part": {"text": "ok"}}\n'
+        mock_proc.stderr = ""
+        mock_subproc.return_value = mock_proc
+
+        runner.run(
+            prompt="Test",
+            cwd=tmp_path,
+            model="claude-sonnet-5",
+            config=cfg_zen,
+        )
+        call_args = mock_subproc.call_args[0][0]
+        model_idx = call_args.index("-m") + 1
+        assert call_args[model_idx] == "opencode/claude-sonnet-5"
+
+
+def test_load_experiment_opencode_service_validation(mock_exp_dir: Path):
+    exp_file_invalid = mock_exp_dir / "exp_opencode_invalid.yaml"
+    exp_file_invalid.write_text(
+        """name: test-invalid-opencode
+skill: ./skills/sample-skill
+models:
+  - deepseek-v4-pro
+tasks:
+  - ./tasks/*.yaml
+opencode:
+  service: invalid-tier
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="opencode.service must be 'go'"):
+        load_experiment(exp_file_invalid)

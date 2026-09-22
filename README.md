@@ -46,10 +46,14 @@ claude:
 #   auth: stored
 #   sandbox: workspace-write
 
-# OpenCode example:
+# OpenCode example (OpenCode Go subscription):
 # harness: opencode
 # opencode:
+#   service: go
 #   dangerously_skip_permissions: true
+# models:
+#   - deepseek-v4-pro
+#   - qwen3.8-max
 
 # Antigravity example:
 # harness: antigravity
@@ -79,6 +83,8 @@ claude:
 
 `acceptEdits` lets unattended Claude sessions edit the disposable control and treatment workspaces. Commands that a skill needs must be explicitly allow-listed with Claude Code tool patterns. For example, a skill that calls `shiny docs` should use `Bash(shiny docs *)`. The same permissions apply to both arms. Avoid `bypassPermissions` unless every task, fixture, and command is trusted, because shell commands can access files outside the temporary workspace.
 
+For OpenCode, `service: go` is the default setting. It routes models to the `opencode-go/` namespace so runs use your flat-rate OpenCode Go subscription instead of OpenCode Zen pay-as-you-go credits. Run `opencode providers login` and select OpenCode Go to authenticate.
+
 Replace `tasks/review-auth.yaml` with a task for your skill:
 
 ```yaml
@@ -102,7 +108,7 @@ Set `models` in `skilldiff.yaml` to the model identifiers for your selected harn
 
 - **Claude**: `claude-sonnet-5`, `claude-opus-5`
 - **Codex**: `o3-mini`, `gpt-4o`
-- **OpenCode**: `anthropic/claude-3-5-sonnet`, `openai/gpt-4o`
+- **OpenCode**: `deepseek-v4-pro`, `qwen3.8-max` (or `opencode-go/deepseek-v4-pro`)
 - **Antigravity**: `gemini-2.5-pro`, `gemini-2.5-flash`
 
 Each model gets its own control and treatment comparison. To test only one model, keep one entry.

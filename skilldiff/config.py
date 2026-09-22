@@ -28,6 +28,8 @@ class CodexConfig:
 
 @dataclass
 class OpenCodeConfig:
+    service: str = "go"
+    provider: str = "opencode-go"
     dangerously_skip_permissions: bool = True
     variant: Optional[str] = None
     bin_path: Optional[str] = None
@@ -193,7 +195,16 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     )
 
     opencode_data = data.get("opencode", {})
+    service = str(
+        opencode_data.get("service", opencode_data.get("subscription", "go"))
+    ).lower().strip()
+    if service not in {"go", "zen"}:
+        raise ValueError("opencode.service must be 'go' (subscription) or 'zen' (pay-as-you-go)")
+    default_provider = "opencode-go" if service == "go" else "opencode"
+    provider = str(opencode_data.get("provider", default_provider)).strip()
     opencode_cfg = OpenCodeConfig(
+        service=service,
+        provider=provider,
         dangerously_skip_permissions=bool(
             opencode_data.get("dangerously_skip_permissions", True)
         ),
