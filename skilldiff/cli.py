@@ -1,90 +1,376 @@
 import argparse
 import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
-from skilldiff.config import load_experiment
-from skilldiff.experiment import ExperimentRunner
-from skilldiff.reporter import render_report_table
+from skilldiff import __version__
+from skilldiff.config import find_skill_dirs, load_experiment, read_skill_frontmatter
+from skilldiff.experiment import ExperimentRunner, find_user_level_installs
+from skilldiff.grader import Grader
+from skilldiff.reporter import create_reports, render_report_table
+from skilldiff.runner import AgentRunner
+from skilldiff.workspace import Workspace
 
-STARTER_SKILLDIFF_YAML = """name: code-review-skill
+DEFAULT_MODELS = {
+    "claude": "sonnet",
+    "codex": "gpt-5-codex",
+    "opencode": "deepseek-v4-pro",
+    "antigravity": "gemini-3.8-flash-medium",
+}
 
-skill: ./skills/code-review
+HARNESS_BLOCKS = {
+    "claude": """claude:
+  auth: subscription        # or api_key (uses ANTHROPIC_API_KEY)
+  effort: high
+  max_turns: 30
+  max_budget_usd: 2.00      # per session
+  permission_mode: acceptEdits
+  isolate: true             # ignore user-level skills, plugins, and CLAUDE.md
+  allowed_tools: []         # e.g. ["Bash(my-cli *)"] for commands the skill runs
+""",
+    "codex": """codex:
+  auth: stored
+  sandbox: workspace-write
+""",
+    "opencode": """opencode:
+  service: go
+  dangerously_skip_permissions: true
+""",
+    "antigravity": """antigravity:
+  dangerously_skip_permissions: true
+""",
+}
 
-harness: claude
+EXPERIMENT_YAML = """name: {name}
+
+# A skill directory (containing SKILL.md) or a folder of skills, e.g. a package's skills/.
+skill: {skill}
+
+harness: {harness}
 
 models:
-  - sonnet
+  - {model}
 
 tasks:
   - ./tasks/*.yaml
 
-runs: 3
+runs: 3                     # repetitions per arm; use 5+ before drawing conclusions
+timeout_seconds: 1800       # per agent session
+parallel: 1                 # pairs to run at once
 
-claude:
-  auth: subscription
-  effort: high
-  max_turns: 30
-  max_budget_usd: 2.00
-  permission_mode: acceptEdits
-  allowed_tools: []
+{harness_block}"""
+
+DEMO_SKILL_MD = (
+    "---\n"
+    "name: changelog-style\n"
+    "description: House style for CHANGELOG.md entries. Use whenever you add, edit, "
+    "or review a changelog entry in this repository.\n"
+    "---\n"
+) + """
+
+# Changelog style
+
+Every entry in `CHANGELOG.md` goes under the `## Unreleased` heading and uses exactly this
+format:
+
+```
+- [TYPE] Summary in sentence case (#ISSUE)
+```
+
+- `TYPE` is one of `FEAT`, `FIX`, `DOCS`, or `CHORE`, in capital letters.
+- The summary starts with a verb in the past tense ("Fixed", "Added").
+- The issue number is in parentheses at the end, with a `#`.
+- There is no trailing period.
+
+Example: `- [FIX] Fixed crash when parsing empty input (#42)`
 """
 
-STARTER_TASK_YAML = """id: review-auth
+DEMO_TASK_YAML = """id: changelog-entry
+
+# The fixture is copied into a fresh workspace for every run.
+repo: ../fixtures/changelog
 
 prompt: |
-  Review this authentication change.
-  Report defects that can affect security or reliability.
-
-repo: ./fixtures/auth-service
+  We just fixed issue 42: the parser crashed on empty input. Add an entry for this
+  fix to CHANGELOG.md. Do not change any other files.
 
 grader:
   type: command
-  command: python grade.py
+  # Graders run inside the workspace. Keep them outside the fixture so the agent
+  # cannot see or edit them; $SKILLDIFF_TASK_DIR is the folder containing this file.
+  command: python3 "$SKILLDIFF_TASK_DIR/../graders/changelog_entry.py"
 """
 
-STARTER_SKILL_MD = """---
-name: code-review
-description: Code review skill for identifying defects.
----
+DEMO_CHANGELOG = """# Changelog
 
-# Code Review Skill
-Inspect code for security, correctness, and performance defects.
+## Unreleased
 """
+
+DEMO_GRADER = '''"""Grade the changelog entry. Prints {"score", "success", "checks"} as JSON."""
+import json
+import re
+from pathlib import Path
+
+text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+unreleased = text.split("## Unreleased", 1)[-1]
+entries = [line.strip() for line in unreleased.splitlines() if line.strip().startswith("-")]
+entry = entries[0] if entries else ""
+
+checks = [
+    bool(entry),
+    bool(re.match(r"^- \\[(FEAT|FIX|DOCS|CHORE)\\] ", entry)),
+    entry.startswith("- [FIX]"),
+    bool(re.search(r"\\(#42\\)$", entry)),
+    bool(entry) and not entry.endswith("."),
+]
+score = sum(checks) / len(checks)
+print(json.dumps({"score": score, "success": all(checks), "checks": checks}))
+'''
+
+CUSTOM_TASK_YAML = """id: my-first-task
+
+# TODO: a small project where your skill should make a difference.
+# Relative paths resolve from this file. Remove `repo` to start from an empty folder.
+repo: ../fixtures/my-project
+
+prompt: |
+  TODO: describe a realistic request that your skill is meant to help with.
+  Don't mention the skill: the point is to see whether the agent uses it on its own.
+
+grader:
+  type: command
+  # Exit 0 = pass, or print JSON such as {"score": 0.75, "success": false}.
+  command: python3 "$SKILLDIFF_TASK_DIR/../graders/my_first_task.py"
+"""
+
+CUSTOM_GRADER = '''"""TODO: check the agent's work. Runs in the workspace after the agent is done.
+
+Useful environment variables: SKILLDIFF_RESPONSE_FILE (the agent's final message),
+SKILLDIFF_DIFF_FILE (a git diff of its changes), SKILLDIFF_TASK_DIR.
+"""
+import json
+
+checks = [
+    True,  # TODO: replace with real checks, e.g. run tests or inspect files
+]
+score = sum(checks) / len(checks)
+print(json.dumps({"score": score, "success": all(checks), "checks": checks}))
+'''
+
+
+def _write(path: Path, content: str, force: bool) -> bool:
+    if path.exists() and not force:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return True
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    config_file = Path("skilldiff.yaml")
-    tasks_dir = Path("tasks")
-    task_file = tasks_dir / "review-auth.yaml"
-    skill_dir = Path("skills") / "code-review"
-    skill_file = skill_dir / "SKILL.md"
+    root = Path(getattr(args, "dir", None) or ".")
+    force = bool(getattr(args, "force", False))
+    harness = getattr(args, "harness", None) or "claude"
+    skill_arg: Optional[str] = getattr(args, "skill", None)
+    config_file = root / "skilldiff.yaml"
 
-    if config_file.exists() and not args.force:
-        print("skilldiff.yaml already exists. Use --force to overwrite.", file=sys.stderr)
+    if config_file.exists() and not force:
+        print(f"{config_file} already exists. Use --force to overwrite.", file=sys.stderr)
         return 1
 
-    config_file.write_text(STARTER_SKILLDIFF_YAML, encoding="utf-8")
-    tasks_dir.mkdir(parents=True, exist_ok=True)
-    if not task_file.exists() or args.force:
-        task_file.write_text(STARTER_TASK_YAML, encoding="utf-8")
+    created: list[Path] = []
+    if skill_arg:
+        skill_path = Path(skill_arg).expanduser().resolve()
+        if not find_skill_dirs(skill_path):
+            print(f"No SKILL.md found in {skill_path} or its subdirectories.", file=sys.stderr)
+            return 1
+        skill_value = os.path.relpath(skill_path, root.resolve())
+        if not skill_value.startswith("."):
+            skill_value = f"./{skill_value}"
+        name = f"{skill_path.name}-eval"
+        files = {
+            root / "tasks" / "my-first-task.yaml": CUSTOM_TASK_YAML,
+            root / "graders" / "my_first_task.py": CUSTOM_GRADER,
+        }
+    else:
+        skill_value = "./skills/changelog-style"
+        name = "changelog-style-demo"
+        files = {
+            root / "skills" / "changelog-style" / "SKILL.md": DEMO_SKILL_MD,
+            root / "tasks" / "changelog-entry.yaml": DEMO_TASK_YAML,
+            root / "fixtures" / "changelog" / "CHANGELOG.md": DEMO_CHANGELOG,
+            root / "graders" / "changelog_entry.py": DEMO_GRADER,
+        }
 
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    if not skill_file.exists() or args.force:
-        skill_file.write_text(STARTER_SKILL_MD, encoding="utf-8")
+    config_text = EXPERIMENT_YAML.format(
+        name=name,
+        skill=skill_value,
+        harness=harness,
+        model=DEFAULT_MODELS[harness],
+        harness_block=HARNESS_BLOCKS[harness],
+    )
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(config_text, encoding="utf-8")
+    created.append(config_file)
+    for path, content in files.items():
+        if _write(path, content, force):
+            created.append(path)
+    if skill_arg:
+        (root / "fixtures" / "my-project").mkdir(parents=True, exist_ok=True)
 
     print("Initialized skilldiff experiment:")
-    print("  - skilldiff.yaml")
-    print("  - tasks/review-auth.yaml")
-    print("  - skills/code-review/SKILL.md")
+    for path in created:
+        print(f"  - {path}")
+    print()
+    if skill_arg:
+        print("Next steps:")
+        print("  1. Put a small test project in fixtures/my-project/.")
+        print("  2. Fill in tasks/my-first-task.yaml and graders/my_first_task.py.")
+        print("  3. skilldiff check      # validate the setup and graders")
+        print("  4. skilldiff run --runs 1")
+    else:
+        print("This is a runnable demo: a made-up changelog convention the agent can only")
+        print("follow if it reads the skill.")
+        print("  skilldiff check")
+        print("  skilldiff run --runs 1")
     return 0
+
+
+# ----------------------------------------------------------------------------- check
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    config_path = Path(args.config)
+    ok_count = 0
+    problems = 0
+    warnings = 0
+
+    def ok(msg: str) -> None:
+        nonlocal ok_count
+        ok_count += 1
+        print(f"  ok    {msg}")
+
+    def warn(msg: str) -> None:
+        nonlocal warnings
+        warnings += 1
+        print(f"  warn  {msg}")
+
+    def fail(msg: str) -> None:
+        nonlocal problems
+        problems += 1
+        print(f"  FAIL  {msg}")
+
+    print(f"Checking {config_path}")
+    try:
+        cfg, tasks = load_experiment(config_path)
+    except Exception as exc:
+        fail(f"configuration: {exc}")
+        return 1
+    ok(f"configuration loads: {len(cfg.models)} model(s), {len(tasks)} task(s), "
+       f"{cfg.runs} run(s) per arm")
+
+    for skill_dir in cfg.skill_dirs:
+        meta = read_skill_frontmatter(skill_dir)
+        fm_name = str(meta["name"]).strip() if meta.get("name") else None
+        if not meta.get("description"):
+            warn(f"{skill_dir.name}: SKILL.md has no `description` in its frontmatter; "
+                 "agents decide whether to load a skill from its description")
+        else:
+            ok(f"skill `{fm_name or skill_dir.name}` ({skill_dir})")
+        if fm_name and fm_name != skill_dir.name:
+            warn(f"frontmatter name `{fm_name}` differs from directory `{skill_dir.name}`")
+
+    runner = AgentRunner()
+    binary = runner.binary_for(cfg.harness, cfg)
+    resolved = shutil.which(binary) or (binary if Path(binary).exists() else None)
+    if not resolved:
+        fail(f"{cfg.harness} CLI not found (`{binary}`); install it or set bin_path")
+    else:
+        version = ""
+        try:
+            proc = subprocess.run(
+                [resolved, "--version"], capture_output=True, text=True, timeout=30,
+                stdin=subprocess.DEVNULL,
+            )
+            version = next(iter((proc.stdout or proc.stderr).strip().splitlines()), "")
+        except Exception:
+            pass
+        ok(f"{cfg.harness} CLI: {resolved} {version}".rstrip())
+
+    if cfg.harness == "claude":
+        if cfg.claude.auth == "subscription" and os.environ.get("ANTHROPIC_API_KEY"):
+            ok("ANTHROPIC_API_KEY is set but will be removed; runs use your subscription")
+        if cfg.claude.auth == "api_key" and not os.environ.get("ANTHROPIC_API_KEY"):
+            fail("claude.auth is api_key but ANTHROPIC_API_KEY is not set")
+        if cfg.claude.permission_mode == "bypassPermissions":
+            warn("bypassPermissions lets agents run any command outside the workspace")
+
+    installs = find_user_level_installs(cfg.skill_names, cfg.harness)
+    if installs:
+        if cfg.harness == "claude" and cfg.claude.isolate:
+            ok("skill is installed at user level, but claude.isolate keeps it out of control")
+        else:
+            warn("skill is installed at user level, so control can load it too: "
+                 + ", ".join(installs))
+
+    for task in tasks:
+        task_dir = task.source_path.parent if task.source_path else Path(".")
+        fixture = (task_dir / task.repo).resolve() if task.repo else None
+        if fixture and not fixture.exists():
+            fail(f"task {task.id}: repo not found: {fixture}")
+            continue
+        if not (task.grader and task.grader.command):
+            warn(f"task {task.id}: no grader, so every run scores 100%")
+            continue
+        if getattr(args, "no_grade", False):
+            ok(f"task {task.id}: grader configured (not run)")
+            continue
+        with tempfile.TemporaryDirectory(prefix="skilldiff-check-") as tmp:
+            ws = Workspace(Path(tmp) / "workspace", False, cfg.skill, fixture, cfg.harness)
+            try:
+                ws.setup()
+            except Exception as exc:
+                fail(f"task {task.id}: could not build workspace: {exc}")
+                continue
+            grader = Grader(task.grader, cfg.skill_names, cfg.models[0], task_dir=task_dir)
+            grade = grader.grade_workspace(ws.root)
+        feedback = grade.feedback or ""
+        errored = any(s in feedback for s in ("Traceback", "No such file", "not found"))
+        if errored and grade.score == 0:
+            fail(f"task {task.id}: grader errored on the untouched fixture: "
+                 f"{feedback.strip().splitlines()[-1][:200]}")
+        elif grade.score >= 1.0:
+            warn(f"task {task.id}: the untouched fixture already scores 100%, so this "
+                 "task cannot show a difference")
+        else:
+            ok(f"task {task.id}: grader runs; untouched fixture scores "
+               f"{round(grade.score * 100)}%")
+
+    sessions = len(cfg.models) * len(tasks) * cfg.runs * 2
+    line = f"{sessions} agent sessions per full run"
+    if cfg.harness == "claude" and cfg.claude.max_budget_usd:
+        line += f" (at most ${sessions * cfg.claude.max_budget_usd:.2f} API-equivalent)"
+    ok(line)
+    if cfg.runs < 3:
+        warn(f"runs: {cfg.runs} is fine for a smoke test, but use 5+ for conclusions")
+
+    print()
+    print(f"{ok_count} ok, {warnings} warning(s), {problems} problem(s)")
+    return 1 if problems else 0
+
+
+# ------------------------------------------------------------------------ run/results
 
 
 def cmd_run(args: argparse.Namespace) -> int:
     config_path = Path(args.config)
     if not config_path.exists():
-        print(f"Error: configuration file '{config_path}' not found.", file=sys.stderr)
+        print(f"Error: configuration file '{config_path}' not found. "
+              "Run `skilldiff init` to create one.", file=sys.stderr)
         return 1
 
     try:
@@ -93,38 +379,66 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
 
-    if args.runs:
+    if getattr(args, "runs", None):
         exp_config.runs = int(args.runs)
+    if getattr(args, "parallel", None):
+        exp_config.parallel = int(args.parallel)
+    if getattr(args, "model", None):
+        exp_config.models = list(args.model)
+    task_filter = getattr(args, "task", None)
+    if task_filter:
+        tasks = [t for t in tasks if t.id in task_filter]
+        if not tasks:
+            print(f"No tasks match {task_filter}", file=sys.stderr)
+            return 1
 
-    runner = ExperimentRunner(exp_config, tasks)
+    quiet = bool(getattr(args, "quiet", False))
+    runner = ExperimentRunner(
+        exp_config,
+        tasks,
+        progress=None if quiet else (lambda msg: print(msg, flush=True)),
+    )
+    sessions = len(exp_config.models) * len(tasks) * exp_config.runs * 2
     print(
-        f"Running experiment '{exp_config.name}' across {len(exp_config.models)} model(s), "
-        f"{len(tasks)} task(s), {exp_config.runs} run(s) per arm..."
+        f"Running '{exp_config.name}' with {exp_config.harness}: {len(exp_config.models)} "
+        f"model(s) × {len(tasks)} task(s) × {exp_config.runs} run(s) × 2 arms = "
+        f"{sessions} sessions",
+        flush=True,
     )
     results = runner.run()
 
     print("\n" + _format_results(results))
-    report = results.get("report", {})
-    report_path = report.get("html") or report.get("qmd")
-    if report_path:
-        print(f"\nQuarto report: {report_path}")
-    return 0
+    _print_report_paths(results)
+    return 130 if results.get("interrupted") else 0
+
+
+def _latest_run_dir(runs_parent: Path) -> Optional[Path]:
+    if not runs_parent.exists():
+        return None
+    subdirs = [p for p in runs_parent.iterdir() if p.is_dir() and (p / "results.json").exists()]
+    return sorted(subdirs)[-1] if subdirs else None
+
+
+def _resolve_run_dir(args: argparse.Namespace) -> Optional[Path]:
+    if getattr(args, "run_dir", None):
+        return Path(args.run_dir)
+    config = getattr(args, "config", None)
+    candidates = []
+    if config:
+        candidates.append(Path(config).parent / "runs")
+    candidates.append(Path("runs"))
+    for parent in candidates:
+        found = _latest_run_dir(parent)
+        if found:
+            return found
+    return None
 
 
 def cmd_results(args: argparse.Namespace) -> int:
-    run_dir: Optional[Path] = None
-    if args.run_dir:
-        run_dir = Path(args.run_dir)
-    else:
-        runs_parent = Path("runs")
-        if not runs_parent.exists():
-            print("No runs directory found.", file=sys.stderr)
-            return 1
-        subdirs = [p for p in runs_parent.iterdir() if p.is_dir()]
-        if not subdirs:
-            print("No experiment runs found.", file=sys.stderr)
-            return 1
-        run_dir = sorted(subdirs)[-1]
+    run_dir = _resolve_run_dir(args)
+    if not run_dir:
+        print("No experiment runs found.", file=sys.stderr)
+        return 1
 
     results_file = run_dir / "results.json"
     if not results_file.exists():
@@ -134,16 +448,42 @@ def cmd_results(args: argparse.Namespace) -> int:
     with open(results_file, "r", encoding="utf-8") as f:
         results = json.load(f)
 
-    if args.json:
+    if getattr(args, "json", False):
         print(json.dumps(results, indent=2))
+        return 0
+    if getattr(args, "markdown", False):
+        md = run_dir / "report.md"
+        if not md.exists():
+            create_reports(results, run_dir)
+        print(md.read_text(encoding="utf-8"))
         return 0
 
     print(_format_results(results))
-    report = results.get("report", {})
-    report_path = report.get("html") or report.get("qmd")
-    if report_path:
-        print(f"\nQuarto report: {report_path}")
+    _print_report_paths(results)
     return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    run_dir = _resolve_run_dir(args)
+    if not run_dir or not (run_dir / "results.json").exists():
+        print("No experiment run with results.json found.", file=sys.stderr)
+        return 1
+    results = json.loads((run_dir / "results.json").read_text(encoding="utf-8"))
+    paths = create_reports(results, run_dir)
+    results["report"] = {k: str(v) for k, v in paths.items()}
+    (run_dir / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    _print_report_paths(results)
+    return 0
+
+
+def _print_report_paths(results: dict) -> None:
+    report = results.get("report", {}) or {}
+    if report.get("html"):
+        print(f"\nReport: {report['html']}")
+    if report.get("md"):
+        print(f"Markdown (for PRs): {report['md']}")
+    elif report.get("qmd"):
+        print(f"\nQuarto report: {report['qmd']}")
 
 
 def _format_results(results: dict) -> str:
@@ -153,72 +493,116 @@ def _format_results(results: dict) -> str:
     tasks_count = results.get("tasks_count", 0)
     runs_per_arm = results.get("runs_per_arm", 0)
 
-    output_tables: list[str] = []
-
+    sections: list[str] = []
     if len(models) <= 1:
         model_name = models[0] if models else None
         model_data = by_model.get(model_name) if model_name else None
-        overall = results.get("overall", {})
-        c_metrics = model_data["control"] if model_data else overall.get("control", {})
-        s_metrics = model_data["skill"] if model_data else overall.get("skill", {})
-        return render_report_table(
-            experiment_name=name,
-            control_metrics=c_metrics,
-            skill_metrics=s_metrics,
-            models_count=len(models),
-            tasks_count=tasks_count,
-            runs_per_arm=runs_per_arm,
+        source = model_data or results.get("overall", {})
+        sections.append(
+            render_report_table(
+                experiment_name=name,
+                control_metrics=source.get("control", {}),
+                skill_metrics=source.get("skill", {}),
+                models_count=len(models),
+                tasks_count=tasks_count,
+                runs_per_arm=runs_per_arm,
+                paired=source.get("paired"),
+            )
         )
+    else:
+        for model_name in models:
+            model_data = by_model.get(model_name)
+            if not model_data:
+                continue
+            sections.append(
+                render_report_table(
+                    experiment_name=name,
+                    control_metrics=model_data["control"],
+                    skill_metrics=model_data["skill"],
+                    models_count=1,
+                    tasks_count=tasks_count,
+                    runs_per_arm=runs_per_arm,
+                    model_name=model_name,
+                    paired=model_data.get("paired"),
+                )
+            )
 
-    for model_name in models:
-        model_data = by_model.get(model_name)
-        if not model_data:
-            continue
-        c_metrics = model_data["control"]
-        s_metrics = model_data["skill"]
-        tbl = render_report_table(
-            experiment_name=name,
-            control_metrics=c_metrics,
-            skill_metrics=s_metrics,
-            models_count=1,
-            tasks_count=tasks_count,
-            runs_per_arm=runs_per_arm,
-            model_name=model_name,
-        )
-        output_tables.append(tbl)
-
-    return "\n\n".join(output_tables)
+    warnings = results.get("warnings") or []
+    if warnings:
+        sections.append("Warnings:\n" + "\n".join(f"  - {w}" for w in warnings))
+    return "\n\n".join(sections)
 
 
-def main() -> None:
+# ------------------------------------------------------------------------------ main
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="skilldiff", description="Measure what an Agent Skill changes."
+        prog="skilldiff",
+        description="Measure what an Agent Skill changes: run the same tasks with and "
+        "without the skill and compare quality, cost, and time.",
     )
+    parser.add_argument("--version", action="version", version=f"skilldiff {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init_parser = subparsers.add_parser(
-        "init", help="Create an experiment file and task directory"
+        "init", help="Create an experiment (a runnable demo, or a template for your skill)"
     )
+    init_parser.add_argument("--skill", help="Path to your skill (or a folder of skills)")
+    init_parser.add_argument(
+        "--harness", choices=sorted(HARNESS_BLOCKS), default="claude", help="Agent CLI to use"
+    )
+    init_parser.add_argument("--dir", default=".", help="Where to create the experiment")
     init_parser.add_argument("--force", "-f", action="store_true", help="Overwrite existing files")
     init_parser.set_defaults(func=cmd_init)
+
+    check_parser = subparsers.add_parser(
+        "check", help="Validate the config, agent CLI, skill, and graders without running agents"
+    )
+    check_parser.add_argument("--config", "-c", default="skilldiff.yaml")
+    check_parser.add_argument(
+        "--no-grade", action="store_true", help="Skip running graders on the untouched fixtures"
+    )
+    check_parser.set_defaults(func=cmd_check)
 
     run_parser = subparsers.add_parser("run", help="Run both arms of the experiment")
     run_parser.add_argument(
         "--config", "-c", default="skilldiff.yaml", help="Path to experiment config file"
     )
     run_parser.add_argument("--runs", "-r", type=int, help="Override number of runs per arm")
+    run_parser.add_argument("--parallel", "-j", type=int, help="Pairs to run concurrently")
+    run_parser.add_argument(
+        "--model", "-m", action="append", help="Only run this model (repeatable)"
+    )
+    run_parser.add_argument(
+        "--task", "-t", action="append", help="Only run this task id (repeatable)"
+    )
+    run_parser.add_argument("--quiet", "-q", action="store_true", help="Hide per-run progress")
     run_parser.set_defaults(func=cmd_run)
 
     results_parser = subparsers.add_parser(
-        "results", help="Read the difference between control and skill"
+        "results", help="Show the latest (or a specific) run's results"
     )
     results_parser.add_argument("run_dir", nargs="?", help="Path to specific run directory")
-    results_parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+    results_parser.add_argument("--config", "-c", help="Look for runs next to this config")
+    results_parser.add_argument("--json", action="store_true", help="Output results as JSON")
+    results_parser.add_argument(
+        "--markdown", action="store_true", help="Print the Markdown report (for PRs)"
+    )
     results_parser.set_defaults(func=cmd_results)
 
-    args = parser.parse_args()
-    code = args.func(args)
-    sys.exit(code)
+    report_parser = subparsers.add_parser(
+        "report", help="Regenerate the HTML/Markdown/Quarto reports for a run"
+    )
+    report_parser.add_argument("run_dir", nargs="?", help="Path to specific run directory")
+    report_parser.add_argument("--config", "-c", help="Look for runs next to this config")
+    report_parser.set_defaults(func=cmd_report)
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    sys.exit(args.func(args))
 
 
 if __name__ == "__main__":
