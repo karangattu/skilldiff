@@ -1,9 +1,6 @@
-# skilldiff
+# SkillDiff
 
-Measure whether your Claude Code skill improves results.
-
-Each task runs twice: without your skill (**control**) and with your skill (**treatment**).
-Both runs use the same model, prompt, effort, and input files.
+![SkillDiff logo](assets/skill_diff_logo.png)
 
 ## Install
 
