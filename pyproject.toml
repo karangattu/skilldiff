@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Measure what an Agent Skill changes."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Karan" }]
 dependencies = [
     "pyyaml>=6.0",
@@ -30,6 +30,10 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["skilldiff*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
