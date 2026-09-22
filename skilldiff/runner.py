@@ -47,12 +47,14 @@ class AgentRunner:
         self.opencode_bin = (
             opencode_bin or os.environ.get("OPENCODE_BIN") or shutil.which("opencode") or "opencode"
         )
+        gemini_agy = Path.home() / ".gemini" / "bin" / "agy"
         self.antigravity_bin = (
             antigravity_bin
             or os.environ.get("AGY_BIN")
             or os.environ.get("ANTIGRAVITY_BIN")
             or shutil.which("agy")
             or shutil.which("antigravity")
+            or (str(gemini_agy) if gemini_agy.exists() else None)
             or "agy"
         )
 
@@ -439,9 +441,15 @@ class AgentRunner:
         antigravity_cfg: AntigravityConfig,
     ) -> RunResult:
         bin_path = antigravity_cfg.bin_path or self.antigravity_bin
-        cmd = [bin_path, "-p", prompt]
-        if model:
-            cmd.extend(["--model", model])
+        cmd = [bin_path, "-p", prompt, "--output-format", "json", "--add-dir", str(cwd)]
+        target_model = model
+        if target_model in {"gemini-3.8", "gemini 3.8", "gemini-3-8"}:
+            target_model = "gemini-3.8-flash-medium"
+        elif target_model in {"gemini-3.7", "gemini 3.7", "gemini-3-7"}:
+            target_model = "gemini-3.7-flash-medium"
+
+        if target_model:
+            cmd.extend(["--model", target_model])
         if antigravity_cfg.dangerously_skip_permissions:
             cmd.append("--dangerously-skip-permissions")
         if antigravity_cfg.extra_args:
@@ -473,12 +481,19 @@ class AgentRunner:
             try:
                 data = json.loads(stdout)
                 if isinstance(data, dict):
-                    response = data.get("result") or data.get("response") or stdout
+                    response = data.get("response") or data.get("result") or stdout
                     cost = float(data.get("total_cost_usd") or data.get("cost") or 0.0)
+                    if "duration_seconds" in data:
+                        try:
+                            duration = float(data["duration_seconds"])
+                        except (ValueError, TypeError):
+                            pass
                     usage = data.get("usage", {})
                     input_tokens = int(usage.get("input_tokens", 0))
                     output_tokens = int(usage.get("output_tokens", 0))
-                    tool_calls = int(data.get("tool_calls_count", 0))
+                    tool_calls = int(data.get("tool_calls_count") or data.get("num_turns", 0))
+                    if data.get("status") and data.get("status") != "SUCCESS" and exit_code == 0:
+                        exit_code = 1
             except (json.JSONDecodeError, ValueError, TypeError):
                 pass
 

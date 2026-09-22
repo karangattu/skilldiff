@@ -317,6 +317,10 @@ def test_agent_runner_dispatches_antigravity(tmp_path: Path):
         call_args = mock_subproc.call_args[0][0]
         assert "agy-mock" in call_args
         assert "-p" in call_args
+        assert "--output-format" in call_args
+        assert "json" in call_args
+        assert "--add-dir" in call_args
+        assert str(tmp_path) in call_args
         assert "--dangerously-skip-permissions" in call_args
         assert "--model" in call_args
 
