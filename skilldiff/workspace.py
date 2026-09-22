@@ -3,6 +3,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from skilldiff.config import find_skill_dirs
+
+SKILL_ROOTS = (".claude", ".codex", ".opencode", ".agents", ".agent", ".gemini")
+
 IGNORED_DIFF_PREFIXES = (
     ".claude/",
     ".codex/",
@@ -36,6 +40,9 @@ class Workspace:
         self.skill_dir = skill_dir.resolve()
         self.fixture_repo = fixture_repo.resolve() if fixture_repo else None
         self.harness = harness
+        self.skill_dirs = find_skill_dirs(self.skill_dir) or [self.skill_dir]
+        # Copies of the skill that shipped with the fixture and were removed from control.
+        self.removed_from_control: list[str] = []
 
     def _get_skill_target_dirs(self, skill_name: str) -> list[Path]:
         if self.harness == "codex":
@@ -76,17 +83,18 @@ class Workspace:
             )
 
         if self.is_treatment:
-            skill_name = self.skill_dir.name
-            target_dirs = self._get_skill_target_dirs(skill_name)
-            for target_dir in target_dirs:
-                target_dir.mkdir(parents=True, exist_ok=True)
-                for item in os.listdir(self.skill_dir):
-                    src = self.skill_dir / item
-                    dst = target_dir / item
-                    if src.is_dir():
-                        shutil.copytree(src, dst, symlinks=True)
-                    else:
-                        shutil.copy2(src, dst)
+            for skill_dir in self.skill_dirs:
+                for target_dir in self._get_skill_target_dirs(skill_dir.name):
+                    if target_dir.exists():
+                        shutil.rmtree(target_dir)
+                    shutil.copytree(skill_dir, target_dir, symlinks=True)
+        else:
+            for skill_dir in self.skill_dirs:
+                for root in SKILL_ROOTS:
+                    existing = self.root / root / "skills" / skill_dir.name
+                    if existing.exists():
+                        shutil.rmtree(existing)
+                        self.removed_from_control.append(str(existing.relative_to(self.root)))
 
         subprocess.run(["git", "add", "-A"], cwd=self.root, check=True)
         subprocess.run(

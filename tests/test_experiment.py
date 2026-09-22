@@ -60,3 +60,72 @@ def test_experiment_runner_end_to_end(tmp_path: Path, monkeypatch):
         run_data = json.load(f)
         assert run_data["score"] == 1.0
         assert run_data["cost"] == 0.25
+
+
+def _setup(tmp_path: Path, runs: int = 2, **cfg_kwargs):
+    skill_dir = tmp_path / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: my-skill\ndescription: d\n---\n")
+    fixture = tmp_path / "fixture"
+    (fixture / ".claude" / "skills" / "my-skill").mkdir(parents=True)
+    (fixture / ".claude" / "skills" / "my-skill" / "SKILL.md").write_text("stale copy")
+    (fixture / "app.py").write_text("print('hi')\n")
+    task_file = tmp_path / "task.yaml"
+    task_file.write_text("id: t1\n")
+    task = TaskConfig(id="t1", prompt="Do it", repo="fixture", source_path=task_file)
+    cfg = ExperimentConfig(
+        name="exp", skill=skill_dir, models=["haiku"], tasks_patterns=[], runs=runs,
+        **cfg_kwargs,
+    )
+    return cfg, task
+
+
+def test_experiment_cleans_control_and_reports_warnings(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    # The mock reports the skill as used whenever a skills dir exists, so the stale
+    # copy in the fixture must be removed from control for this to come out clean.
+    cfg, task = _setup(tmp_path)
+    messages: list[str] = []
+    results = ExperimentRunner(
+        cfg, [task], output_dir=tmp_path / "runs", progress=messages.append
+    ).run()
+
+    control = results["runs"]["control"]
+    assert all(r["skill_invoked"] is False for r in control)
+    assert all(r["removed_from_fixture"] for r in control)
+    assert {r["run_order"] for r in control} <= {1, 2}
+    assert any("already contained the skill" in w for w in results["warnings"])
+    assert any("No grader is configured" in w for w in results["warnings"])
+    assert results["overall"]["paired"]["pairs"] == 2
+    assert results["by_model"]["haiku"]["skill"]["skill_used_count"] == 2
+    assert len([m for m in messages if m.startswith("[")]) == 2
+    run_dir = Path(results["run_dir"])
+    for name in ("report.html", "report.md", "report.qmd", "results.json"):
+        assert (run_dir / name).exists()
+
+
+def test_experiment_parallel_and_skill_pack(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    pack = tmp_path / "pack"
+    for name in ("alpha", "beta"):
+        (pack / name).mkdir(parents=True)
+        (pack / name / "SKILL.md").write_text(f"---\nname: {name}\ndescription: d\n---\n")
+    monkeypatch.setenv(
+        "SKILLDIFF_MOCK_SCRIPT", "ls .claude/skills 2>/dev/null > installed.txt || true"
+    )
+    task_file = tmp_path / "task.yaml"
+    task_file.write_text("id: t1\n")
+    task = TaskConfig(
+        id="t1",
+        prompt="x",
+        source_path=task_file,
+        grader=GraderConfig(command="grep -q alpha installed.txt && grep -q beta installed.txt"),
+    )
+    cfg = ExperimentConfig(
+        name="pack", skill=pack, models=["m"], tasks_patterns=[], runs=4, parallel=3
+    )
+    assert cfg.skill_names == ["alpha", "beta"]
+    results = ExperimentRunner(cfg, [task], output_dir=tmp_path / "runs").run()
+    assert [r["repetition"] for r in results["runs"]["treatment"]] == [1, 2, 3, 4]
+    assert all(r["success"] for r in results["runs"]["treatment"])
+    assert not any(r["success"] for r in results["runs"]["control"])
