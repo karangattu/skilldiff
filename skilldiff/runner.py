@@ -53,6 +53,32 @@ class ExecResult:
     timed_out: bool = False
 
 
+# Variables that tie a process to the Claude Code session it runs in. When skilldiff is
+# started from inside Claude Code (e.g. by the skilldiff skill), each agent session must
+# be independent, so these are removed. Auth and provider settings are left alone.
+PARENT_SESSION_VARS = (
+    "CLAUDECODE",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_AGENT_SDK_VERSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_HOST_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",
+    "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
+    "CLAUDE_CODE_ENABLE_ASK_USER_QUESTION_TOOL",
+    "CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES",
+    "CLAUDE_CODE_EAGER_FLUSH",
+    "CLAUDE_CODE_REPORT_FINDINGS",
+    "CLAUDE_CODE_DESKTOP_APP_VERSION",
+)
+
+
 def _kill_group(proc: subprocess.Popen) -> None:
     if os.name != "posix":
         proc.kill()
@@ -305,6 +331,8 @@ class AgentRunner:
     ) -> RunResult:
         cmd = self.claude_command(prompt, model, claude_cfg)
         env = os.environ.copy()
+        for var in PARENT_SESSION_VARS:
+            env.pop(var, None)
         if claude_cfg.auth == "subscription":
             env.pop("ANTHROPIC_API_KEY", None)
             env.pop("ANTHROPIC_AUTH_TOKEN", None)

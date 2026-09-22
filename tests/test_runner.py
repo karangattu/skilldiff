@@ -219,3 +219,20 @@ def test_runner_times_out_and_kills_children(tmp_path: Path) -> None:
 def test_detect_skill_reference() -> None:
     assert detect_skill_reference("cat .agents/skills/my-skill/SKILL.md", ["my-skill"])
     assert not detect_skill_reference("cat .agents/skills/my-skill-2/SKILL.md", ["my-skill"])
+
+
+def test_claude_sessions_do_not_inherit_parent_claude_code_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    capture = tmp_path / "env.txt"
+    monkeypatch.setenv("SKILLDIFF_ENV_CAPTURE", str(capture))
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "keep-me")
+    fake = _fake_claude(
+        tmp_path,
+        'printf "%s %s %s" "${CLAUDECODE-unset}" "${CLAUDE_CODE_SESSION_ID-unset}" '
+        '"${CLAUDE_CODE_OAUTH_TOKEN-unset}" > "$SKILLDIFF_ENV_CAPTURE"\n',
+    )
+    AgentRunner(claude_bin=str(fake)).run("x", tmp_path, "sonnet", ClaudeConfig())
+    assert capture.read_text() == "unset unset keep-me"
