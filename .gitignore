@@ -22,9 +22,12 @@ ENV/
 .coverage
 htmlcov/
 
-# Skilldiff runs
+# Local skilldiff experiments (anchored so the bundled skills/ directory is tracked)
 runs/
-tasks/
-skills/
-fixtures/
-skilldiff.yaml
+/tasks/
+/skills/*
+!/skills/skilldiff/
+/fixtures/
+/graders/
+/skilldiff.yaml
+.DS_Store
