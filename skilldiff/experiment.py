@@ -187,6 +187,10 @@ class ExperimentRunner:
                 "skill": s_metrics,
                 "runs_count": len(model_control_runs),
                 "by_task": task_metrics,
+                "runs": {
+                    "control": model_control_runs,
+                    "treatment": model_treatment_runs,
+                },
             }
 
         overall_control = calculate_metrics(all_control_runs)
@@ -204,6 +208,10 @@ class ExperimentRunner:
             "overall": {
                 "control": overall_control,
                 "skill": overall_skill,
+            },
+            "runs": {
+                "control": all_control_runs,
+                "treatment": all_treatment_runs,
             },
         }
 

@@ -143,3 +143,112 @@ def test_build_quarto_report_shows_overall_models_and_tasks():
     assert "claude-sonnet-5" in report
     assert "fix-parser" in report
     assert "| 50% | 100% | +50 pp |" in report
+    assert "## Key Takeaways" in report
+
+
+def test_calculate_metrics_computes_totals():
+    runs = [
+        {
+            "score": 1.0,
+            "success": True,
+            "cost": 0.10,
+            "duration": 50.0,
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "tool_calls": 3,
+        },
+        {
+            "score": 0.5,
+            "success": False,
+            "cost": 0.20,
+            "duration": 60.0,
+            "input_tokens": 1500,
+            "output_tokens": 300,
+            "tool_calls": 5,
+        },
+    ]
+    m = calculate_metrics(runs)
+    assert m["total_duration"] == 110.0
+    assert m["total_cost"] == 0.30
+    assert m["total_input_tokens"] == 2500
+    assert m["total_output_tokens"] == 500
+    assert m["total_tool_calls"] == 8
+
+
+def test_format_checks_passed():
+    from skilldiff.reporter import _format_checks_passed
+
+    assert _format_checks_passed({"feedback": '{"checks": [true, false, true]}'}) == "2/3"
+    assert _format_checks_passed({"feedback": {"checks": [True, True]}}) == "2/2"
+    assert _format_checks_passed({"success": True}) == "1/1"
+    assert _format_checks_passed({"success": False}) == "0/1"
+    assert _format_checks_passed({}) == "-"
+
+
+def test_build_quarto_report_with_runs_table_and_takeaways():
+    ctrl_runs = [
+        {
+            "task_id": "t1",
+            "arm": "control",
+            "repetition": 1,
+            "score": 1.0,
+            "success": True,
+            "duration": 60.0,
+            "input_tokens": 80000,
+            "output_tokens": 4000,
+            "feedback": '{"checks": [true, true, true]}',
+        }
+    ]
+    treat_runs = [
+        {
+            "task_id": "t1",
+            "arm": "treatment",
+            "repetition": 1,
+            "score": 0.8,
+            "success": False,
+            "duration": 50.0,
+            "input_tokens": 70000,
+            "output_tokens": 3500,
+            "feedback": '{"checks": [false, true, true]}',
+        }
+    ]
+    results = {
+        "name": "eval-run",
+        "timestamp": "2026-09-22T170000Z",
+        "models": ["gemini-3.8"],
+        "tasks_count": 1,
+        "runs_per_arm": 1,
+        "overall": {
+            "control": calculate_metrics(ctrl_runs),
+            "skill": calculate_metrics(treat_runs),
+        },
+        "by_model": {
+            "gemini-3.8": {
+                "control": calculate_metrics(ctrl_runs),
+                "skill": calculate_metrics(treat_runs),
+                "runs_count": 1,
+                "by_task": {
+                    "t1": {
+                        "control": calculate_metrics(ctrl_runs),
+                        "skill": calculate_metrics(treat_runs),
+                    }
+                },
+                "runs": {"control": ctrl_runs, "treatment": treat_runs},
+            }
+        },
+        "runs": {"control": ctrl_runs, "treatment": treat_runs},
+    }
+
+    report = reporter.build_quarto_report(results)
+    assert "## Key Takeaways" in report
+    assert "Task Accuracy & Success Rate" in report
+    assert "Execution Speed & Latency" in report
+    assert "Token Economy & Context Efficiency" in report
+    assert "## Detailed run breakdown" in report
+    assert "Checks Passed" in report
+    assert "| **t1** | Control | 100% | 1/1 | 60.0s | 80,000 | 4,000 | 3/3 |" in report
+    assert "| **t1** | Treatment | 80% | 0/1 | 50.0s | 70,000 | 3,500 | 2/3 |" in report
+    assert "| **Overall** | **Control** |" in report
+    assert "| **Overall** | **Treatment** |" in report
+    assert "| **Difference** | |" in report
+

@@ -44,6 +44,9 @@ def test_experiment_runner_end_to_end(tmp_path: Path, monkeypatch):
     assert results["runs_per_arm"] == 2
     assert "haiku" in results["by_model"]
     assert results["by_model"]["haiku"]["by_task"]["t1"]["control"]["total_count"] == 2
+    assert "runs" in results
+    assert "runs" in results["by_model"]["haiku"]
+    assert len(results["runs"]["control"]) == 2
 
     run_dir = Path(results["run_dir"])
     assert (run_dir / "experiment.json").exists()
