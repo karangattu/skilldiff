@@ -4,7 +4,7 @@
 
 ## Install
 
-Requirements: Python 3.10+, Git, and [Claude Code](https://code.claude.com/docs/en/overview) with authentication configured. [Quarto](https://quarto.org/) is optional; when installed, `skilldiff` renders an HTML report automatically.
+Requirements: Python 3.10+, Git, and an agent CLI with authentication configured. Supported harnesses include [Claude Code](https://code.claude.com/docs/en/overview), [Codex](https://github.com/openai/codex), [OpenCode](https://opencode.ai), and [Antigravity](https://antigravity.google). [Quarto](https://quarto.org/) is optional; when installed, `skilldiff` renders an HTML report automatically.
 
 ```bash
 git clone https://github.com/karangattu/skilldiff.git
@@ -17,16 +17,21 @@ skilldiff init
 
 ## Configure your test
 
-Replace `skilldiff.yaml` with this configuration:
+Set `harness` in `skilldiff.yaml` to select your agent: `claude`, `codex`, `opencode`, or `antigravity`. The default harness is `claude`.
+
+Example configuration:
 
 ```yaml
 name: my-skill-test
 skill: /absolute/path/to/your/skill  # Directory containing SKILL.md
+harness: claude
 models:
   - claude-sonnet-5
 tasks:
   - ./tasks/*.yaml
 runs: 3
+
+# Harness configurations:
 claude:
   auth: subscription
   effort: high
@@ -34,6 +39,22 @@ claude:
   permission_mode: acceptEdits
   allowed_tools:
     - Bash(my-tool *)
+
+# Codex example:
+# harness: codex
+# codex:
+#   auth: stored
+#   sandbox: workspace-write
+
+# OpenCode example:
+# harness: opencode
+# opencode:
+#   dangerously_skip_permissions: true
+
+# Antigravity example:
+# harness: antigravity
+# antigravity:
+#   dangerously_skip_permissions: true
 ```
 
 The budget applies to each Claude invocation. One model, one task, and three repetitions produce six invocations.
@@ -75,33 +96,16 @@ Use a project with tests that measure the requested result. Install its test dep
 
 The runner copies the project into temporary workspaces. Relative `repo` paths resolve from the task file.
 
-## Select Claude models
+## Select models
 
-Set `models` in `skilldiff.yaml`. To compare Sonnet 5 and Opus 5, use:
+Set `models` in `skilldiff.yaml` to the model identifiers for your selected harness:
 
-```yaml
-models:
-  - claude-sonnet-5
-  - claude-opus-5
-```
+- **Claude**: `claude-sonnet-5`, `claude-opus-5`
+- **Codex**: `o3-mini`, `gpt-4o`
+- **OpenCode**: `anthropic/claude-3-5-sonnet`, `openai/gpt-4o`
+- **Antigravity**: `gemini-2.5-pro`, `gemini-2.5-flash`
 
 Each model gets its own control and treatment comparison. To test only one model, keep one entry.
-
-For Haiku 4.5, use this model and omit the effort flag:
-
-```yaml
-models:
-  - claude-haiku-4-5-20251001
-claude:
-  effort: null
-  max_budget_usd: 2.00
-```
-
-These are [Anthropic API model IDs](https://platform.claude.com/docs/en/models/overview).
-Other providers can require different IDs.
-
-Aliases such as `sonnet` and `opus` also work, but their versions can change.
-Use full IDs for repeatable comparisons. See [Claude Code model selection](https://code.claude.com/docs/en/model-config) for provider details.
 
 ## Run and read results
 
@@ -143,5 +147,4 @@ Without a grader, every run receives a passing score.
 Results, responses, transcripts, and file changes are saved under `runs/`.
 Use several representative tasks before you draw conclusions.
 
-The current runner inherits your Claude configuration. Use a test project and Claude environment without the target skill already installed.
-Skill availability does not guarantee that Claude uses it.
+The runner inherits the configuration of your local agent CLI. Use a test project without the target skill already installed. Skill availability does not guarantee that the agent uses it.

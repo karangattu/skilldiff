@@ -34,9 +34,13 @@ class ExperimentRunner:
         exp_metadata = {
             "name": self.config.name,
             "skill": str(self.config.skill),
+            "harness": self.config.harness,
             "models": self.config.models,
             "runs": self.config.runs,
             "claude": asdict(self.config.claude),
+            "codex": asdict(self.config.codex),
+            "opencode": asdict(self.config.opencode),
+            "antigravity": asdict(self.config.antigravity),
             "timestamp": timestamp_str,
             "system": {
                 "os": platform.system(),
@@ -78,22 +82,24 @@ class ExperimentRunner:
                             is_treatment=False,
                             skill_dir=self.config.skill,
                             fixture_repo=fixture_repo,
+                            harness=self.config.harness,
                         )
                         ws_treat = Workspace(
                             root=Path(tmp_treat),
                             is_treatment=True,
                             skill_dir=self.config.skill,
                             fixture_repo=fixture_repo,
+                            harness=self.config.harness,
                         )
 
                         ws_ctrl.setup()
                         ws_treat.setup()
 
                         res_ctrl = self.agent_runner.run(
-                            task.prompt, ws_ctrl.root, model, self.config.claude
+                            task.prompt, ws_ctrl.root, model, self.config
                         )
                         res_treat = self.agent_runner.run(
-                            task.prompt, ws_treat.root, model, self.config.claude
+                            task.prompt, ws_treat.root, model, self.config
                         )
 
                         diff_ctrl, files_ctrl = ws_ctrl.get_diff()
@@ -188,6 +194,7 @@ class ExperimentRunner:
 
         full_results = {
             "name": self.config.name,
+            "harness": self.config.harness,
             "timestamp": timestamp_str,
             "run_dir": str(run_root),
             "models": self.config.models,

@@ -14,6 +14,31 @@ class ClaudeConfig:
     max_budget_usd: Optional[float] = 2.0
     permission_mode: Optional[str] = "acceptEdits"
     allowed_tools: list[str] = field(default_factory=list)
+    bin_path: Optional[str] = None
+
+
+@dataclass
+class CodexConfig:
+    auth: str = "stored"
+    sandbox: Optional[str] = "workspace-write"
+    dangerously_bypass_approvals_and_sandbox: bool = False
+    bin_path: Optional[str] = None
+    extra_args: list[str] = field(default_factory=list)
+
+
+@dataclass
+class OpenCodeConfig:
+    dangerously_skip_permissions: bool = True
+    variant: Optional[str] = None
+    bin_path: Optional[str] = None
+    extra_args: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AntigravityConfig:
+    dangerously_skip_permissions: bool = True
+    bin_path: Optional[str] = None
+    extra_args: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -38,7 +63,11 @@ class ExperimentConfig:
     models: list[str]
     tasks_patterns: list[str]
     runs: int = 3
+    harness: str = "claude"
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
+    codex: CodexConfig = field(default_factory=CodexConfig)
+    opencode: OpenCodeConfig = field(default_factory=OpenCodeConfig)
+    antigravity: AntigravityConfig = field(default_factory=AntigravityConfig)
     config_path: Optional[Path] = None
 
 
@@ -114,6 +143,26 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     if runs <= 0:
         raise ValueError("Experiment 'runs' must be positive integer")
 
+    harness = str(data.get("harness", "")).lower().strip()
+    if not harness:
+        if "codex" in data and "claude" not in data:
+            harness = "codex"
+        elif "opencode" in data and "claude" not in data:
+            harness = "opencode"
+        elif ("antigravity" in data or "agy" in data) and "claude" not in data:
+            harness = "antigravity"
+        else:
+            harness = "claude"
+
+    if harness == "agy":
+        harness = "antigravity"
+
+    valid_harnesses = {"claude", "codex", "opencode", "antigravity"}
+    if harness not in valid_harnesses:
+        raise ValueError(
+            f"Invalid harness '{harness}'. Must be one of: {', '.join(sorted(valid_harnesses))}"
+        )
+
     claude_data = data.get("claude", {})
     auth = str(claude_data.get("auth", "subscription"))
     if auth not in {"subscription", "api_key"}:
@@ -126,6 +175,40 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         max_budget_usd=float(budget_val) if budget_val is not None else 2.0,
         permission_mode=claude_data.get("permission_mode", "acceptEdits"),
         allowed_tools=[str(tool) for tool in claude_data.get("allowed_tools", [])],
+        bin_path=claude_data.get("bin_path"),
+    )
+
+    codex_data = data.get("codex", {})
+    codex_auth = str(codex_data.get("auth", "stored"))
+    if codex_auth not in {"stored", "subscription", "api_key"}:
+        raise ValueError("codex.auth must be 'stored', 'subscription', or 'api_key'")
+    codex_cfg = CodexConfig(
+        auth=codex_auth,
+        sandbox=codex_data.get("sandbox", "workspace-write"),
+        dangerously_bypass_approvals_and_sandbox=bool(
+            codex_data.get("dangerously_bypass_approvals_and_sandbox", False)
+        ),
+        bin_path=codex_data.get("bin_path"),
+        extra_args=[str(a) for a in codex_data.get("extra_args", [])],
+    )
+
+    opencode_data = data.get("opencode", {})
+    opencode_cfg = OpenCodeConfig(
+        dangerously_skip_permissions=bool(
+            opencode_data.get("dangerously_skip_permissions", True)
+        ),
+        variant=opencode_data.get("variant"),
+        bin_path=opencode_data.get("bin_path"),
+        extra_args=[str(a) for a in opencode_data.get("extra_args", [])],
+    )
+
+    antigravity_data = data.get("antigravity", data.get("agy", {}))
+    antigravity_cfg = AntigravityConfig(
+        dangerously_skip_permissions=bool(
+            antigravity_data.get("dangerously_skip_permissions", True)
+        ),
+        bin_path=antigravity_data.get("bin_path"),
+        extra_args=[str(a) for a in antigravity_data.get("extra_args", [])],
     )
 
     exp_config = ExperimentConfig(
@@ -134,7 +217,11 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         models=[str(m) for m in models],
         tasks_patterns=task_patterns,
         runs=runs,
+        harness=harness,
         claude=claude_cfg,
+        codex=codex_cfg,
+        opencode=opencode_cfg,
+        antigravity=antigravity_cfg,
         config_path=experiment_path,
     )
 

@@ -12,6 +12,8 @@ STARTER_SKILLDIFF_YAML = """name: code-review-skill
 
 skill: ./skills/code-review
 
+harness: claude
+
 models:
   - sonnet
 
