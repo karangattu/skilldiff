@@ -1,0 +1,14 @@
+{
+  "name": "skilldiff",
+  "description": "skilldiff: measure what an Agent Skill changes.",
+  "owner": {
+    "name": "Karan Gathani"
+  },
+  "plugins": [
+    {
+      "name": "skilldiff",
+      "source": "./",
+      "description": "Measure whether an Agent Skill actually helps: A/B tests with and without the skill."
+    }
+  ]
+}
