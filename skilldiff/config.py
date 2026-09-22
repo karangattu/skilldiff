@@ -8,6 +8,7 @@ import yaml
 
 @dataclass
 class ClaudeConfig:
+    auth: str = "subscription"
     effort: Optional[str] = "high"
     max_turns: Optional[int] = 30
     max_budget_usd: Optional[float] = 2.0
@@ -114,8 +115,12 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         raise ValueError("Experiment 'runs' must be positive integer")
 
     claude_data = data.get("claude", {})
+    auth = str(claude_data.get("auth", "subscription"))
+    if auth not in {"subscription", "api_key"}:
+        raise ValueError("claude.auth must be 'subscription' or 'api_key'")
     budget_val = claude_data.get("max_budget_usd")
     claude_cfg = ClaudeConfig(
+        auth=auth,
         effort=claude_data.get("effort", "high"),
         max_turns=claude_data.get("max_turns", 30),
         max_budget_usd=float(budget_val) if budget_val is not None else 2.0,

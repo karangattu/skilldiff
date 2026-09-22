@@ -21,6 +21,7 @@ tasks:
 runs: 3
 
 claude:
+  auth: subscription
   effort: high
   max_turns: 30
   max_budget_usd: 2.00

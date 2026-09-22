@@ -31,6 +31,7 @@ tasks:
   - ./tasks/*.yaml
 runs: 3
 claude:
+  auth: subscription
   effort: high
   max_budget_usd: 2.00
   permission_mode: acceptEdits
@@ -39,6 +40,17 @@ claude:
 ```
 
 The budget applies to each Claude invocation. One model, one task, and three repetitions produce six invocations.
+
+Subscription authentication is the default. Run `claude auth login` once before the experiment. In subscription mode, `skilldiff` removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from each Claude subprocess so an exported API credential cannot silently take precedence over your Claude Code subscription.
+
+To bill an experiment through the Anthropic API instead, set `auth: api_key` and export `ANTHROPIC_API_KEY` before running `skilldiff`:
+
+```yaml
+claude:
+  auth: api_key
+  effort: high
+  max_budget_usd: 2.00
+```
 
 `acceptEdits` lets unattended Claude sessions edit the disposable control and treatment workspaces. Commands that a skill needs must be explicitly allow-listed with Claude Code tool patterns. For example, a skill that calls `shiny docs` should use `Bash(shiny docs *)`. The same permissions apply to both arms. Avoid `bypassPermissions` unless every task, fixture, and command is trusted, because shell commands can access files outside the temporary workspace.
 

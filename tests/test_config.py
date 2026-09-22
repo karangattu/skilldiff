@@ -46,6 +46,7 @@ def test_load_experiment_valid(tmp_path: Path):
     assert exp_cfg.skill == skill_dir.resolve()
     assert exp_cfg.models == ["sonnet"]
     assert exp_cfg.runs == 2
+    assert exp_cfg.claude.auth == "subscription"
     assert len(tasks) == 1
     assert tasks[0].id == "t1"
 
@@ -97,6 +98,7 @@ def test_load_experiment_reads_claude_permissions(tmp_path: Path):
         "models:\n  - sonnet\n"
         "tasks:\n  - ./tasks/*.yaml\n"
         "claude:\n"
+        "  auth: api_key\n"
         "  permission_mode: acceptEdits\n"
         "  allowed_tools:\n"
         "    - Bash(shiny docs *)\n"
@@ -104,5 +106,27 @@ def test_load_experiment_reads_claude_permissions(tmp_path: Path):
 
     config, _ = load_experiment(exp_file)
 
+    assert config.claude.auth == "api_key"
     assert config.claude.permission_mode == "acceptEdits"
     assert config.claude.allowed_tools == ["Bash(shiny docs *)"]
+
+
+def test_load_experiment_rejects_unknown_claude_auth(tmp_path: Path):
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Test")
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    (tasks_dir / "task.yaml").write_text("id: one\nprompt: Do it\n")
+    exp_file = tmp_path / "skilldiff.yaml"
+    exp_file.write_text(
+        "name: test\n"
+        "skill: ./skill\n"
+        "models:\n  - sonnet\n"
+        "tasks:\n  - ./tasks/*.yaml\n"
+        "claude:\n"
+        "  auth: surprise\n"
+    )
+
+    with pytest.raises(ValueError, match="claude.auth"):
+        load_experiment(exp_file)

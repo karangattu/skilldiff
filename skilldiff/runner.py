@@ -56,11 +56,17 @@ class AgentRunner:
         if claude_cfg.max_budget_usd is not None:
             cmd.extend(["--max-budget-usd", str(claude_cfg.max_budget_usd)])
 
+        env = os.environ.copy()
+        if claude_cfg.auth == "subscription":
+            env.pop("ANTHROPIC_API_KEY", None)
+            env.pop("ANTHROPIC_AUTH_TOKEN", None)
+
         start_time = time.perf_counter()
         try:
             proc = subprocess.run(
                 cmd,
                 cwd=cwd,
+                env=env,
                 capture_output=True,
                 text=True,
                 check=False,

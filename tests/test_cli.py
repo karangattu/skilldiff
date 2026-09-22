@@ -21,6 +21,7 @@ def test_cli_init_and_overwrite(tmp_path: Path, monkeypatch):
     assert (tmp_path / "tasks" / "review-auth.yaml").exists()
     assert (tmp_path / "skills" / "code-review" / "SKILL.md").exists()
     generated_config = yaml.safe_load((tmp_path / "skilldiff.yaml").read_text())
+    assert generated_config["claude"]["auth"] == "subscription"
     assert generated_config["claude"]["permission_mode"] == "acceptEdits"
     assert generated_config["claude"]["allowed_tools"] == []
 
