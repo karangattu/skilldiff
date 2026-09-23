@@ -63,9 +63,16 @@ class TaskConfig:
 
 
 @dataclass
+class PRConfig:
+    repo: Path
+    base: str
+    head: str
+
+
+@dataclass
 class ExperimentConfig:
     name: str
-    skill: Path
+    skill: Optional[Path]
     models: list[str]
     tasks_patterns: list[str]
     runs: int = 3
@@ -77,10 +84,11 @@ class ExperimentConfig:
     config_path: Optional[Path] = None
     timeout_seconds: Optional[float] = 1800.0
     parallel: int = 1
+    pr: Optional[PRConfig] = None
 
     @property
     def skill_dirs(self) -> list[Path]:
-        return find_skill_dirs(self.skill)
+        return find_skill_dirs(self.skill) if self.skill else []
 
     @property
     def skill_names(self) -> list[str]:
@@ -176,18 +184,29 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         raise ValueError("Experiment config must specify 'name'")
 
     skill_str = data.get("skill")
-    if not skill_str:
-        raise ValueError("Experiment config must specify 'skill'")
-
+    pr_data = data.get("pr")
+    if bool(skill_str) == (pr_data is not None):
+        raise ValueError("Experiment must specify exactly one of 'skill' or 'pr'")
     base_dir = experiment_path.parent.resolve()
-    skill_path = (base_dir / skill_str).resolve()
-    if not skill_path.exists():
-        raise FileNotFoundError(f"Skill directory not found: {skill_path}")
-
-    if not find_skill_dirs(skill_path):
-        raise FileNotFoundError(
-            f"No SKILL.md found in {skill_path} or its immediate subdirectories"
-        )
+    skill_path = None
+    pr = None
+    if pr_data is not None:
+        if not isinstance(pr_data, dict) or any(
+            not isinstance(pr_data.get(k), str) or not pr_data[k].strip()
+            for k in ("repo", "base", "head")
+        ):
+            raise ValueError("pr must specify non-empty repo, base, and head strings")
+        pr = PRConfig((base_dir / pr_data["repo"]).resolve(), pr_data["base"], pr_data["head"])
+        if not pr.repo.is_dir():
+            raise FileNotFoundError(f"PR repo not found: {pr.repo}")
+    else:
+        skill_path = (base_dir / skill_str).resolve()
+        if not skill_path.exists():
+            raise FileNotFoundError(f"Skill directory not found: {skill_path}")
+        if not find_skill_dirs(skill_path):
+            raise FileNotFoundError(
+                f"No SKILL.md found in {skill_path} or its immediate subdirectories"
+            )
 
     models = data.get("models")
     if not models or not isinstance(models, list):
@@ -289,6 +308,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     exp_config = ExperimentConfig(
         name=name,
         skill=skill_path,
+        pr=pr,
         models=[str(m) for m in models],
         tasks_patterns=task_patterns,
         runs=runs,
@@ -312,6 +332,8 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
             path_obj = Path(p)
             if path_obj.is_file():
                 task = load_task(path_obj)
+                if pr and task.repo:
+                    raise ValueError("Tasks in PR mode cannot specify repo; use pr.repo")
                 if task.id in seen_ids:
                     continue
                 seen_ids.add(task.id)

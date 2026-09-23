@@ -10,7 +10,8 @@ the skill at all.
 It works with [Claude Code](https://code.claude.com/docs/en/overview),
 [Codex](https://github.com/openai/codex), [OpenCode](https://opencode.ai), and
 [Antigravity](https://antigravity.google). It can test a single skill or every skill that
-a package ships.
+a package ships. You can also evaluate a PR: its head commit is the treatment, and
+its merge base is the control.
 
 ## Quick start
 
@@ -200,11 +201,68 @@ If a package ships several skills, for example `my-package/.claude/skills/{a,b,c
 `skill:` at the parent folder. The skill arm installs all of them, and adoption counts a
 run as using the skill if it uses any of them.
 
+## Evaluate a PR's feature
+
+Run the same agent tasks against the code with and without a PR:
+
+```bash
+# Fetch the PR into an existing local clone (GitHub PR #42 in this example).
+git -C ~/code/my-package fetch origin refs/pull/42/head:refs/pull/42/head
+
+skilldiff init --pr 42 --repo ~/code/my-package --base origin/main --dir pr-42-eval
+cd pr-42-eval
+# Fill in tasks/my-first-task.yaml and graders/my_first_task.py, then:
+skilldiff check
+skilldiff run --runs 1
+```
+
+`--pr` scaffolds the experiment; it does not fetch from GitHub. Fetch the target branch
+as needed too. For a local branch or another Git host, configure the refs directly:
+
+```yaml
+name: feature-eval
+pr:
+  repo: ../my-package        # local Git clone, relative to this config
+  base: origin/main         # PR target ref
+  head: refs/pull/42/head    # or a feature branch / commit SHA
+harness: claude
+models: [sonnet]
+tasks: [./tasks/*.yaml]
+runs: 5
+```
+
+Use exactly one of `skill` or `pr`. Tasks keep the same prompt and grader format,
+but omit `repo`: both arms use `pr.repo`. Keep graders and experiment files outside
+the evaluated repository. Design tasks that **use** the new feature, and grade the
+resulting behavior. If setup or installation is needed, include identical instructions
+in the task so each agent uses the package in its own workspace.
+
+- **Control:** the common ancestor (merge base) of `base` and `head`.
+- **Treatment:** the PR's `head` commit, including all its changes.
+- Refs are resolved once per run. Reports and JSON record the exact commit IDs.
+- Each workspace contains the committed files and a fresh Git history. Uncommitted
+  files and the source repository's history are excluded; your checkout is unchanged.
+- Both arms use the same harness, model, prompt, and grader. Skill installation/removal
+  and adoption tracking are disabled in PR mode; skills committed in the repo remain
+  part of their respective revisions.
+- HTML, Markdown, Quarto, and terminal reports label the arms **Control** and
+  **Treatment**, with differences expressed as treatment minus control. For compatibility,
+  aggregate JSON metrics still use the existing `skill` key for the treatment metrics;
+  individual sessions use `runs.treatment` and include `source_commit`.
+
+This measures the full PR relative to its branch point, not the effect of reverting it
+on today's main branch. For an already-merged PR, select a `base` commit from before
+its merge; using a base that already contains the head is rejected. Fetch enough history
+for Git to find a common ancestor. Submodules are currently unsupported. The evaluator
+still runs agent sessions and then grades their outputs, so use tasks and external
+graders that measure your intended outcome.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `skilldiff init [--skill PATH] [--harness H] [--dir D]` | Scaffold a runnable demo, or a template for your skill |
+| `skilldiff init --pr N --repo PATH [--base REF] [--dir D]` | Scaffold a PR feature evaluation using locally fetched refs |
 | `skilldiff check [-c CONFIG]` | Validate the config, the CLI, the skill frontmatter, and the graders. Estimate the session count and maximum spend |
 | `skilldiff run [-c CONFIG] [--runs N] [-j N] [-m MODEL] [-t TASK]` | Run the experiment, or a subset of it |
 | `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run, or export it |

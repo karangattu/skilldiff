@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -8,11 +9,14 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 from skilldiff import __version__
 from skilldiff.config import find_skill_dirs, load_experiment, read_skill_frontmatter
 from skilldiff.experiment import ExperimentRunner, find_user_level_installs
 from skilldiff.grader import Grader
 from skilldiff.reporter import create_reports, render_report_table
+from skilldiff.revisions import resolve_comparison
 from skilldiff.runner import AgentRunner
 from skilldiff.workspace import Workspace
 
@@ -182,6 +186,17 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"{config_file} already exists. Use --force to overwrite.", file=sys.stderr)
         return 1
 
+    pr_number = getattr(args, "pr", None)
+    if pr_number is not None:
+        if skill_arg or pr_number <= 0 or not getattr(args, "repo", None):
+            print("--pr requires a positive PR number and --repo, without --skill.",
+                  file=sys.stderr)
+            return 1
+        return _init_pr(args, root, force, harness)
+    if getattr(args, "repo", None) or getattr(args, "base", None):
+        print("--repo and --base require --pr.", file=sys.stderr)
+        return 1
+
     created: list[Path] = []
     if skill_arg:
         skill_path = Path(skill_arg).expanduser().resolve()
@@ -240,6 +255,41 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _init_pr(args: argparse.Namespace, root: Path, force: bool, harness: str) -> int:
+    repo = Path(args.repo).expanduser().resolve()
+    if not repo.is_dir():
+        print(f"Repository not found: {repo}", file=sys.stderr)
+        return 1
+    base = args.base or "origin/main"
+    head = f"refs/pull/{args.pr}/head"
+    config = {
+        "name": f"pr-{args.pr}-eval",
+        "pr": {"repo": os.path.relpath(repo, root.resolve()), "base": base, "head": head},
+        "harness": harness, "models": [DEFAULT_MODELS[harness]],
+        "tasks": ["./tasks/*.yaml"], "runs": 3, "timeout_seconds": 1800, "parallel": 1,
+    }
+    text = yaml.safe_dump(config, sort_keys=False) + "\n" + HARNESS_BLOCKS[harness]
+    _write(root / "skilldiff.yaml", text, force)
+    _write(root / "tasks" / "my-first-task.yaml", """id: my-first-task
+# Both arms start from pr.repo at their respective revisions. Do not set task.repo.
+prompt: |
+  TODO: describe a realistic task that uses the feature introduced by this PR.
+  Use the same request for both arms; do not mention which revision is available.
+grader:
+  type: command
+  command: python3 "$SKILLDIFF_TASK_DIR/../graders/my_first_task.py"
+""", force)
+    _write(root / "graders" / "my_first_task.py", CUSTOM_GRADER, force)
+    print(f"Initialized PR #{args.pr} experiment in {root}")
+    print("Fetch the GitHub PR head into your local repository before check/run:")
+    print(f"  git -C {shlex.quote(str(repo))} fetch origin {head}:{head}")
+    print(f"Ensure base ref {base!r} is available (use a pre-merge base for merged PRs).")
+    print("Fill in tasks/my-first-task.yaml and graders/my_first_task.py, then run")
+    print(f"  skilldiff check -c {shlex.quote(str(root / 'skilldiff.yaml'))}")
+    print(f"  skilldiff run -c {shlex.quote(str(root / 'skilldiff.yaml'))} --runs 1")
+    return 0
+
+
 # ----------------------------------------------------------------------------- check
 
 
@@ -272,6 +322,16 @@ def cmd_check(args: argparse.Namespace) -> int:
         return 1
     ok(f"configuration loads: {len(cfg.models)} model(s), {len(tasks)} task(s), "
        f"{cfg.runs} run(s) per arm")
+
+    comparison = None
+    if cfg.pr:
+        try:
+            comparison = resolve_comparison(cfg.pr)
+        except (ValueError, subprocess.SubprocessError) as exc:
+            fail(str(exc))
+            return 1
+        ok(f"control: {comparison['control_commit']}")
+        ok(f"treatment: {comparison['treatment_commit']}")
 
     for skill_dir in cfg.skill_dirs:
         meta = read_skill_frontmatter(skill_dir)
@@ -319,7 +379,9 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     for task in tasks:
         task_dir = task.source_path.parent if task.source_path else Path(".")
-        fixture = (task_dir / task.repo).resolve() if task.repo else None
+        fixture = cfg.pr.repo if cfg.pr else (
+            (task_dir / task.repo).resolve() if task.repo else None
+        )
         if fixture and not fixture.exists():
             fail(f"task {task.id}: repo not found: {fixture}")
             continue
@@ -330,7 +392,10 @@ def cmd_check(args: argparse.Namespace) -> int:
             ok(f"task {task.id}: grader configured (not run)")
             continue
         with tempfile.TemporaryDirectory(prefix="skilldiff-check-") as tmp:
-            ws = Workspace(Path(tmp) / "workspace", False, cfg.skill, fixture, cfg.harness)
+            ws = Workspace(
+                Path(tmp) / "workspace", False, cfg.skill, fixture, cfg.harness,
+                source_commit=(comparison or {}).get("control_commit"),
+            )
             try:
                 ws.setup()
             except Exception as exc:
@@ -405,7 +470,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         f"{sessions} sessions",
         flush=True,
     )
-    results = runner.run()
+    try:
+        results = runner.run()
+    except (ValueError, subprocess.SubprocessError) as exc:
+        print(f"Experiment error: {exc}", file=sys.stderr)
+        return 1
 
     print("\n" + _format_results(results))
     _print_report_paths(results)
@@ -494,6 +563,12 @@ def _format_results(results: dict) -> str:
     runs_per_arm = results.get("runs_per_arm", 0)
 
     sections: list[str] = []
+    comparison = results.get("comparison")
+    if comparison:
+        sections.append(
+            f"Control (without PR): {comparison['control_commit']} (merge base)\n"
+            f"Treatment (with PR): {comparison['treatment_commit']}"
+        )
     if len(models) <= 1:
         model_name = models[0] if models else None
         model_data = by_model.get(model_name) if model_name else None
@@ -507,6 +582,7 @@ def _format_results(results: dict) -> str:
                 tasks_count=tasks_count,
                 runs_per_arm=runs_per_arm,
                 paired=source.get("paired"),
+                treatment_label="Treatment" if results.get("comparison") else "Skill",
             )
         )
     else:
@@ -524,6 +600,7 @@ def _format_results(results: dict) -> str:
                     runs_per_arm=runs_per_arm,
                     model_name=model_name,
                     paired=model_data.get("paired"),
+                    treatment_label="Treatment" if results.get("comparison") else "Skill",
                 )
             )
 
@@ -549,6 +626,9 @@ def build_parser() -> argparse.ArgumentParser:
         "init", help="Create an experiment (a runnable demo, or a template for your skill)"
     )
     init_parser.add_argument("--skill", help="Path to your skill (or a folder of skills)")
+    init_parser.add_argument("--pr", type=int, help="Scaffold an evaluation of a GitHub PR number")
+    init_parser.add_argument("--repo", help="Local repository containing the PR revisions")
+    init_parser.add_argument("--base", help="PR target ref (default: origin/main)")
     init_parser.add_argument(
         "--harness", choices=sorted(HARNESS_BLOCKS), default="claude", help="Agent CLI to use"
     )

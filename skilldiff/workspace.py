@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 from skilldiff.config import find_skill_dirs
+from skilldiff.revisions import export_revision
 
 SKILL_ROOTS = (".claude", ".codex", ".opencode", ".agents", ".agent", ".gemini")
 
@@ -31,16 +32,18 @@ class Workspace:
         self,
         root: Path,
         is_treatment: bool,
-        skill_dir: Path,
+        skill_dir: Path | None,
         fixture_repo: Path | None = None,
         harness: str = "claude",
+        source_commit: str | None = None,
     ):
         self.root = root.resolve()
         self.is_treatment = is_treatment
-        self.skill_dir = skill_dir.resolve()
+        self.skill_dir = skill_dir.resolve() if skill_dir else None
+        self.source_commit = source_commit
         self.fixture_repo = fixture_repo.resolve() if fixture_repo else None
         self.harness = harness
-        self.skill_dirs = find_skill_dirs(self.skill_dir) or [self.skill_dir]
+        self.skill_dirs = (find_skill_dirs(self.skill_dir) or [self.skill_dir]) if skill_dir else []
         # Copies of the skill that shipped with the fixture and were removed from control.
         self.removed_from_control: list[str] = []
 
@@ -64,7 +67,9 @@ class Workspace:
             shutil.rmtree(self.root)
         self.root.mkdir(parents=True, exist_ok=True)
 
-        if self.fixture_repo and self.fixture_repo.exists():
+        if self.source_commit:
+            export_revision(self.fixture_repo, self.source_commit, self.root)
+        elif self.fixture_repo and self.fixture_repo.exists():
             for item in os.listdir(self.fixture_repo):
                 src = self.fixture_repo / item
                 dst = self.root / item
@@ -96,7 +101,8 @@ class Workspace:
                         shutil.rmtree(existing)
                         self.removed_from_control.append(str(existing.relative_to(self.root)))
 
-        subprocess.run(["git", "add", "-A"], cwd=self.root, check=True)
+        add_args = ["git", "add", "-A"] + (["--force"] if self.source_commit else [])
+        subprocess.run(add_args, cwd=self.root, check=True)
         subprocess.run(
             ["git", "commit", "-q", "-m", "initial", "--allow-empty"],
             cwd=self.root,
@@ -119,11 +125,13 @@ class Workspace:
             parts = line.split(maxsplit=1)
             if len(parts) == 2:
                 path = parts[1]
-                if not path.startswith(IGNORED_DIFF_PREFIXES):
+                if self.source_commit or not path.startswith(IGNORED_DIFF_PREFIXES):
                     changed_files.append(path)
 
         subprocess.run(["git", "add", "-N", "."], cwd=self.root, check=False)
-        cmd_diff = ["git", "diff", "--"] + GIT_DIFF_EXCLUDES
+        cmd_diff = ["git", "diff", "--"]
+        if not self.source_commit:
+            cmd_diff += GIT_DIFF_EXCLUDES
         proc_diff = subprocess.run(
             cmd_diff,
             cwd=self.root,

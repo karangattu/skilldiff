@@ -14,6 +14,7 @@ from skilldiff import __version__
 from skilldiff.config import ExperimentConfig, TaskConfig
 from skilldiff.grader import Grader
 from skilldiff.reporter import calculate_metrics, create_reports
+from skilldiff.revisions import resolve_comparison
 from skilldiff.runner import AgentRunner, RunResult
 from skilldiff.stats import paired_comparison
 from skilldiff.workspace import Workspace
@@ -68,6 +69,7 @@ class ExperimentRunner:
         self.agent_runner = agent_runner or AgentRunner()
         self.progress = progress or (lambda _msg: None)
         self._lock = threading.Lock()
+        self.comparison = None
 
     # ------------------------------------------------------------------ setup
 
@@ -86,7 +88,8 @@ class ExperimentRunner:
         return {
             "name": self.config.name,
             "skilldiff_version": __version__,
-            "skill": str(self.config.skill),
+            "skill": str(self.config.skill) if self.config.skill else None,
+            "comparison": self.comparison,
             "skill_names": self.config.skill_names,
             "harness": self.config.harness,
             "models": self.config.models,
@@ -115,6 +118,7 @@ class ExperimentRunner:
     # -------------------------------------------------------------------- run
 
     def run(self) -> dict[str, Any]:
+        self.comparison = resolve_comparison(self.config.pr) if self.config.pr else None
         timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
         run_root = self.output_dir / timestamp_str
         run_root.mkdir(parents=True, exist_ok=True)
@@ -147,7 +151,7 @@ class ExperimentRunner:
                 self.progress(
                     f"[{done}/{len(pairs)}] {ctrl['model']} · {ctrl['task_id']} · "
                     f"run {ctrl['repetition']}: control {_run_summary(ctrl)} | "
-                    f"skill {_run_summary(treat)}"
+                    f"{'treatment' if self.comparison else 'skill'} {_run_summary(treat)}"
                 )
 
         try:
@@ -186,6 +190,8 @@ class ExperimentRunner:
         model = pair.model
         task_dir = task.source_path.parent if task.source_path else None
         fixture_repo = (task_dir / task.repo).resolve() if task.repo and task_dir else None
+        if self.config.pr:
+            fixture_repo = self.config.pr.repo
         grader = Grader(task.grader, self.config.skill_names, model, task_dir=task_dir)
 
         rep_str = f"{pair.repetition:03d}"
@@ -204,6 +210,7 @@ class ExperimentRunner:
                 "control": Workspace(
                     root=Path(tmp_ctrl) / "workspace",
                     is_treatment=False,
+                    source_commit=(self.comparison or {}).get("control_commit"),
                     skill_dir=self.config.skill,
                     fixture_repo=fixture_repo,
                     harness=self.config.harness,
@@ -211,6 +218,7 @@ class ExperimentRunner:
                 "treatment": Workspace(
                     root=Path(tmp_treat) / "workspace",
                     is_treatment=True,
+                    source_commit=(self.comparison or {}).get("treatment_commit"),
                     skill_dir=self.config.skill,
                     fixture_repo=fixture_repo,
                     harness=self.config.harness,
@@ -245,6 +253,9 @@ class ExperimentRunner:
             records: dict[str, dict[str, Any]] = {}
             for arm, arm_dir in (("control", ctrl_dir), ("treatment", treat_dir)):
                 res = results[arm]
+                if self.comparison:
+                    res.skill_invoked = None
+                    res.skill_available = None
                 grade = grades[arm]
                 diff_text, files = diffs[arm]
                 records[arm] = {
@@ -275,6 +286,8 @@ class ExperimentRunner:
                     "exit_code": res.exit_code,
                     "artifacts": str(arm_dir.relative_to(run_root)),
                 }
+                if self.comparison:
+                    records[arm]["source_commit"] = self.comparison[f"{arm}_commit"]
                 if arm == "control" and workspaces[arm].removed_from_control:
                     records[arm]["removed_from_fixture"] = workspaces[arm].removed_from_control
                 self._save_run_artifacts(arm_dir, records[arm], res.transcript, diff_text)
@@ -326,7 +339,10 @@ class ExperimentRunner:
             }
 
         warnings = list(warnings)
-        warnings.extend(_run_warnings(control_runs, treatment_runs, self.tasks))
+        warnings.extend(_run_warnings(
+            control_runs, treatment_runs, self.tasks,
+            treatment_label="treatment" if self.comparison else "skill",
+        ))
         if interrupted:
             warnings.append(
                 f"The experiment was interrupted after {len(control_runs)} of "
@@ -337,7 +353,8 @@ class ExperimentRunner:
             "name": self.config.name,
             "skilldiff_version": __version__,
             "harness": self.config.harness,
-            "skill": str(self.config.skill),
+            "skill": str(self.config.skill) if self.config.skill else None,
+            "comparison": self.comparison,
             "skill_names": self.config.skill_names,
             "timestamp": timestamp,
             "run_dir": str(run_root),
@@ -396,9 +413,10 @@ def _run_warnings(
     control_runs: list[dict[str, Any]],
     treatment_runs: list[dict[str, Any]],
     tasks: list[TaskConfig],
+    treatment_label: str = "skill",
 ) -> list[str]:
     warnings: list[str] = []
-    for arm_name, runs in (("control", control_runs), ("skill", treatment_runs)):
+    for arm_name, runs in (("control", control_runs), (treatment_label, treatment_runs)):
         failed = [r for r in runs if r.get("status") not in (None, "ok")]
         if failed:
             kinds = sorted({str(r.get("status")) for r in failed})

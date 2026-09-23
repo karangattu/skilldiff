@@ -158,6 +158,7 @@ def render_report_table(
     runs_per_arm: int,
     model_name: str | None = None,
     paired: dict[str, Any] | None = None,
+    treatment_label: str = "Skill",
 ) -> str:
     """Plain-text summary for the terminal."""
     c_score_pct = _score_percent(control_metrics)
@@ -184,7 +185,7 @@ def render_report_table(
     lines = [
         title,
         "",
-        f"{'Metric':<18} {'Control':>8} {'Skill':>10} {'Difference':>16}",
+        f"{'Metric':<18} {'Control':>8} {treatment_label:>10} {'Difference':>16}",
         row("Task score", f"{c_score_pct}%", f"{s_score_pct}%", format_pp_diff(diff_score)),
         row("Success", c_succ, s_succ, format_count_diff(diff_succ)),
         row("Median cost", c_cost, s_cost, format_cost_diff(diff_cost)),
@@ -207,7 +208,7 @@ def render_report_table(
         ["", f"Models: {models_count}    Tasks: {tasks_count}    Runs per arm: {runs_per_arm}"]
     )
     if paired and paired.get("pairs"):
-        verdict, _ = _verdict(paired)
+        verdict, _ = _verdict(paired, treatment_label.lower())
         lines.append(_strip_inline(verdict))
     return "\n".join(lines)
 
@@ -223,7 +224,7 @@ def _tone(value: float, higher_is_better: bool, eps: float = 1e-9) -> Optional[s
     return "good" if (value > 0) == higher_is_better else "bad"
 
 
-def _verdict(paired: dict[str, Any]) -> tuple[str, str]:
+def _verdict(paired: dict[str, Any], subject: str = "skill") -> tuple[str, str]:
     """Return (sentence, callout kind) for the task-score effect."""
     n = paired.get("pairs", 0)
     score = paired["score"]
@@ -241,13 +242,13 @@ def _verdict(paired: dict[str, Any]) -> tuple[str, str]:
         )
     if effect == "better":
         return (
-            f"The skill improved task score by **{format_pp_diff(mean_pp)}** "
+            f"The {subject} improved task score by **{format_pp_diff(mean_pp)}** "
             f"(95% CI {ci}, {pairs_txt}).",
             "tip",
         )
     if effect == "worse":
         return (
-            f"The skill reduced task score by **{abs(mean_pp)} pp** "
+            f"The {subject} reduced task score by **{abs(mean_pp)} pp** "
             f"(95% CI {ci}, {pairs_txt}).",
             "warning",
         )
@@ -260,7 +261,7 @@ def _verdict(paired: dict[str, Any]) -> tuple[str, str]:
     )
 
 
-def _efficiency_sentence(paired: dict[str, Any]) -> Optional[str]:
+def _efficiency_sentence(paired: dict[str, Any], subject: str = "skill") -> Optional[str]:
     phrases: list[str] = []
     for key, less, more in (
         ("cost", "cost {}% less", "cost {}% more"),
@@ -278,7 +279,7 @@ def _efficiency_sentence(paired: dict[str, Any]) -> Optional[str]:
     if not phrases:
         return None
     joined = phrases[0] if len(phrases) == 1 else ", ".join(phrases[:-1]) + " and " + phrases[-1]
-    return f"With the skill, runs {joined}, summed over all pairs."
+    return f"With the {subject}, runs {joined}, summed over all pairs."
 
 
 def _metric_rows(
@@ -426,6 +427,7 @@ def _build_runs_table(
     treatment_runs: list[dict[str, Any]],
     multi_model: bool = False,
     link_artifacts: bool = True,
+    treatment_label: str = "Skill",
 ) -> tuple[list[str], list[list[Cell]]]:
     headers = ["Task", "Run", "Arm", "Status", "Score", "Checks", "Skill used",
                "Cost", "Time", "Turns", "Tokens", "Files"]
@@ -443,7 +445,7 @@ def _build_runs_table(
 
     rows: list[list[Cell]] = []
     for k in ordered_keys:
-        for arm_label, run in (("Control", ctrl_map.get(k)), ("Skill", treat_map.get(k))):
+        for arm_label, run in (("Control", ctrl_map.get(k)), (treatment_label, treat_map.get(k))):
             if run is None:
                 continue
             row: list[Cell] = [
@@ -468,6 +470,11 @@ def _build_runs_table(
                     f"[transcript]({art}/transcript.txt) · [diff]({art}/diff.patch)" if art else ""
                 )
             rows.append(row)
+    if treatment_label != "Skill":
+        index = headers.index("Skill used")
+        headers.pop(index)
+        for row in rows:
+            row.pop(index)
     return headers, rows
 
 
@@ -476,6 +483,7 @@ def _key_takeaways(
     control_runs: list[dict[str, Any]],
     treatment_runs: list[dict[str, Any]],
 ) -> list[str]:
+    subject = "treatment" if results.get("comparison") else "skill"
     paired = paired_comparison(control_runs, treatment_runs)
     control = calculate_metrics(control_runs)
     skill = calculate_metrics(treatment_runs)
@@ -484,13 +492,13 @@ def _key_takeaways(
     n = paired["pairs"]
     if n:
         bullets.append(
-            f"**Accuracy.** Control averaged {_score_percent(control)}% and the skill "
-            f"{_score_percent(skill)}%. Pair by pair, the skill scored higher in "
+            f"**Accuracy.** Control averaged {_score_percent(control)}% and the {subject} "
+            f"{_score_percent(skill)}%. Pair by pair, the {subject} scored higher in "
             f"{paired['wins']}, lower in {paired['losses']}, and tied in {paired['ties']} "
             f"of {n}."
         )
 
-    efficiency = _efficiency_sentence(paired)
+    efficiency = _efficiency_sentence(paired, subject)
     if efficiency:
         totals = [f"time {control['total_duration']:.0f}s → {skill['total_duration']:.0f}s"]
         if control["total_cost"] or skill["total_cost"]:
@@ -535,7 +543,7 @@ def _key_takeaways(
     ) and _score_percent(control) >= 95:
         bullets.append(
             "**Ceiling effect.** Control already solves these tasks, so accuracy can't "
-            "improve. Add harder tasks the skill is designed for, such as obscure APIs, "
+            f"improve. Add harder tasks the {subject} is designed for, such as obscure APIs, "
             "recent changes, or house conventions."
         )
 
@@ -552,6 +560,9 @@ def _key_takeaways(
 def build_report_blocks(
     results: dict[str, Any], run_root: Path | None = None
 ) -> tuple[str, list[tuple]]:
+    comparison = results.get("comparison")
+    label = "Treatment" if comparison else "Skill"
+    subject = label.lower()
     name = str(results.get("name", "experiment"))
     runs_data = _load_runs_for_report(results, run_root)
     control_runs = runs_data["control"]
@@ -570,18 +581,18 @@ def build_report_blocks(
     blocks: list[tuple] = []
 
     if paired.get("pairs"):
-        verdict, kind = _verdict(paired)
+        verdict, kind = _verdict(paired, subject)
     else:
         diff = _score_difference(control, skill)
         if diff > 0:
-            verdict, kind = f"Skill improved task score by **{diff} percentage points**.", "tip"
+            verdict, kind = f"{label} improved task score by **{diff} percentage points**.", "tip"
         elif diff < 0:
-            verdict = f"Skill reduced task score by **{abs(diff)} percentage points**."
+            verdict = f"{label} reduced task score by **{abs(diff)} percentage points**."
             kind = "warning"
         else:
-            verdict, kind = "No measured task-score change between control and skill.", "note"
+            verdict, kind = f"No measured task-score change between control and {subject}.", "note"
     body = [verdict]
-    efficiency = _efficiency_sentence(paired) if paired.get("pairs") else None
+    efficiency = _efficiency_sentence(paired, subject) if paired.get("pairs") else None
     if efficiency:
         body.append(efficiency)
     blocks.append(("callout", kind, "Verdict", body))
@@ -595,7 +606,7 @@ def build_report_blocks(
     blocks.append(
         (
             "table",
-            ["Metric", "Control", "Skill", "Difference", "95% CI"],
+            ["Metric", "Control", label, "Difference", "95% CI"],
             _metric_rows(control, skill, paired),
             ["l", "r", "r", "r", "r"],
         )
@@ -616,6 +627,7 @@ def build_report_blocks(
             blocks.append(("ul", takeaways))
 
     by_model = results.get("by_model", {})
+    group_align = _GROUP_ALIGN if not comparison else _GROUP_ALIGN[:-1]
     if len(models) > 1:
         blocks.append(("h", 2, "By model"))
         rows: list[list[Cell]] = []
@@ -629,8 +641,8 @@ def build_report_blocks(
                 m_control = by_model.get(model, {}).get("control", {})
                 m_skill = by_model.get(model, {}).get("skill", {})
                 m_paired = {}
-            rows.append(_group_row(model, m_control, m_skill, m_paired))
-        blocks.append(("table", _group_headers("Model"), rows, _GROUP_ALIGN))
+            rows.append(_group_row(model, m_control, m_skill, m_paired, show_usage=not comparison))
+        blocks.append(("table", _group_headers("Model", label), rows, group_align))
 
     blocks.append(("h", 2, "By task"))
     task_rows: list[list[Cell]] = []
@@ -652,9 +664,11 @@ def build_report_blocks(
                 task_data = by_model.get(model, {}).get("by_task", {}).get(task_id, {})
                 t_control, t_skill = task_data.get("control", {}), task_data.get("skill", {})
                 t_paired = {}
-            label = f"{task_id} ({model})" if len(models) > 1 else task_id
-            task_rows.append(_group_row(label, t_control, t_skill, t_paired))
-    blocks.append(("table", _group_headers("Task"), task_rows, _GROUP_ALIGN))
+            task_label = f"{task_id} ({model})" if len(models) > 1 else task_id
+            task_rows.append(_group_row(
+                task_label, t_control, t_skill, t_paired, show_usage=not comparison
+            ))
+    blocks.append(("table", _group_headers("Task", label), task_rows, group_align))
 
     if control_runs or treatment_runs:
         headers, run_rows = _build_runs_table(
@@ -662,13 +676,16 @@ def build_report_blocks(
             treatment_runs,
             multi_model=len(models) > 1,
             link_artifacts=run_root is not None,
+            treatment_label=label,
         )
         blocks.append(("h", 2, "Run details"))
         randomized = any("run_order" in r for r in control_runs)
         blocks.append(
-            ("p", "Each pair ran in identical fresh workspaces"
+            ("p", ("Each pair ran in fresh workspaces from the recorded revisions"
+                   if comparison else "Each pair ran in identical fresh workspaces")
              + (", in random order" if randomized else "")
-             + ". Only the skill arm had the skill installed.")
+             + (". Control excludes the PR; treatment includes it." if comparison
+                else ". Only the skill arm had the skill installed."))
         )
         align = ["r" if h in _NUMERIC_RUN_COLUMNS else "l" for h in headers]
         blocks.append(("table", headers, run_rows, align))
@@ -682,6 +699,14 @@ def build_report_blocks(
         ),
         f"**Models:** {', '.join(f'`{m}`' for m in models)}",
     ]
+    if comparison:
+        setup_items = [
+            f"**Repository:** `{comparison['repo']}`",
+            f"**Control (without PR):** `{comparison['control_commit']}` (merge base)",
+            f"**Treatment (with PR):** `{comparison['treatment_commit']}`",
+            f"**Base ref:** `{comparison['base']}` · **Head ref:** `{comparison['head']}`",
+            setup_items[-1],
+        ]
     for key, value in (results.get("settings") or {}).items():
         if key == "harness":
             continue
@@ -696,14 +721,16 @@ def build_report_blocks(
         (
             "ul",
             [
-                "Differences are **skill minus control**. Higher scores are better; lower "
+                f"Differences are **{subject} minus control**. Higher scores are better; lower "
                 "cost, time, and tokens are better.",
                 "The 95% CI is a bootstrap interval over paired runs. If it includes zero, "
                 "the difference could be noise.",
                 "Tokens include cached input where the harness reports it. Claude's cost "
                 "is the API-equivalent price, even on a subscription.",
-                "*Skill used* comes from the harness's tool calls (Claude) or from "
-                "references to the skill's files in the transcript (other harnesses).",
+                *([] if comparison else [
+                    "*Skill used* comes from the harness's tool calls (Claude) or from "
+                    "references to the skill's files in the transcript (other harnesses)."
+                ]),
             ],
         )
     )
@@ -713,16 +740,17 @@ def build_report_blocks(
 _NUMERIC_RUN_COLUMNS = {"Run", "Score", "Checks", "Cost", "Time", "Turns", "Tokens", "Files"}
 
 
-def _group_headers(first: str) -> list[str]:
-    return [first, "Control", "Skill", "Δ score", "Better/worse/tie", "Δ cost", "Δ time",
-            "Skill used"]
+def _group_headers(first: str, treatment_label: str = "Skill") -> list[str]:
+    return [first, "Control", treatment_label, "Δ score", "Better/worse/tie", "Δ cost", "Δ time",
+            *(["Skill used"] if treatment_label == "Skill" else [])]
 
 
 _GROUP_ALIGN = ["l", "r", "r", "r", "r", "r", "r", "r"]
 
 
 def _group_row(
-    label: str, control: dict[str, Any], skill: dict[str, Any], paired: dict[str, Any]
+    label: str, control: dict[str, Any], skill: dict[str, Any], paired: dict[str, Any],
+    show_usage: bool = True,
 ) -> list[Cell]:
     score_diff = _score_difference(control, skill)
     cost_diff = skill.get("median_cost", 0.0) - control.get("median_cost", 0.0)
@@ -739,7 +767,7 @@ def _group_row(
         wlt,
         (format_cost_diff(cost_diff), _tone(round(cost_diff, 2), False)),
         (format_time_diff(time_diff), _tone(time_diff, False)),
-        _skill_usage(skill),
+        *([_skill_usage(skill)] if show_usage else []),
     ]
 
 
