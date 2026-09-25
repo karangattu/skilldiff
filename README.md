@@ -2,16 +2,15 @@
 
 ![SkillDiff logo](assets/skill_diff_logo.png)
 
-**Does your Agent Skill actually help?** skilldiff runs the same tasks with and without
-your skill in identical, fresh workspaces. It grades both arms and reports the paired
-difference in quality, cost, time, and tokens. It also reports whether the agent used
-the skill at all.
+**Does your Agent Skill help?** skilldiff runs the same tasks with and without your
+skill in fresh, identical workspaces. It grades both runs and reports the difference
+in score, cost, time, and tokens. It also reports whether the agent used the skill.
 
 It works with [Claude Code](https://code.claude.com/docs/en/overview),
 [Codex](https://github.com/openai/codex), [OpenCode](https://opencode.ai), and
-[Antigravity](https://antigravity.google). It can test a single skill or every skill that
-a package ships. You can also evaluate a PR: its head commit is the treatment, and
-its merge base is the control.
+[Antigravity](https://antigravity.google). It can evaluate one skill or all skills in a
+package. It can also evaluate a PR. The head commit is the treatment. The merge base
+is the control.
 
 ## Quick start
 
@@ -38,6 +37,44 @@ skilldiff check && skilldiff run
 Each run writes `report.html` (self-contained), `report.md` (renders on GitHub, so you
 can paste it into a PR), `report.qmd` (for Quarto), and `results.json`. It also saves the
 transcript and diff for every session.
+
+## Example result
+
+This table shows the summary in `report.md`. The numbers are illustrative. They are
+not results from a skilldiff experiment.
+
+| Metric | Control | Skill | Difference | 95% CI |
+|:---|---:|---:|---:|---:|
+| Task score | 60% | 80% | +20 pp | +5 to +35 pp |
+| Success | 3/5 | 4/5 | +1 | |
+| Median cost | $0.30 | $0.24 | -$0.06 | -$0.10 to -$0.02 |
+| Median time | 90s | 75s | -15s | -25s to -5s |
+| Median tokens | 20k | 18k | -2.0k | -3.0k to -1.0k |
+| Skill used | unknown | 5/5 | | |
+
+In a skill report, the difference is **skill minus control**. A higher task score is
+better. Lower cost, time, and token counts are better. The 95% CI estimates the
+uncertainty in the mean paired difference. If it includes zero, the result does not
+show a clear effect.
+
+The report starts with a verdict for the mean paired score change and any warnings.
+After the summary, it shows key takeaways and results by model and task. It also links
+to each run's transcript and diff.
+For Claude, cost is the API-equivalent price, even with a subscription. Token counts
+include cached input.
+
+<details>
+<summary>Tips for meaningful results</summary>
+
+- Use **5 or more runs**. One or two runs cannot separate an effect from noise.
+- Write tasks that use what the skill uniquely provides, such as obscure APIs, recent
+  changes, or house conventions. If control scores 100%, the report calls it a ceiling effect.
+- Do not name the skill in prompts. Skill adoption is part of the measurement.
+  Low adoption can mean that the skill's `description` needs work.
+- Read warnings about agent errors, timeouts, control access to the skill, skill
+  runs that ignored the skill, and tasks without graders.
+
+</details>
 
 ## Use it from your agent
 
@@ -102,6 +139,9 @@ Claude Code to set up an experiment that runs Codex sessions.
 
 ### Requirements when an agent runs skilldiff
 
+<details>
+<summary>Shell, login, network, and time requirements</summary>
+
 - **Shell access.** The agent must be allowed to run `skilldiff`. In Claude Code you can
   allow it with the permission rule `Bash(skilldiff *)`.
 - **A signed-in agent CLI.** skilldiff starts separate `claude -p`, `codex exec`, and
@@ -115,7 +155,30 @@ Claude Code to set up an experiment that runs Codex sessions.
 - **Time.** A full run can take longer than the agent's shell timeout, so the agent
   runs it in the background and checks progress with `skilldiff results`.
 
+</details>
+
 ## How it keeps the comparison fair
+
+```mermaid
+flowchart LR
+    T[Task and fixture] --> C[Fresh control workspace]
+    T --> S[Fresh skill workspace]
+    C --> CA[Agent without skill]
+    S --> SA[Agent with skill]
+    CA --> G[Blind grader]
+    SA --> G
+    G --> P[Paired score, cost, time, and tokens]
+    SA --> A[Skill adoption]
+    P --> R[Report]
+    A --> R
+```
+
+Skilldiff runs each pair in random order and grades anonymized results. The diagram
+shows a skill evaluation. In a PR evaluation, the control uses the merge base and
+the treatment uses the head commit.
+
+<details>
+<summary>How isolation, grading, and statistics work</summary>
 
 - **Identical workspaces.** Each pair gets two fresh copies of the task's fixture.
   Only the skill arm has the skill installed, at the path the harness expects. If a
@@ -138,6 +201,8 @@ Claude Code to set up an experiment that runs Codex sessions.
   cleaned up, and stdin is closed. Failed sessions (auth errors, turn or budget limits)
   are flagged, not silently graded as normal runs. Press Ctrl-C to stop and still get a
   report for the completed pairs.
+
+</details>
 
 ## Configure an experiment
 
@@ -181,6 +246,9 @@ grader:
 
 ### Graders
 
+<details>
+<summary>Grader output, environment variables, and checks</summary>
+
 A grader is a shell command that runs inside the workspace after the agent finishes:
 
 - Exit code 0 passes and any other exit code fails. For partial credit, print JSON with
@@ -194,6 +262,8 @@ A grader is a shell command that runs inside the workspace after the agent finis
   valid solution, not only the one your skill recommends.
 - `skilldiff check` runs each grader on the untouched fixture. If the fixture already
   scores 100%, the task can't show a difference.
+
+</details>
 
 ### Testing a package's skills
 
@@ -250,12 +320,17 @@ in the task so each agent uses the package in its own workspace.
   aggregate JSON metrics still use the existing `skill` key for the treatment metrics;
   individual sessions use `runs.treatment` and include `source_commit`.
 
+<details>
+<summary>PR evaluation limits and setup notes</summary>
+
 This measures the full PR relative to its branch point, not the effect of reverting it
 on today's main branch. For an already-merged PR, select a `base` commit from before
 its merge; using a base that already contains the head is rejected. Fetch enough history
 for Git to find a common ancestor. Submodules are currently unsupported. The evaluator
 still runs agent sessions and then grades their outputs, so use tasks and external
 graders that measure your intended outcome.
+
+</details>
 
 ## Commands
 
@@ -268,31 +343,10 @@ graders that measure your intended outcome.
 | `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run, or export it |
 | `skilldiff report [RUN_DIR]` | Rebuild the reports for a run, including runs from older versions |
 
-## Reading the report
-
-The report starts with a **verdict**: the mean paired score change and its 95% CI. It
-then lists any **warnings** to check before you trust the result:
-
-- agent errors or timeouts
-- a control arm that could see the skill
-- skill runs that ignored the skill
-- tasks without graders
-
-The **summary table** follows, then **key takeaways**, per-model and per-task
-breakdowns, and a **run table** with links to every transcript and diff. Differences
-are always *skill minus control*. For Claude, cost is the API-equivalent price even on a
-subscription. Token counts include cached input.
-
-Tips for meaningful results:
-
-- Use **5 or more runs**. One or two runs can't separate an effect from noise.
-- Write tasks that need what the skill uniquely provides, such as obscure APIs, recent
-  changes, or house conventions. If control already scores 100%, the report calls it a
-  ceiling effect.
-- Don't name the skill in prompts. Whether the agent loads the skill on its own is part
-  of what you measure. Low adoption usually means the skill's `description` needs work.
-
 ## Harness notes
+
+<details>
+<summary>Claude Code, Codex, OpenCode, and Antigravity settings</summary>
 
 **Claude Code.** Subscription auth is the default. skilldiff removes
 `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from each session, so an exported key
@@ -320,6 +374,8 @@ such as `gemini-3.8` expand to `gemini-3.8-flash-medium`.
 
 Every harness accepts `bin_path` and `extra_args`. You can also set the binary with
 `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, or `AGY_BIN`.
+
+</details>
 
 ## Development
 
