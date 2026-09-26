@@ -4,6 +4,13 @@ All notable changes to this project use this file.
 The format follows Keep a Changelog.
 This project uses semantic versioning.
 
+## [0.6.0] - 2026-09-26
+
+### Added
+
+- Reading column. Every result table now states each row's verdict in plain words. The column uses the same paired-mean difference and interval as the Δ and CI columns, so the three never disagree. Small samples show "(early sign)". Skill adoption shows Full, Partial, or Not used. Checks show Helps, Hurts, or No difference. Categories show Helps here, Hurts here, Stays out of the way, or Interferes.
+- Agent summary shape. The skill prescribes a final table with a Reading column and one bottom line of SHIP, DO NOT SHIP, or NEEDS MORE RUNS.
+
 ## [0.5.0] - 2026-09-26
 
 ### Changed

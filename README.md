@@ -37,18 +37,19 @@ Each run also saves the transcript and the diff for each agent run.
 
 The numbers below are examples. They are not real results.
 
-| Metric | Control | Skill | Paired mean Δ | 95% CI |
-|:---|---:|---:|---:|---:|
-| Task score (mean) | 60% | 80% | +20 pp | +5 to +35 pp (n=6) |
-| Success | 3/5 | 4/5 | +1 | |
-| Cost (median) | $0.30 | $0.24 | -$0.06 | -$0.10 to -$0.02 (n=6) |
-| Time (median) | 90s | 75s | -15s | -25s to -5s (n=6) |
-| Skill used | unknown | 5/5 | | |
+| Metric | Control | Skill | Paired mean Δ | 95% CI | Reading |
+|:---|---:|---:|---:|---:|:---|
+| Task score (mean) | 60% | 80% | +20 pp | +5 to +35 pp (n=6) | Skill wins |
+| Success | 3/5 | 4/5 | +1 | | More successes |
+| Cost (median) | $0.30 | $0.24 | -$0.06 | -$0.10 to -$0.02 (n=6) | Costs less |
+| Time (median) | 90s | 75s | -15s | -25s to -5s (n=6) | Faster |
+| Skill used | unknown | 5/5 | | | Full adoption |
 
 How to read the table:
 
 - Δ is skill minus control as a paired-mean change.
 - Control and Skill show means for score and medians for cost and time.
+- Reading states the verdict for that row in plain words. It uses the same Δ and interval, so the three columns never disagree.
 - If the interval includes zero, the result can be noise.
 - `N/A` means the value is unknown, not zero.
 - `n=X/Y` shows how many pairs gave a value.
@@ -306,6 +307,6 @@ pip install -e ".[dev]"
 pytest && ruff check skilldiff tests
 ```
 
-See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.5.0.
+See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.6.0.
 
 </details>

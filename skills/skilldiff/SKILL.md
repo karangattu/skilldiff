@@ -116,7 +116,15 @@ Read `report.md` (for pull requests) or `report.html`. Report these results:
    them by the token counts in the report, and show the API-equivalent cost per
    arm. Name the price source and date next to the table. On subscription auth
    the real spend is $0 at the margin, so this table is the comparison that
-   matters.
+   matters. Use this shape, with one plain verdict per row:
+
+   | Metric | Control | Skill | Change | Reading |
+   |---|---|---|---|---|
+   | Task score | 50% | 83% | +33 pp | No clear difference |
+   | Cost | $0.50 | $0.40 | -$0.10 | Costs less |
+
+   End with one bottom line: SHIP, DO NOT SHIP, or NEEDS MORE RUNS, plus one
+   sentence that states why.
 4. **Warnings.** Report agent errors or timeouts, control contamination, tasks without
    graders, and ceiling effects.
 5. **Next step.** Suggest harder tasks, a sharper skill description, or more

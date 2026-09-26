@@ -6,9 +6,13 @@ from skilldiff.grader import Grader
 from skilldiff.reporter import (
     _metric_rows,
     _verdict,
+    adoption_reading,
     calculate_metrics,
+    category_reading,
+    check_reading,
     compare_checks,
     extract_checks,
+    row_reading,
 )
 from skilldiff.stats import paired_comparison
 
@@ -79,6 +83,8 @@ def test_paired_mean_diff_matches_ci_not_median():
     diff_txt = cost_row[3][0] if isinstance(cost_row[3], tuple) else cost_row[3]
     assert "-$32.33" in diff_txt
     assert "-$99" in cost_row[4]  # CI matches paired mean, not median diff
+    # The CI (-$99 to +$1) includes zero, so Reading follows the CI, not Δ.
+    assert cost_row[5] == "No clear difference (early sign)"
 
 
 def test_ungraded_scores_na_not_100():
@@ -207,3 +213,65 @@ def test_compare_shows_newly_failing():
     assert comp["score"]["delta_pp"] == 10
     assert len(comp["newly_failing"]) == 1
     assert comp["newly_failing"][0]["check"] == "Check 1"
+
+
+def test_row_reading_agrees_with_ci():
+    assert row_reading("score", 0.2, 0.05, 0.35, 6, 6, True) == "Skill wins"
+    assert row_reading("score", -0.2, -0.35, -0.05, 6, 6, True) == "Skill loses"
+    assert row_reading("score", 0.33, 0.0, 0.67, 6, 6, True) == "No clear difference"
+    assert row_reading("cost", -0.06, -0.10, -0.02, 6, 6, False) == "Costs less"
+    assert row_reading("duration", 15.0, 5.0, 25.0, 6, 6, False) == "Slower"
+    assert row_reading("score", None, None, None, 0, 6, True) == "Unknown"
+    assert row_reading("score", 0.5, 0.5, 0.5, 1, 6, True) == "Too little data"
+    # Tiny samples never claim a firm win.
+    assert row_reading("score", 1.0, 1.0, 1.0, 2, 2, True) == "Skill wins (early sign)"
+
+
+def test_adoption_check_category_readings():
+    assert adoption_reading(6, 6) == "Full adoption"
+    assert adoption_reading(0, 6) == "Not used"
+    assert adoption_reading(3, 6) == "Partial adoption"
+    assert check_reading(2, 0, 2) == "Helps"
+    assert check_reading(0, 2, 2) == "Hurts"
+    assert check_reading(1, 1, 2) == "No difference"
+    assert category_reading("irrelevant", "No clear difference", 0, 5, 0.0) == (
+        "Stays out of the way"
+    )
+    assert category_reading("intended", "Skill wins", 5, 5, -0.1) == "Helps here"
+    assert category_reading("intended", "Skill loses", 5, 5, 0.1) == "Hurts here"
+
+
+def test_summary_rows_carry_reading():
+    from skilldiff.reporter import _group_row
+
+    control = _run(score=1.0, cost=0.5, duration=10)
+    skill = _run(score=1.0, cost=0.4, duration=9)
+    for i, r in enumerate([control, skill]):
+        r.update({"model": "m", "task_id": "t", "repetition": 1})
+    from skilldiff.reporter import calculate_metrics
+    from skilldiff.stats import paired_comparison
+
+    cm, sm = calculate_metrics([control]), calculate_metrics([skill])
+    p = paired_comparison([control], [skill])
+    rows = _metric_rows(cm, sm, p)
+    assert all(len(r) == 6 for r in rows)
+    score_row = next(r for r in rows if r[0] == "Task score (mean)")
+    assert score_row[5] == "Too little data"
+    grow = _group_row("t", cm, sm, p)
+    assert grow[-1] == "Too little data"
+
+
+def test_terminal_table_has_reading():
+    from skilldiff.reporter import render_report_table
+
+    control = _run(score=0.0, cost=0.5, duration=10)
+    skill = _run(score=1.0, cost=0.5, duration=10)
+    for i, r in enumerate([control, skill]):
+        r.update({"model": "m", "task_id": "t", "repetition": 1})
+    from skilldiff.reporter import calculate_metrics
+    from skilldiff.stats import paired_comparison
+
+    cm, sm = calculate_metrics([control]), calculate_metrics([skill])
+    table = render_report_table("e", cm, sm, 1, 1, 1, paired=paired_comparison([control], [skill]))
+    assert "Reading" in table
+    assert "Too little data" in table

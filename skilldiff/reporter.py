@@ -255,6 +255,131 @@ def _skill_usage(metrics: dict[str, Any]) -> str:
     return f"{metrics.get('skill_used_count', 0)}/{known}"
 
 
+_READING_BETTER = {
+    "score": "Skill wins",
+    "success": "More successes",
+    "cost": "Costs less",
+    "duration": "Faster",
+    "tokens": "Fewer tokens",
+    "turns": "Fewer turns",
+}
+_READING_WORSE = {
+    "score": "Skill loses",
+    "success": "Fewer successes",
+    "cost": "Costs more",
+    "duration": "Slower",
+    "tokens": "More tokens",
+    "turns": "More turns",
+}
+_READING_SAME = {
+    "score": "No clear difference",
+    "success": "Same",
+    "cost": "No clear difference",
+    "duration": "No clear difference",
+    "tokens": "No clear difference",
+    "turns": "No clear difference",
+}
+
+
+def row_reading(
+    kind: str,
+    mean_diff: Optional[float],
+    lo: Any = None,
+    hi: Any = None,
+    n: int = 0,
+    total: int = 0,
+    higher_is_better: bool = True,
+    eps: float = 1e-9,
+) -> str:
+    """Plain-language verdict for one table row.
+
+    Uses the same paired-mean difference and interval as the Δ and CI
+    columns, so the three columns never disagree. Small or collapsed
+    samples get an "(early sign)" suffix instead of a firm claim.
+    """
+    if mean_diff is None:
+        return "Unknown"
+    try:
+        diff = float(mean_diff)
+    except (TypeError, ValueError):
+        return "Unknown"
+    if total == 0:
+        # Summary-only input with no pairing info: read the sign alone.
+        if abs(diff) <= eps:
+            return _READING_SAME.get(kind, "Same")
+        better = (diff > 0) == higher_is_better
+        return _READING_BETTER.get(kind, "Better") if better else _READING_WORSE.get(kind, "Worse")
+    if n == 0:
+        return "Unknown"
+    if n == 1:
+        return "Too little data"
+    early = " (early sign)" if (n < 5 or (lo is not None and hi is not None and lo == hi)) else ""
+    if lo is not None and hi is not None:
+        try:
+            lo_f, hi_f = float(lo), float(hi)
+        except (TypeError, ValueError):
+            return "Unknown"
+        if lo_f > 0:
+            return (
+                _READING_BETTER.get(kind, "Better")
+                if higher_is_better
+                else _READING_WORSE.get(kind, "Worse")
+            ) + early
+        if hi_f < 0:
+            return (
+                _READING_WORSE.get(kind, "Better")
+                if higher_is_better
+                else _READING_BETTER.get(kind, "Worse")
+            ) + early
+        return _READING_SAME.get(kind, "Same") + early
+    if abs(diff) <= eps:
+        return _READING_SAME.get(kind, "Same")
+    better = (diff > 0) == higher_is_better
+    return (
+        _READING_BETTER.get(kind, "Better") if better else _READING_WORSE.get(kind, "Worse")
+    ) + early
+
+
+def adoption_reading(used: int, known: int) -> str:
+    if not known:
+        return "Unknown"
+    if used <= 0:
+        return "Not used"
+    if used >= known:
+        return "Full adoption"
+    return "Partial adoption"
+
+
+def check_reading(wins: int, losses: int, pairs: int) -> str:
+    if not pairs:
+        return "No data"
+    if wins > losses:
+        return "Helps"
+    if losses > wins:
+        return "Hurts"
+    return "No difference"
+
+
+def category_reading(
+    category: str, score_text: str, used: int, known: int, cost_mean: Optional[float]
+) -> str:
+    if category == "irrelevant":
+        if known and used <= 0:
+            return "Stays out of the way"
+        if used > 0 and cost_mean is not None and cost_mean > 0:
+            return "Interferes (costs more)"
+        if used > 0:
+            return "Uses skill here"
+        return score_text
+    if category == "intended":
+        if score_text.startswith("Skill wins"):
+            return "Helps here"
+        if score_text.startswith("Skill loses"):
+            return "Hurts here"
+        return "No clear effect here"
+    return score_text + " here" if score_text not in ("Unknown", "Too little data") else score_text
+
+
 def _cost_basis_note(results: dict[str, Any]) -> str:
     return (
         "Tokens include cached input where the harness reports it. Cost is the "
@@ -331,17 +456,100 @@ def render_report_table(
 
     title = f"{experiment_name} ({model_name})" if model_name else experiment_name
 
-    def row(label: str, c: str, s: str, d: str) -> str:
-        return f"{label:<18} {c:>8} {s:>10} {d:>16}"
+    def row(label: str, c: str, s: str, d: str, r: str = "") -> str:
+        return f"{label:<18} {c:>8} {s:>10} {d:>16} {r:<28}"
+
+    def _term_reading(
+        key: str, kind: str, diff: Optional[float], hib: bool, fallback: Optional[float] = None
+    ) -> str:
+        total = (paired or {}).get("pairs", 0) if paired else 0
+        metric = ((paired or {}).get(key) or {}) if paired else {}
+        if total:
+            # Paired run: trust paired stats only, so Reading matches Δ.
+            return row_reading(
+                kind,
+                diff,
+                metric.get("ci_low"),
+                metric.get("ci_high"),
+                metric.get("n", 0),
+                total,
+                hib,
+            )
+        fb = fallback if fallback is not None else diff
+        return row_reading(kind, fb, None, None, 0, 0, hib)
+
+    score_m = paired_score if paired_score is not None else None
+    if score_m is None:
+        score_reading: str = "Unknown"
+    elif (paired or {}).get("pairs"):
+        score_metric = (paired or {}).get("score") or {}
+        score_reading = row_reading(
+            "score",
+            score_m,
+            score_metric.get("ci_low"),
+            score_metric.get("ci_high"),
+            score_metric.get("n", 0),
+            (paired or {}).get("pairs", 0),
+            True,
+        )
+    else:
+        d_frac = _score_difference(control_metrics, skill_metrics)
+        score_reading = row_reading(
+            "score", None if d_frac is None else d_frac / 100.0, None, None, 0, 0, True
+        )
+    success_reading = row_reading(
+        "success",
+        diff_succ,
+        None,
+        None,
+        (paired or {}).get("pairs", 0) if paired else 0,
+        (paired or {}).get("pairs", 0) if paired else 0,
+        True,
+    )
 
     lines = [
         title,
         "",
-        f"{'Metric':<18} {'Control':>8} {treatment_label:>10} {'Paired mean Δ':>16}",
-        row("Task score", c_score_txt, s_score_txt, diff_score_txt),
-        row("Success", c_succ, s_succ, format_count_diff(diff_succ)),
-        row("Cost (median)", c_cost, s_cost, diff_cost_txt),
-        row("Time (median)", c_time, s_time, diff_time_txt),
+        f"{'Metric':<18} {'Control':>8} {treatment_label:>10} "
+        f"{'Paired mean Δ':>16} {'Reading':<28}",
+        row("Task score", c_score_txt, s_score_txt, diff_score_txt, score_reading),
+        row("Success", c_succ, s_succ, format_count_diff(diff_succ), success_reading),
+        row(
+            "Cost (median)",
+            c_cost,
+            s_cost,
+            diff_cost_txt,
+            _term_reading(
+                "cost",
+                "cost",
+                paired_cost,
+                False,
+                fallback=(
+                    float(skill_metrics["median_cost"]) - float(control_metrics["median_cost"])
+                    if control_metrics.get("median_cost") is not None
+                    and skill_metrics.get("median_cost") is not None
+                    else None
+                ),
+            ),
+        ),
+        row(
+            "Time (median)",
+            c_time,
+            s_time,
+            diff_time_txt,
+            _term_reading(
+                "duration",
+                "duration",
+                paired_dur,
+                False,
+                fallback=(
+                    float(skill_metrics["median_time"]) - float(control_metrics["median_time"])
+                    if control_metrics.get("median_time") is not None
+                    and skill_metrics.get("median_time") is not None
+                    else None
+                ),
+            ),
+        ),
     ]
     if (
         control_metrics.get("median_tokens") is not None
@@ -361,9 +569,40 @@ def render_report_table(
             )
         else:
             d_tok = "N/A"
-        lines.append(row("Tokens (median)", c_tok, s_tok, d_tok))
+        lines.append(
+            row(
+                "Tokens (median)",
+                c_tok,
+                s_tok,
+                d_tok,
+                _term_reading(
+                    "tokens",
+                    "tokens",
+                    paired_tok,
+                    False,
+                    fallback=(
+                        float(skill_metrics["median_tokens"])
+                        - float(control_metrics["median_tokens"])
+                        if control_metrics.get("median_tokens") is not None
+                        and skill_metrics.get("median_tokens") is not None
+                        else None
+                    ),
+                ),
+            )
+        )
     if skill_metrics.get("skill_known_count"):
-        lines.append(row("Skill used", "-", _skill_usage(skill_metrics), ""))
+        lines.append(
+            row(
+                "Skill used",
+                "-",
+                _skill_usage(skill_metrics),
+                "",
+                adoption_reading(
+                    skill_metrics.get("skill_used_count", 0),
+                    skill_metrics.get("skill_known_count", 0),
+                ),
+            )
+        )
     lines.extend(
         ["", f"Models: {models_count}    Tasks: {tasks_count}    Runs per arm: {runs_per_arm}"]
     )
@@ -633,7 +872,33 @@ def _metric_rows(
         paired, "turns", "turns", fallback=turn_fallback
     )
 
+    def _reading_for(
+        key: str, kind: str, fallback: Optional[float], higher_is_better: bool = False
+    ) -> str:
+        metric = (paired or {}).get(key) or {}
+        md = metric.get("mean_diff", None)
+        if md is None and fallback is not None and not total_pairs:
+            return row_reading(kind, fallback, None, None, 0, 0, higher_is_better)
+        return row_reading(
+            kind,
+            md,
+            metric.get("ci_low"),
+            metric.get("ci_high"),
+            metric.get("n", 0),
+            total_pairs,
+            higher_is_better,
+        )
+
+    score_reading = _reading_for("score", "score", score_fallback, True)
+    cost_reading = _reading_for("cost", "cost", cost_fallback)
+    time_reading = _reading_for("duration", "duration", time_fallback)
+    tok_reading = _reading_for("tokens", "tokens", tok_fallback)
+    turn_reading = _reading_for("turns", "turns", turn_fallback)
+
     success_diff = skill.get("success_count", 0) - control.get("success_count", 0)
+    success_reading = row_reading(
+        "success", success_diff, None, None, total_pairs, total_pairs, True
+    )
     has_cost = bool(
         (control.get("median_cost") is not None)
         or (skill.get("median_cost") is not None)
@@ -658,6 +923,7 @@ def _metric_rows(
             _fmt_score_pct(skill),
             (score_txt, score_tone),
             score_ci,
+            score_reading,
         ],
         [
             "Success",
@@ -665,6 +931,7 @@ def _metric_rows(
             f"{skill.get('success_count', 0)}/{skill.get('total_count', 0)}",
             (format_count_diff(success_diff), _tone(success_diff, True)),
             "",
+            success_reading,
         ],
     ]
     if show_cost:
@@ -675,6 +942,7 @@ def _metric_rows(
                 _fmt_cost_opt(skill.get("median_cost")),
                 (cost_txt, cost_tone),
                 cost_ci,
+                cost_reading,
             ]
         )
     rows.append(
@@ -684,6 +952,7 @@ def _metric_rows(
             _fmt_time_opt(skill.get("median_time")),
             (time_txt, time_tone),
             time_ci,
+            time_reading,
         ]
     )
     if (
@@ -698,6 +967,7 @@ def _metric_rows(
                 _fmt_tokens_opt(skill.get("median_tokens")),
                 (tok_txt, tok_tone),
                 tok_ci,
+                tok_reading,
             ]
         )
     if (
@@ -709,9 +979,22 @@ def _metric_rows(
             f"{control['median_turns']:g}" if control.get("median_turns") is not None else "N/A"
         )
         s_turn = f"{skill['median_turns']:g}" if skill.get("median_turns") is not None else "N/A"
-        rows.append(["Turns (median)", c_turn, s_turn, (turn_txt, turn_tone), turn_ci])
+        rows.append(
+            ["Turns (median)", c_turn, s_turn, (turn_txt, turn_tone), turn_ci, turn_reading]
+        )
     if skill.get("skill_known_count") or control.get("skill_known_count"):
-        rows.append(["Skill used", _skill_usage(control), _skill_usage(skill), "", ""])
+        rows.append(
+            [
+                "Skill used",
+                _skill_usage(control),
+                _skill_usage(skill),
+                "",
+                "",
+                adoption_reading(
+                    skill.get("skill_used_count", 0), skill.get("skill_known_count", 0)
+                ),
+            ]
+        )
     # Valid-pair note for scores when some pairs ungraded.
     score_n = ((paired or {}).get("score") or {}).get("n", None)
     if total_pairs and score_n is not None and score_n < total_pairs:
@@ -722,6 +1005,7 @@ def _metric_rows(
                 f"{skill.get('graded_count', score_n)}/{skill.get('total_count', total_pairs)}",
                 "",
                 f"n={score_n}/{total_pairs}",
+                "",
             ]
         )
     return rows
@@ -1237,9 +1521,9 @@ def build_report_blocks(
     blocks.append(
         (
             "table",
-            ["Metric", "Control", label, "Paired mean Δ", "95% CI"],
+            ["Metric", "Control", label, "Paired mean Δ", "95% CI", "Reading"],
             _metric_rows(control, skill, paired),
-            ["l", "r", "r", "r", "r"],
+            ["l", "r", "r", "r", "r", "l"],
         )
     )
     blocks.append(
@@ -1258,7 +1542,8 @@ def build_report_blocks(
             blocks.append(("ul", takeaways))
 
     by_model = results.get("by_model", {})
-    group_align = _GROUP_ALIGN if not comparison else _GROUP_ALIGN[:-1]
+    # Headers end with [Skill used?, Reading]; align the trailing Reading left.
+    group_align = _GROUP_ALIGN if not comparison else [*_GROUP_ALIGN[:7], "l"]
     if len(models) > 1:
         blocks.append(("h", 2, "By model"))
         rows: list[list[Cell]] = []
@@ -1323,9 +1608,18 @@ def build_report_blocks(
             blocks.append(
                 (
                     "table",
-                    ["Task", "Check", "Control", label, "Δ", "Better/worse/tie", "Pairs"],
+                    [
+                        "Task",
+                        "Check",
+                        "Control",
+                        label,
+                        "Δ",
+                        "Better/worse/tie",
+                        "Pairs",
+                        "Reading",
+                    ],
                     _check_table_rows(check_data),
-                    ["l", "l", "r", "r", "r", "r", "r"],
+                    ["l", "l", "r", "r", "r", "r", "r", "l"],
                 )
             )
 
@@ -1367,9 +1661,10 @@ def build_report_blocks(
                         "Skill used",
                         "Δ cost",
                         "Pairs",
+                        "Reading",
                     ],
                     cat_rows,
-                    ["l", "r", "r", "r", "r", "r", "r", "r"],
+                    ["l", "r", "r", "r", "r", "r", "r", "r", "l"],
                 )
             )
 
@@ -1458,7 +1753,8 @@ def build_report_blocks(
                 f"Differences are **{subject} minus control** as paired-mean changes. "
                 "Control/Skill columns show means (score) or medians (cost/time/tokens) "
                 "as descriptive statistics; the Δ and 95% CI measure the same "
-                "paired-mean effect.",
+                "paired-mean effect. Reading states each row's verdict in plain "
+                "words and never disagrees with them.",
                 "The 95% CI is a bootstrap interval over paired runs. If it includes zero, "
                 "the difference could be noise. `n=X/Y` shows valid pairs for that metric.",
                 "Unknown values are **N/A** (ungraded tasks, grader timeouts/errors, or "
@@ -1492,6 +1788,7 @@ def _group_headers(first: str, treatment_label: str = "Skill") -> list[str]:
         "Δ cost (mean)",
         "Δ time (mean)",
         *(["Skill used"] if treatment_label == "Skill" else []),
+        "Reading",
     ]
 
 
@@ -1504,7 +1801,8 @@ def _check_table_rows(check_rows: list[dict[str, Any]]) -> list[list[Cell]]:
         d_txt: Cell = (format_pp_diff(int(d)), _tone(int(d), True)) if d is not None else "N/A"
         wlt = f"{r['wins']}/{r['losses']}/{r['ties']}" if r.get("pairs") else "-"
         pairs_txt = f"n={r['pairs']}" if r.get("pairs") is not None else ""
-        out.append([r["task_id"], r["check"], c_txt, s_txt, d_txt, wlt, pairs_txt])
+        reading = check_reading(r.get("wins", 0), r.get("losses", 0), r.get("pairs", 0))
+        out.append([r["task_id"], r["check"], c_txt, s_txt, d_txt, wlt, pairs_txt, reading])
     return out
 
 
@@ -1555,6 +1853,18 @@ def _category_summary(
         )
         n = m_paired.get("pairs", 0)
         scored = (m_paired.get("score") or {}).get("n", n)
+        score_metric = (m_paired or {}).get("score") or {}
+        score_reading = row_reading(
+            "score",
+            score_m,
+            score_metric.get("ci_low"),
+            score_metric.get("ci_high"),
+            score_metric.get("n", 0),
+            n,
+            True,
+        )
+        used = m_skill.get("skill_used_count", 0)
+        known = m_skill.get("skill_known_count", 0)
         rows.append(
             [
                 cat,
@@ -1565,12 +1875,13 @@ def _category_summary(
                 adoption,
                 cost_txt,
                 f"{scored}/{n}" if n else "-",
+                category_reading(cat, score_reading, used, known, cost_m),
             ]
         )
     return rows
 
 
-_GROUP_ALIGN = ["l", "r", "r", "r", "r", "r", "r", "r"]
+_GROUP_ALIGN = ["l", "r", "r", "r", "r", "r", "r", "r", "l"]
 
 
 def _group_row(
@@ -1614,6 +1925,21 @@ def _group_row(
     else:
         wlt = "-"
     c_pct, s_pct = _score_percent(control), _score_percent(skill)
+    score_metric = (paired or {}).get("score") or {}
+    if score_m is not None and total:
+        score_reading = row_reading(
+            "score",
+            score_m,
+            score_metric.get("ci_low"),
+            score_metric.get("ci_high"),
+            score_metric.get("n", 0),
+            total,
+            True,
+        )
+    elif score_diff is not None:
+        score_reading = row_reading("score", score_diff / 100.0, None, None, 0, 0, True)
+    else:
+        score_reading = "Unknown"
     return [
         label,
         f"{c_pct}%" if c_pct is not None else "N/A",
@@ -1629,6 +1955,7 @@ def _group_row(
         if time_diff is not None
         else ("N/A", None),
         *([_skill_usage(skill)] if show_usage else []),
+        score_reading,
     ]
 
 
