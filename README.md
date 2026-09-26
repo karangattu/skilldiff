@@ -2,46 +2,40 @@
 
 ![SkillDiff logo](assets/skill_diff_logo.png)
 
-**Does your Agent Skill help?** skilldiff runs the same tasks with and without your
-skill in fresh, identical workspaces. It grades both runs and reports the difference
-in score, cost, time, and tokens. It also reports whether the agent used the skill.
+Does your Agent Skill help? SkillDiff runs the same task with and without your skill. It grades both runs and reports the difference in score, cost, time, and tokens.
 
-It works with [Claude Code](https://code.claude.com/docs/en/overview),
-[Codex](https://github.com/openai/codex), [OpenCode](https://opencode.ai), and
-[Antigravity](https://antigravity.google). It can evaluate one skill or all skills in a
-package. It can also evaluate a PR. The head commit is the treatment. The merge base
-is the control.
+It works with Claude Code, Codex, OpenCode, and Antigravity. It tests one skill or a folder of skills. It also tests a PR.
 
 ## Quick start
 
-Requirements: Python 3.10+, Git, and a signed-in agent CLI.
+You need Python 3.10+, Git, and a signed-in agent CLI.
+
+Run these commands to try the demo:
 
 ```bash
-uv tool install git+https://github.com/karangattu/skilldiff   # or: pipx install git+https://github.com/karangattu/skilldiff
-skilldiff init          # a runnable demo experiment
-skilldiff check         # validate the setup without running any agents
-skilldiff run --runs 1  # one control/skill pair per task
+uv tool install git+https://github.com/karangattu/skilldiff
+skilldiff init
+skilldiff check
+skilldiff run --runs 1
 ```
 
 > [!IMPORTANT]
-> Install from GitHub as shown above. The `skilldiff` package on PyPI is an unrelated project.
+> Install from GitHub as shown above. The `skilldiff` package on PyPI is a different project.
 
-To test your own skill:
+## What you get
 
-```bash
-skilldiff init --skill ~/code/my-package/.claude/skills/my-skill --dir my-skill-eval
-cd my-skill-eval   # fill in tasks/ and graders/, then:
-skilldiff check && skilldiff run
-```
+Each run writes four files:
 
-Each run writes `report.html` (self-contained), `report.md` (renders on GitHub, so you
-can paste it into a PR), `report.qmd` (for Quarto), and `results.json`. It also saves the
-transcript and diff for every session.
+- `report.html`: full report with tables and takeaways.
+- `report.md`: short version for pull requests.
+- `report.qmd`: version for Quarto.
+- `results.json`: raw data for scripts.
+
+Each run also saves the transcript and the diff for each agent run.
 
 ## Example result
 
-This table shows the summary in `report.md`. The numbers are illustrative. They are
-not results from a skilldiff experiment.
+The numbers below are examples. They are not real results.
 
 | Metric | Control | Skill | Paired mean Δ | 95% CI |
 |:---|---:|---:|---:|---:|
@@ -49,118 +43,102 @@ not results from a skilldiff experiment.
 | Success | 3/5 | 4/5 | +1 | |
 | Cost (median) | $0.30 | $0.24 | -$0.06 | -$0.10 to -$0.02 (n=6) |
 | Time (median) | 90s | 75s | -15s | -25s to -5s (n=6) |
-| Tokens (median) | 20k | 18k | -2.0k | -3.0k to -1.0k (n=6) |
 | Skill used | unknown | 5/5 | | |
 
-In a skill report, the difference is **skill minus control** as a paired-mean change.
-Control/Skill columns show means (score) or medians (cost/time/tokens) as descriptive
-statistics; the Δ and 95% CI measure the same paired-mean effect. A higher task score
-is better. Lower cost, time, and token counts are better. The 95% CI estimates the
-uncertainty in the mean paired difference. If it includes zero, the result does not
-show a clear effect. `n=X/Y` shows valid pairs for that metric; unknown values are
-**N/A** (ungraded tasks, grader timeouts/errors, or missing cost/tokens).
+How to read the table:
 
-The report starts with a verdict for the mean paired score change and any warnings.
-After the summary, it shows key takeaways and results by model, task, check, and
-category. It also links to each run's transcript and diff.
-For Claude, cost is the API-equivalent price, even with a subscription. Token counts
-include cached input.
+- Δ is skill minus control as a paired-mean change.
+- Control and Skill show means for score and medians for cost and time.
+- If the interval includes zero, the result can be noise.
+- `N/A` means the value is unknown, not zero.
+- `n=X/Y` shows how many pairs gave a value.
 
 <details>
-<summary>Tips for meaningful results</summary>
+<summary>Tips for clear results</summary>
 
-- Use **5 or more runs**. One or two runs cannot separate an effect from noise.
-- Write tasks that use what the skill uniquely provides, such as obscure APIs, recent
-  changes, or house conventions. If control scores 100%, the report calls it a ceiling effect.
-- Do not name the skill in prompts. Skill adoption is part of the measurement.
-  Low adoption can mean that the skill's `description` needs work.
-- Read warnings about agent errors, timeouts, control access to the skill, skill
-  runs that ignored the skill, and tasks without graders.
+- Use 5 or more runs. One run cannot separate signal from noise.
+- Write tasks that need what only the skill gives. Good tasks use obscure APIs, recent changes, or house rules.
+- Do not name the skill in prompts. Adoption is part of the test.
+- If control scores 100%, the task is too easy. The report calls this a ceiling effect.
+- Read warnings about agent errors, grader errors, and skill runs that ignored the skill.
 
 </details>
 
-## Use it from your agent
+## Test your own skill
 
-skilldiff ships as an agent skill. You can ask your coding agent to test a skill: it
-designs fair tasks, writes graders, runs the experiment, and explains the result. The
-agent installs the `skilldiff` CLI itself if it's missing.
+Run this command to create a template for your skill:
 
-### 1. Install the skill
+```bash
+skilldiff init --skill ~/code/my-package/.claude/skills/my-skill --dir my-skill-eval
+cd my-skill-eval
+```
+
+Then complete these steps:
+
+1. Add a small test project to `fixtures/`.
+2. Describe a real task in `tasks/`.
+3. Check how the agent did in `graders/`.
+4. Run `skilldiff check`.
+5. Run `skilldiff run`.
+
+<details>
+<summary>What each folder holds</summary>
+
+- `skilldiff.yaml`: name, skill path, harness, models, tasks, and run count.
+- `tasks/`: one YAML file per task with an id, a prompt, and a category.
+- `fixtures/`: small test projects. SkillDiff copies each fixture to a fresh workspace for each run.
+- `graders/`: scripts that grade the work in each workspace.
+
+</details>
+
+## Details
+
+The sections below hold all reference material. Beginners can stop here and run the demo first.
+
+<details>
+<summary>Use it from your agent</summary>
+
+SkillDiff ships as an agent skill. Your agent designs tasks, writes graders, runs the test, and explains the report.
+
+Install the skill once:
 
 | Agent | Install | Invoke |
 |---|---|---|
 | Claude Code | `/plugin marketplace add karangattu/skilldiff`, then `/plugin install skilldiff@skilldiff` | `/skilldiff:skilldiff <path>` |
-| Codex | Copy to `~/.agents/skills/skilldiff` (all repos) or `.agents/skills/skilldiff` (one repo) | `$skilldiff <path>`, or pick it from `/skills` |
-| OpenCode | Copy to `~/.config/opencode/skills/skilldiff` (it also reads `~/.agents/skills` and `~/.claude/skills`) | Ask for it by name |
-| Gemini CLI | Copy to `~/.gemini/skills/skilldiff` or `~/.agents/skills/skilldiff` | Ask for it by name. Check with `/skills list` |
+| Codex | Copy to `~/.agents/skills/skilldiff` | `$skilldiff <path>` |
+| OpenCode | Copy to `~/.config/opencode/skills/skilldiff` | Ask for it by name |
+| Gemini CLI | Copy to `~/.gemini/skills/skilldiff` | Ask for it by name |
 
-To copy the skill once for every agent that reads `~/.agents/skills`:
-
-```bash
-git clone --depth 1 https://github.com/karangattu/skilldiff /tmp/skilldiff
-mkdir -p ~/.agents/skills && cp -R /tmp/skilldiff/skills/skilldiff ~/.agents/skills/
-```
-
-For Claude Code without the plugin, copy the folder to `~/.claude/skills/skilldiff`
-instead and invoke it with `/skilldiff <path>`. You can also run
-`npx skills add karangattu/skilldiff` to install it for several agents.
-
-### 2. Ask for an evaluation
-
-Invoke the skill with the path to the skill you want to test, then add instructions in
-plain language:
+Ask in plain words:
 
 ```text
 /skilldiff:skilldiff ~/code/py-shiny/.claude/skills/shiny-docs
-Test whether this skill helps sonnet and opus write current Shiny APIs.
+Test if this skill helps sonnet and opus write current Shiny APIs.
 ```
 
-```text
-$skilldiff ./skills
-Evaluate every skill this package ships, using the codex harness.
-```
+The agent then does the work:
 
-Prompts without a slash command work too:
-
-- *"Use skilldiff to check whether my `changelog-style` skill changes anything."*
-- *"Run the skilldiff experiment in `./shiny-eval` again with 5 runs and summarize the report."*
-- *"Read the latest skilldiff results and tell me whether the skill is worth its token cost."*
-
-The agent you talk to and the harness you test can differ. For example, you can ask
-Claude Code to set up an experiment that runs Codex sessions.
-
-### 3. What the agent does
-
-1. Reads the skill to learn what it claims to improve.
-2. Runs `skilldiff init --skill <path>` in a separate folder, outside the skill's own
-   repository.
-3. Writes 2–5 tasks, small fixtures, and graders that accept every valid solution.
-4. Runs `skilldiff check` until it's clean, then a smoke test with `--runs 1`.
-5. **Asks you before the full run**, and shows the session count and maximum spend.
-6. Summarizes the report: the verdict with its confidence interval, skill adoption,
-   efficiency, and warnings.
-
-### Requirements when an agent runs skilldiff
-
-<details>
-<summary>Shell, login, network, and time requirements</summary>
-
-- **Shell access.** The agent must be allowed to run `skilldiff`. In Claude Code you can
-  allow it with the permission rule `Bash(skilldiff *)`.
-- **A signed-in agent CLI.** skilldiff starts separate `claude -p`, `codex exec`, and
-  similar sessions, which use your normal login. Sign in once in a terminal, for
-  example with `claude auth login`. When skilldiff runs inside Claude Code, it removes
-  the parent session's environment variables, so each run is independent.
-- **Network access.** If the agent's sandbox blocks network access or starting other
-  CLIs, the sessions fail and the report lists them as errors. In that case the agent
-  gives you the `skilldiff run` command to run in your own terminal, and reads the
-  results afterwards.
-- **Time.** A full run can take longer than the agent's shell timeout, so the agent
-  runs it in the background and checks progress with `skilldiff results`.
+1. Reads the skill.
+2. Runs `skilldiff init --skill <path>` outside the skill repo.
+3. Writes 2 to 5 tasks, fixtures, and graders.
+4. Runs `skilldiff check` until the output is clean.
+5. Runs a smoke test with `--runs 1`.
+6. Asks you before the full run and shows run count and max cost.
 
 </details>
 
-## How it keeps the comparison fair
+<details>
+<summary>Shell, login, network, and time needs</summary>
+
+- Shell access. The agent must run `skilldiff`. In Claude Code allow `Bash(skilldiff *)`.
+- Signed-in CLI. SkillDiff starts separate agent runs with your normal login. Sign in once in a terminal with `claude auth login`.
+- Network access. If the sandbox blocks new CLIs, runs fail. The report lists them as errors. Then run `skilldiff run` in your own terminal.
+- Time. A full test can exceed the agent timeout. Then run it in the background and check it with `skilldiff results`.
+
+</details>
+
+<details>
+<summary>How the comparison stays fair</summary>
 
 ```mermaid
 flowchart LR
@@ -170,262 +148,163 @@ flowchart LR
     S --> SA[Agent with skill]
     CA --> G[Blind grader]
     SA --> G
-    G --> P[Paired score, cost, time, and tokens]
+    G --> P[Paired score, cost, time, tokens]
     SA --> A[Skill adoption]
     P --> R[Report]
     A --> R
 ```
 
-Skilldiff runs each pair in random order and grades anonymized results. The diagram
-shows a skill evaluation. In a PR evaluation, the control uses the merge base and
-the treatment uses the head commit.
-
-<details>
-<summary>How isolation, grading, and statistics work</summary>
-
-- **Identical workspaces.** Each pair gets two fresh copies of the task's fixture.
-  Only the skill arm has the skill installed, at the path the harness expects. If a
-  fixture already contains the skill, skilldiff removes it from the control copy.
-- **Isolation.** For Claude, `claude.isolate: true` (the default) passes
-  `--setting-sources project,local`. This stops user-level skills, plugins, and
-  `~/.claude/CLAUDE.md` from leaking into either arm. For the other harnesses,
-  `skilldiff check` warns you if the skill is also installed at user level.
-- **Random order.** The arm that runs first is chosen at random for each pair, so warm
-  caches and rate limits don't favor one side.
-- **Blind grading.** Graders see anonymized candidates. The skill name, model name, and
-  arm are redacted from responses and diffs.
-- **Adoption tracking.** The report shows how many skill runs actually used the skill.
-  For Claude this comes from `Skill` tool calls and reads of the skill's files. For the
-  other harnesses it comes from references to the skill's files in the transcript.
-- **Honest statistics.** Differences are paired by model, task, and repetition. Each
-  difference gets a bootstrap 95% confidence interval. If the interval includes zero,
-  the verdict says there is no clear effect.
-- **Robust runs.** Every agent session has a timeout. Background processes are
-  cleaned up, and stdin is closed. Failed sessions (auth errors, turn or budget limits)
-  are flagged, not silently graded as normal runs. Press Ctrl-C to stop and still get a
-  report for the completed pairs.
+- Fresh workspaces. Each pair gets two clean copies of the fixture. Only the skill arm has the skill.
+- Isolation. For Claude the default blocks user skills and plugins from both arms.
+- Random order. Each pair picks the first arm at random.
+- Blind grading. Graders see anonymous work with names and arm labels removed.
+- Adoption check. The report shows how many skill runs used the skill.
+- Paired statistics. Each difference has a bootstrap 95% interval.
+- Safe stops. Each agent run has a timeout. Press Ctrl-C to stop and keep a report for done pairs.
 
 </details>
 
-## Configure an experiment
+<details>
+<summary>Tasks, graders, and categories</summary>
 
-`skilldiff.yaml`:
-
-```yaml
-name: my-skill-eval
-skill: ../my-package/.claude/skills   # one skill dir (has SKILL.md) or a folder of skills
-harness: claude                       # claude | codex | opencode | antigravity
-models:
-  - sonnet
-  - opus
-tasks:
-  - ./tasks/*.yaml
-runs: 5                               # repetitions per arm and task
-timeout_seconds: 1800                 # per agent session
-parallel: 1                           # pairs to run concurrently
-
-claude:
-  auth: subscription                  # or api_key (uses ANTHROPIC_API_KEY)
-  effort: high
-  max_turns: 30
-  max_budget_usd: 2.00                # per session
-  permission_mode: acceptEdits
-  isolate: true
-  allowed_tools:
-    - Bash(my-cli *)                  # commands your skill needs
-```
-
-A task (`tasks/fix-parser.yaml`):
+A task file holds an id, a prompt, a category, and a grader:
 
 ```yaml
 id: fix-parser
-category: intended   # intended | irrelevant | ambiguous | general
-repo: ../fixtures/parser     # copied into each workspace; relative to this file
+category: intended
+repo: ../fixtures/parser
 prompt: |
-  Fix the parser so that it accepts empty input. Keep all existing tests passing.
+  Fix the parser so that it accepts empty input. Keep all tests green.
 grader:
   type: command
   command: python3 "$SKILLDIFF_TASK_DIR/../graders/fix_parser.py"
 ```
 
-Use `category` to measure both sides of a skill: `intended` tasks check whether the
-skill helps relevant work; `irrelevant` tasks check whether it stays out of the way
-(adoption should be low, cost should not rise); `ambiguous` covers unclear triggers.
-The report shows adoption and outcomes separately in *By category*.
+Categories:
 
-Practical thresholds (`skilldiff.yaml`, optional):
+- `intended`: the skill must help here.
+- `irrelevant`: the skill must stay out of the way here.
+- `ambiguous`: the trigger is unclear here.
+- `general`: default when you set no category.
+
+The report shows adoption and results for each group in By category.
+
+A grader runs in the workspace after the agent stops:
+
+- Exit 0 passes. Other exit codes fail.
+- For part scores, print JSON with a `score` from 0 to 1.
+- For named checks, print `checks` as a list of `{"name": ..., "passed": ...}`. Bare booleans also work.
+- The JSON can be the full output or the last line.
+- Keep graders outside the fixture.
+- Accept all valid solutions, not only the skill solution.
+
+Example grader output:
+
+```json
+{"score": 0.8, "success": false, "checks": [{"name": "parses empty", "passed": true}]}
+```
+
+The report adds a By check table. It shows which checks improve and which checks regress.
+
+Ungraded tasks show `N/A`, not `100%`. Grader timeouts and errors show `N/A`, not `0%`.
+
+</details>
+
+<details>
+<summary>Thresholds and verdicts</summary>
+
+You can set practical limits in `skilldiff.yaml`:
 
 ```yaml
 thresholds:
-  acceptable_score_regression_pp: 5   # tolerated drop, e.g. -5pp ok if cheaper
-  required_cost_reduction_pct: 10     # required saving, e.g. 10% cheaper
-  meaningful_score_gain_pp: 5         # gain needed to call an improvement useful
+  acceptable_score_regression_pp: 5
+  required_cost_reduction_pct: 10
+  meaningful_score_gain_pp: 5
 ```
 
-The verdict then adds a practical check so you can distinguish a useful improvement
-from a merely detectable change. Tiny samples (`n<5`) and collapsed intervals
-(identical differences) are flagged in the headline.
+The verdict then states if the result meets the limits. It separates a useful gain from a small but real gain.
 
-### Graders
+The headline also flags weak proof:
 
-<details>
-<summary>Grader output, environment variables, and checks</summary>
-
-A grader is a shell command that runs inside the workspace after the agent finishes:
-
-- Exit code 0 passes and any other exit code fails. For partial credit, print JSON with
-  a `score` from 0 to 1, for example `{"score": 0.8, "success": false, "checks": [{"name":
-  "parses empty", "passed": true}, {"name": "keeps tests", "passed": false}]}`. Bare
-  booleans (`[true, false]`) also work. The JSON can be the only output or the last line
-  of the output. The report shows `checks` as *Checks passed* and adds a *By check*
-  table showing which requirements the skill helps or hurts.
-- Ungraded tasks (no grader), grader timeouts, and grader errors score **N/A**, not
-  100% or 0%. They are excluded from means; valid-pair counts (`n=X/Y`) show how many
-  pairs contributed. Agent errors/timeouts are infrastructure failures, distinct from
-  low scores on completed runs.
-- The grader receives these environment variables: `SKILLDIFF_RESPONSE_FILE` (the
-  agent's final message), `SKILLDIFF_DIFF_FILE` (a git diff of its changes),
-  `SKILLDIFF_TASK_DIR` (the folder of the task file), and `SKILLDIFF_CANDIDATE_DIR`.
-- Keep graders outside the fixture so the agent can't read or change them. Accept every
-  valid solution, not only the one your skill recommends.
-- `skilldiff check` runs each grader on the untouched fixture. If the fixture already
-  scores 100%, the task can't show a difference.
+- `only 2 pairs` means the sample is too small.
+- `CI collapsed` means all pairs gave the same difference.
 
 </details>
 
-### Testing a package's skills
-
-If a package ships several skills, for example `my-package/.claude/skills/{a,b,c}`, point
-`skill:` at the parent folder. The skill arm installs all of them, and adoption counts a
-run as using the skill if it uses any of them.
-
-## Evaluate a PR's feature
-
-Run the same agent tasks against the code with and without a PR:
-
-```bash
-# Fetch the PR into an existing local clone (GitHub PR #42 in this example).
-git -C ~/code/my-package fetch origin refs/pull/42/head:refs/pull/42/head
-
-skilldiff init --pr 42 --repo ~/code/my-package --base origin/main --dir pr-42-eval
-cd pr-42-eval
-# Fill in tasks/my-first-task.yaml and graders/my_first_task.py, then:
-skilldiff check
-skilldiff run --runs 1
-```
-
-`--pr` scaffolds the experiment; it does not fetch from GitHub. Fetch the target branch
-as needed too. For a local branch or another Git host, configure the refs directly:
-
-```yaml
-name: feature-eval
-pr:
-  repo: ../my-package        # local Git clone, relative to this config
-  base: origin/main         # PR target ref
-  head: refs/pull/42/head    # or a feature branch / commit SHA
-harness: claude
-models: [sonnet]
-tasks: [./tasks/*.yaml]
-runs: 5
-```
-
-Use exactly one of `skill` or `pr`. Tasks keep the same prompt and grader format,
-but omit `repo`: both arms use `pr.repo`. Keep graders and experiment files outside
-the evaluated repository. Design tasks that **use** the new feature, and grade the
-resulting behavior. If setup or installation is needed, include identical instructions
-in the task so each agent uses the package in its own workspace.
-
-- **Control:** the common ancestor (merge base) of `base` and `head`.
-- **Treatment:** the PR's `head` commit, including all its changes.
-- Refs are resolved once per run. Reports and JSON record the exact commit IDs.
-- Each workspace contains the committed files and a fresh Git history. Uncommitted
-  files and the source repository's history are excluded; your checkout is unchanged.
-- Both arms use the same harness, model, prompt, and grader. Skill installation/removal
-  and adoption tracking are disabled in PR mode; skills committed in the repo remain
-  part of their respective revisions.
-- HTML, Markdown, Quarto, and terminal reports label the arms **Control** and
-  **Treatment**, with differences expressed as treatment minus control. For compatibility,
-  aggregate JSON metrics still use the existing `skill` key for the treatment metrics;
-  individual sessions use `runs.treatment` and include `source_commit`.
-
 <details>
-<summary>PR evaluation limits and setup notes</summary>
+<summary>Compare skill revisions</summary>
 
-This measures the full PR relative to its branch point, not the effect of reverting it
-on today's main branch. For an already-merged PR, select a `base` commit from before
-its merge; using a base that already contains the head is rejected. Fetch enough history
-for Git to find a common ancestor. Submodules are currently unsupported. The evaluator
-still runs agent sessions and then grades their outputs, so use tasks and external
-graders that measure your intended outcome.
+Each run records skill hashes, prompt hashes, fixture hashes, grader hashes, and CLI versions.
 
-</details>
-
-## Compare skill revisions
-
-Each run records provenance: skill file hashes, prompt/fixture/grader hashes, agent CLI
-versions, and `skilldiff` version. Compare two runs (for example, before/after a skill
-edit) with:
+Run this command to compare two runs:
 
 ```bash
 skilldiff compare runs/2026-09-22T120000Z runs/2026-09-23T120000Z
 ```
 
-This shows skill-score, adoption, and efficiency changes, plus newly failing/passing
-checks. It warns when models, tasks, harnesses, CLI versions, or task hashes differ
-enough to make the comparison unreliable.
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `skilldiff init [--skill PATH] [--harness H] [--dir D]` | Scaffold a runnable demo, or a template for your skill |
-| `skilldiff init --pr N --repo PATH [--base REF] [--dir D]` | Scaffold a PR feature evaluation using locally fetched refs |
-| `skilldiff check [-c CONFIG]` | Validate the config, the CLI, the skill frontmatter, and the graders. Estimate the session count and maximum spend |
-| `skilldiff run [-c CONFIG] [--runs N] [-j N] [-m MODEL] [-t TASK]` | Run the experiment, or a subset of it |
-| `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run, or export it |
-| `skilldiff report [RUN_DIR]` | Rebuild the reports for a run, including runs from older versions |
-| `skilldiff compare RUN_A RUN_B [--json]` | Compare two runs: score, adoption, efficiency, newly failing checks |
-
-## Harness notes
-
-<details>
-<summary>Claude Code, Codex, OpenCode, and Antigravity settings</summary>
-
-**Claude Code.** Subscription auth is the default. skilldiff removes
-`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from each session, so an exported key
-can't silently switch billing. Sign in once:
-
-```bash
-env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN claude auth login
-```
-
-To bill through the API, set `auth: api_key` and export `ANTHROPIC_API_KEY`.
-`acceptEdits` lets unattended sessions edit the disposable workspaces. Allow-list the
-commands your skill runs with `allowed_tools`. Avoid `bypassPermissions` unless you
-trust every task and fixture. Set `isolate: false` to test against your everyday setup,
-with your user-level skills and plugins loaded.
-
-**Codex.** `codex: {auth: stored, sandbox: workspace-write}`. `stored` removes
-`OPENAI_API_KEY` so your ChatGPT login is used.
-
-**OpenCode.** `service: go` (the default) routes models to the `opencode-go/`
-namespace, so runs use your OpenCode Go subscription instead of Zen credits. Sign in
-with `opencode providers login`.
-
-**Antigravity.** `antigravity: {dangerously_skip_permissions: true}`. Gemini shorthands
-such as `gemini-3.8` expand to `gemini-3.8-flash-medium`.
-
-Every harness accepts `bin_path` and `extra_args`. You can also set the binary with
-`CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, or `AGY_BIN`.
+The output shows score changes, adoption changes, efficiency changes, and newly failing or passing checks. It warns if models, tasks, or versions differ.
 
 </details>
 
-## Development
+<details>
+<summary>Evaluate a PR</summary>
+
+Run the same tasks with and without a PR:
+
+```bash
+git -C ~/code/my-package fetch origin refs/pull/42/head:refs/pull/42/head
+skilldiff init --pr 42 --repo ~/code/my-package --base origin/main --dir pr-42-eval
+cd pr-42-eval
+skilldiff check
+skilldiff run --runs 1
+```
+
+Control is the merge base. Treatment is the head commit. Reports label the arms Control and Treatment. Use one of `skill` or `pr`, not both. Tasks omit `repo` in PR mode.
+
+</details>
+
+<details>
+<summary>Commands</summary>
+
+| Command | What it does |
+|---|---|
+| `skilldiff init [--skill PATH] [--harness H] [--dir D]` | Make a demo or a template for your skill |
+| `skilldiff init --pr N --repo PATH [--base REF] [--dir D]` | Make a PR test from local refs |
+| `skilldiff check [-c CONFIG]` | Check the config, the CLI, the skill, and the graders |
+| `skilldiff run [-c CONFIG] [--runs N] [-j N] [-m MODEL] [-t TASK]` | Run the test |
+| `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run |
+| `skilldiff report [RUN_DIR]` | Rebuild reports for a run |
+| `skilldiff compare RUN_A RUN_B [--json]` | Compare two runs |
+
+</details>
+
+<details>
+<summary>Harness setup</summary>
+
+Claude Code. The default uses your subscription. SkillDiff removes `ANTHROPIC_API_KEY` from each run. To bill through the API, set `auth: api_key` and export the key.
+
+Codex. The default uses stored login and removes `OPENAI_API_KEY`.
+
+OpenCode. The default `service: go` uses your Go subscription. Sign in with `opencode providers login`.
+
+Antigravity. Short names expand to full models. `gemini-3.8` becomes `gemini-3.8-flash-medium`.
+
+Each harness accepts `bin_path` and `extra_args`. You can also set `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, or `AGY_BIN`.
+
+</details>
+
+<details>
+<summary>Development and changelog</summary>
+
+Run the test suite with these commands:
 
 ```bash
 git clone https://github.com/karangattu/skilldiff && cd skilldiff
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest && ruff check .
-SKILLDIFF_MOCK_RUNNER=1 skilldiff run   # exercise the pipeline without calling an agent
+pytest && ruff check skilldiff tests
 ```
+
+See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.3.0.
+
+</details>
