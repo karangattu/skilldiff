@@ -1,7 +1,10 @@
+import hashlib
 import json
 import platform
 import random
 import re
+import shutil
+import subprocess
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -42,6 +45,126 @@ def find_user_level_installs(skill_names: list[str], harness: str) -> list[str]:
             if (path / "SKILL.md").is_file():
                 found.append(str(path))
     return found
+
+
+def _sha256_file(path: Path) -> Optional[str]:
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _hash_dir(root: Path, limit_files: int = 1000) -> tuple[str, list[dict[str, str]]]:
+    files: list[dict[str, str]] = []
+    if not root.is_dir():
+        return "", files
+    paths = sorted(p for p in root.rglob("*") if p.is_file())
+    for p in paths[:limit_files]:
+        try:
+            rel = str(p.relative_to(root))
+        except ValueError:
+            rel = str(p)
+        digest = _sha256_file(p)
+        if digest:
+            files.append({"path": rel, "sha256": digest})
+    combined = (
+        hashlib.sha256("\n".join(f"{f['path']}:{f['sha256']}" for f in files).encode()).hexdigest()
+        if files
+        else ""
+    )
+    return combined, files
+
+
+def _cli_version(binary: str) -> str:
+    resolved = shutil.which(binary) or (binary if Path(binary).exists() else None)
+    if not resolved:
+        return "not found"
+    for flag in ("--version", "version", "-v"):
+        try:
+            proc = subprocess.run(
+                [resolved, flag],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                stdin=subprocess.DEVNULL,
+            )
+            out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+            line = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
+            if line and proc.returncode == 0:
+                return line[:200]
+        except Exception:
+            continue
+    return "unknown"
+
+
+def collect_provenance(config: ExperimentConfig, tasks: list[TaskConfig]) -> dict[str, Any]:
+    """Hashes/snapshots of skills, prompts, fixtures, graders + CLI versions."""
+    skill_hashes: list[dict[str, Any]] = []
+    combined_skill = hashlib.sha256()
+    for d in config.skill_dirs:
+        h, files = _hash_dir(d)
+        skill_hashes.append({"dir": str(d), "hash": h, "files": files[:200]})
+        combined_skill.update(h.encode())
+    skill_hash = combined_skill.hexdigest() if skill_hashes else ""
+
+    task_entries: list[dict[str, Any]] = []
+    tasks_combined = hashlib.sha256()
+    for t in tasks:
+        prompt_sha = hashlib.sha256(t.prompt.encode()).hexdigest()
+        task_file_sha = _sha256_file(t.source_path) if t.source_path else None
+        grader_sha = None
+        fixture_info: dict[str, Any] = {}
+        if t.source_path:
+            task_dir = t.source_path.parent
+            # Grader file referenced by command (best effort): hash sibling graders.
+            graders_dir = (
+                task_dir.parent / "graders" if task_dir.name == "tasks" else task_dir / "graders"
+            )
+            if graders_dir.is_dir():
+                gh, _ = _hash_dir(graders_dir, limit_files=200)
+                grader_sha = gh
+            if t.repo and not config.pr:
+                fixture = (task_dir / t.repo).resolve() if t.repo else None
+                if fixture and fixture.exists() and fixture.is_dir():
+                    fh, files = _hash_dir(fixture, limit_files=500)
+                    fixture_info = {"hash": fh, "files": len(files)}
+                    tasks_combined.update(fh.encode())
+        entry = {
+            "id": t.id,
+            "category": getattr(t, "category", "general"),
+            "prompt_sha256": prompt_sha,
+            "task_file": str(t.source_path) if t.source_path else None,
+            "task_file_sha256": task_file_sha,
+            "grader": t.grader.command if t.grader else None,
+            "graders_hash": grader_sha,
+            "fixture": fixture_info or None,
+        }
+        task_entries.append(entry)
+        tasks_combined.update(prompt_sha.encode())
+        tasks_combined.update(str(t.grader.command if t.grader else "").encode())
+        if task_file_sha:
+            tasks_combined.update(task_file_sha.encode())
+
+    try:
+        runner = AgentRunner()
+        binary = runner.binary_for(config.harness, config)
+    except Exception:
+        binary = config.harness
+    agent_cli = {config.harness: _cli_version(binary)}
+
+    return {
+        "skill_hash": skill_hash,
+        "skills": skill_hashes,
+        "tasks_hash": tasks_combined.hexdigest(),
+        "task_files": task_entries,
+        "agent_cli": agent_cli,
+        "skilldiff_version": __version__,
+        "system": {"os": platform.system(), "python": platform.python_version()},
+    }
 
 
 @dataclass
@@ -85,6 +208,10 @@ class ExperimentRunner:
         return warnings
 
     def _metadata(self, timestamp: str) -> dict[str, Any]:
+        try:
+            provenance = collect_provenance(self.config, self.tasks)
+        except Exception:
+            provenance = {}
         return {
             "name": self.config.name,
             "skilldiff_version": __version__,
@@ -96,6 +223,7 @@ class ExperimentRunner:
             "runs": self.config.runs,
             "timeout_seconds": self.config.timeout_seconds,
             "parallel": self.config.parallel,
+            "thresholds": dict(getattr(self.config, "thresholds", {}) or {}),
             "claude": asdict(self.config.claude),
             "codex": asdict(self.config.codex),
             "opencode": asdict(self.config.opencode),
@@ -105,6 +233,7 @@ class ExperimentRunner:
                     "id": t.id,
                     "repo": t.repo,
                     "grader": t.grader.command if t.grader else None,
+                    "category": getattr(t, "category", "general"),
                 }
                 for t in self.tasks
             ],
@@ -113,6 +242,7 @@ class ExperimentRunner:
                 "os": platform.system(),
                 "python": platform.python_version(),
             },
+            "provenance": provenance,
         }
 
     # -------------------------------------------------------------------- run
@@ -261,6 +391,7 @@ class ExperimentRunner:
                 records[arm] = {
                     "model": model,
                     "task_id": task.id,
+                    "task_category": getattr(task, "category", "general"),
                     "repetition": pair.repetition,
                     "arm": arm,
                     "run_order": order.index(arm) + 1,
@@ -281,6 +412,7 @@ class ExperimentRunner:
                     "files_changed": files,
                     "score": grade.score,
                     "success": grade.success,
+                    "grade_status": getattr(grade, "grade_status", "graded"),
                     "blind_label": grade.label,
                     "feedback": grade.feedback,
                     "exit_code": res.exit_code,
@@ -339,15 +471,52 @@ class ExperimentRunner:
             }
 
         warnings = list(warnings)
-        warnings.extend(_run_warnings(
-            control_runs, treatment_runs, self.tasks,
-            treatment_label="treatment" if self.comparison else "skill",
-        ))
+        warnings.extend(
+            _run_warnings(
+                control_runs,
+                treatment_runs,
+                self.tasks,
+                treatment_label="treatment" if self.comparison else "skill",
+            )
+        )
         if interrupted:
             warnings.append(
                 f"The experiment was interrupted after {len(control_runs)} of "
                 f"{len(self.config.models) * len(self.tasks) * self.config.runs} pairs."
             )
+
+        try:
+            provenance = collect_provenance(self.config, self.tasks)
+        except Exception:
+            provenance = {}
+        task_categories = {t.id: getattr(t, "category", "general") for t in self.tasks}
+        task_details = [
+            {
+                "id": t.id,
+                "category": getattr(t, "category", "general"),
+                "repo": t.repo,
+                "grader": t.grader.command if t.grader else None,
+            }
+            for t in self.tasks
+        ]
+        by_category: dict[str, Any] = {}
+        for cat in sorted(set(task_categories.values())):
+            c_runs = [
+                r
+                for r in control_runs
+                if r.get("task_category", task_categories.get(r.get("task_id"), "general")) == cat
+            ]
+            t_runs = [
+                r
+                for r in treatment_runs
+                if r.get("task_category", task_categories.get(r.get("task_id"), "general")) == cat
+            ]
+            by_category[cat] = {
+                "control": calculate_metrics(c_runs),
+                "skill": calculate_metrics(t_runs),
+                "paired": paired_comparison(c_runs, t_runs),
+                "tasks": sorted({r.get("task_id", "") for r in c_runs + t_runs}),
+            }
 
         return {
             "name": self.config.name,
@@ -360,12 +529,17 @@ class ExperimentRunner:
             "run_dir": str(run_root),
             "models": self.config.models,
             "tasks": [t.id for t in self.tasks],
+            "task_categories": task_categories,
+            "task_details": task_details,
             "tasks_count": len(self.tasks),
             "runs_per_arm": self.config.runs,
             "interrupted": interrupted,
             "warnings": warnings,
             "settings": _settings_summary(self.config),
+            "thresholds": dict(getattr(self.config, "thresholds", {}) or {}),
+            "provenance": provenance,
             "by_model": by_model,
+            "by_category": by_category,
             "overall": {
                 "control": calculate_metrics(control_runs),
                 "skill": calculate_metrics(treatment_runs),
@@ -392,7 +566,21 @@ class ExperimentRunner:
 def _run_summary(run: dict[str, Any]) -> str:
     if run.get("status") not in (None, "ok"):
         return str(run["status"]).upper()
-    text = f"{round(float(run.get('score', 0.0)) * 100)}% in {float(run.get('duration', 0)):.0f}s"
+    if run.get("grade_status") in ("ungraded", "timeout", "error") or run.get("score") is None:
+        label = {"ungraded": "ungraded", "timeout": "grader timeout", "error": "grader error"}.get(
+            str(run.get("grade_status") or ""), "N/A"
+        )
+        dur = run.get("duration")
+        dur_txt = f" in {float(dur):.0f}s" if dur is not None else ""
+        text = f"{label}{dur_txt}"
+    else:
+        try:
+            pct = round(float(run["score"]) * 100)
+        except (TypeError, ValueError):
+            pct = None
+        dur = run.get("duration")
+        dur_txt = f" in {float(dur):.0f}s" if dur is not None else ""
+        text = f"{pct}%{dur_txt}" if pct is not None else f"N/A{dur_txt}"
     if run.get("arm") == "treatment" and run.get("skill_invoked") is False:
         text += " (skill unused)"
     return text
@@ -401,12 +589,16 @@ def _run_summary(run: dict[str, Any]) -> str:
 def _settings_summary(config: ExperimentConfig) -> dict[str, Any]:
     harness_cfg = asdict(getattr(config, config.harness, config.claude))
     harness_cfg.pop("bin_path", None)
-    return {
+    out: dict[str, Any] = {
         "harness": config.harness,
         "timeout_seconds": config.timeout_seconds,
         "parallel": config.parallel,
         **{k: v for k, v in harness_cfg.items() if v not in (None, [], "")},
     }
+    thresholds = dict(getattr(config, "thresholds", {}) or {})
+    if thresholds:
+        out["thresholds"] = thresholds
+    return out
 
 
 def _run_warnings(
@@ -421,13 +613,31 @@ def _run_warnings(
         if failed:
             kinds = sorted({str(r.get("status")) for r in failed})
             sample = next((r.get("error") for r in failed if r.get("error")), None)
+            # Distinguish infrastructure failures (agent error/timeout) from
+            # agent failures (low scores on completed runs). Failed sessions
+            # were still graded on partial work when possible.
+            graded = sum(1 for r in failed if r.get("grade_status") == "graded")
+            ungraded = len(failed) - graded
             msg = (
                 f"{len(failed)} of {len(runs)} {arm_name} runs ended with "
-                f"{' or '.join(kinds)}; their scores reflect whatever the agent left behind."
+                f"{' or '.join(kinds)} (agent infrastructure failure, not a low score)"
             )
+            if graded:
+                msg += f"; {graded} were still graded on partial work"
+            if ungraded:
+                msg += f"; {ungraded} have N/A scores (grading unavailable)"
+            msg += "."
             if sample:
                 msg += f" First error: {str(sample).strip().splitlines()[0][:200]}"
             warnings.append(msg)
+        grade_failed = [r for r in runs if r.get("grade_status") in ("timeout", "error")]
+        if grade_failed:
+            kinds = sorted({str(r.get("grade_status")) for r in grade_failed})
+            warnings.append(
+                f"{len(grade_failed)} of {len(runs)} {arm_name} runs have grader "
+                f"{' or '.join(kinds)}; their scores are N/A and excluded from means. "
+                "These are evaluation-infra failures, shown with valid-pair counts."
+            )
 
     contaminated = [r for r in control_runs if r.get("skill_available") or r.get("skill_invoked")]
     if contaminated:
@@ -459,7 +669,7 @@ def _run_warnings(
     ungraded = [t.id for t in tasks if not (t.grader and t.grader.command)]
     if ungraded:
         warnings.append(
-            "No grader is configured for " + ", ".join(ungraded) + "; every run of those "
-            "tasks scores 100%, so only cost and time are compared."
+            "No grader is configured for " + ", ".join(ungraded) + "; those runs score "
+            "N/A (not 100%), so only cost and time are compared. Valid-pair counts shown."
         )
     return warnings
