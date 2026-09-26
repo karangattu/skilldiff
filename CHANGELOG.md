@@ -4,6 +4,28 @@ All notable changes to this project use this file.
 The format follows Keep a Changelog.
 This project uses semantic versioning.
 
+## [0.7.0] - 2026-09-26
+
+### Added
+
+- Skill A/B as a first-class mode. One experiment runs skill A versus skill B on identical fixtures with interleaved execution and paired results (`skill_a`, `skill_b`, `include_baseline`). Reports label Skill A and Skill B. `compare` normalizes efficiency by matched tasks and repetitions instead of totals and gains `--strict`.
+- PR workflows. `pr.mode` selects agent effectiveness (`agent`, default) or PR correctness (`correctness`, no agents). `pr.pair` selects `merge-base` versus head or base tip versus a synthetic merge (`base-merge`) for integration testing.
+- Resumable, auditable runs. Each arm persists at once, completed pairs checkpoint, and `--resume` reuses only when input hashes match. The seed is saved and arm order is balanced within each task and model. Retries keep their costs.
+- Grader validation fixtures. Tasks can set `validation: {good, broken}` so `check` grades untouched, known-good, and deliberately broken workspaces. Strict output validation rejects bad shapes as grader errors.
+- Failure policy. `failure_policy: {agent_failure: exclude|zero}` is decided before running and shown in the verdict. Grader timeouts and errors stay `N/A`.
+- Held-out tasks and stopping rule in the skill. Tasks must cover intended, representative, irrelevant, ambiguous, and regression cases, split into `dev/` and frozen `heldout/`. The run budget is fixed before looking at results.
+
+### Changed
+
+- Isolation is verified, not assumed. Fixture copies strip `.git` and reject escaping symlinks. `check` reports harness-specific skills, instructions, plugins, and memory. Control contamination marks the run INVALID.
+- Graders distinguish test failure from grader failure. Crashes become `error` (`N/A`), never a plain zero. Outside the fixture is documented as not isolation by itself.
+- Provenance covers complete inputs. All files are hashed with no silent caps, grader contents and locks join the task hash, and the pre-execution snapshot is reused so edits during a run cannot change later pairs.
+- Shipping needs bounds, not points. Practical thresholds require confidence bounds to clear gain and regression limits. Reports separate repetition noise from task coverage and flag few-task evidence.
+
+### Fixed
+
+- Removed leftover token-pricing modules (`skilldiff/pricing.py`, `tests/test_pricing.py`). Costs stay harness-reported.
+
 ## [0.6.0] - 2026-09-26
 
 ### Added
