@@ -95,6 +95,23 @@ def test_pr_check_uses_control_revision(pr_experiment, monkeypatch, capsys):
     assert "untouched fixture scores 0%" in output
 
 
+@pytest.mark.parametrize("pair", ["merge-base", "base-merge"])
+def test_pr_resume_reuses_original_commits(pr_experiment, monkeypatch, pair):
+    path, _, _, _ = pr_experiment
+    monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    monkeypatch.setattr("skilldiff.experiment._cli_version", lambda _: "test 1")
+    cfg, tasks = load_experiment(path)
+    cfg.pr.pair = pair
+    cfg.pr.mode = "correctness"
+    cfg.runs = 1
+    first = ExperimentRunner(cfg, tasks).run()
+    # A new synthetic merge would have a different commit timestamp and SHA.
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2030-01-01T00:00:00+00:00")
+    second = ExperimentRunner(cfg, tasks).run(resume=Path(first["run_dir"]))
+    assert second["comparison"] == first["comparison"]
+    assert second["runs"] == first["runs"]
+
+
 @pytest.mark.parametrize(
     "change,match",
     [

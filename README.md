@@ -165,7 +165,8 @@ flowchart LR
 - Blind grading. Graders see anonymous work with names and arm labels removed.
 - Adoption check. The report shows how many skill runs used the skill.
 - Paired statistics. Each difference has a bootstrap 95% interval.
-- Safe stops and resume. Each agent run has a timeout. Press Ctrl-C to stop and keep a report for done pairs. Each arm is saved at once, completed pairs checkpoint, and `--resume` reuses only when input hashes match.
+- Frozen inputs. Each run keeps copies of its skills and fixtures in `inputs/`, with a versioned manifest. Every pair uses these copies, so editing the originals cannot change later pairs. Keep the evaluation output outside the skill and fixture directories. Snapshot storage adds roughly one copy of each distinct input directory.
+- Safe stops and resume. Each agent run has a timeout. Press Ctrl-C to stop and keep a report for done pairs. Each arm saves its transcript and diff before publishing its record. Metadata, records, and checkpoints are replaced atomically; write failures stop the experiment. One writer can own a run directory at a time.
 
 </details>
 
@@ -313,6 +314,22 @@ skilldiff compare runs/2026-09-22T120000Z runs/2026-09-23T120000Z
 ```
 
 The output shows score changes, adoption changes, efficiency changes, and newly failing or passing checks. Efficiency uses per-run means over matched tasks and repetitions, not totals. It warns if models, tasks, or versions differ.
+
+</details>
+
+<details>
+<summary>Resume compatibility and recovery</summary>
+
+`skilldiff run --resume` selects the latest run. `--resume-from DIR` selects a specific run. Resume validates the saved metadata, input snapshots, checkpoint, and all completed arm artifacts before writing to that run.
+
+- Keep skills, tasks, fixtures, PR revisions, models, preset, baseline settings, active harness configuration, timeout, parallelism, failure policy, thresholds, and tool versions unchanged.
+- Omit `--seed` to reuse the original seed, or supply that same seed. You may increase `--runs`; decreasing it is refused.
+- Missing or corrupt records, changed snapshots, and incomplete pairs stop recovery with an error. Existing artifacts remain available. SkillDiff never silently reruns a partial paid pair; start a new run if needed.
+- Runs created before frozen-input metadata was introduced remain readable by `results`, `report`, and `compare`, but require a new run instead of resume.
+- Graders stay at their original paths. SkillDiff checks the grader directories and dependency locks tracked by provenance before and after grading. A change stops the run without completing that pair. Python import and pytest caches are excluded. Arbitrary external scripts, installed dependencies, and network services used by grader commands are not frozen or fully tracked.
+- Original inputs must still match the saved snapshots when resuming. Restore any edits or start a new experiment. Changes to originals during an already running experiment do not affect its frozen workspaces.
+
+Keep the entire run directory, including `inputs/`, for recovery. A small sibling `.lock` file is normal; its OS lock releases when the process exits, including after a crash. Do not delete the lock file while a writer is active.
 
 </details>
 

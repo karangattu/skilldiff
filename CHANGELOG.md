@@ -4,6 +4,29 @@ All notable changes to this project use this file.
 The format follows Keep a Changelog.
 This project uses semantic versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- Resume now accepts both saved task-ID formats and validates execution settings,
+  input hashes, seeds, tool versions, checkpoints, and completed arm artifacts
+  before modifying a run. Repetitions can increase; incompatible changes refuse.
+- Synthetic PR merge commits are reused on resume when source revisions match.
+- Skills and fixtures are snapshotted once per run. Later source edits cannot
+  alter later pairs; unreadable inputs and changes during copying stop execution.
+- Atomic, synced writes protect metadata, manifests, arm records, checkpoints,
+  and results. Persistence failures are surfaced and outstanding agents cancelled.
+- Exclusive run locks and unique output directories prevent concurrent writers
+  from overwriting experiment state. Missing, corrupt, or incomplete saved pairs
+  stop recovery without automatically repeating paid sessions.
+- Changes to tracked graders or dependency locks stop a pair before completion.
+  Python import and pytest caches are excluded from grader checks.
+
+### Compatibility
+
+- Old reports remain readable, but runs without frozen-input metadata cannot be
+  resumed. Run output must be outside skill and fixture input directories.
+
 ## [0.8.0] - 2026-09-27
 
 ### Fixed

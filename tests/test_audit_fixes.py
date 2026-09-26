@@ -228,6 +228,7 @@ def test_resume_refuses_changed_pr_commits(tmp_path, monkeypatch):
     cfg, tasks = load_experiment(exp)
     res = ExperimentRunner(cfg, tasks, output_dir=tmp_path / "runs").run()
     run_dir = Path(res["run_dir"])
+    git(repo, "checkout", "-q", "feat")
     (repo / "f.txt").write_text("newer")
     git(repo, "commit", "-qam", "feat2")
     cfg2, tasks2 = load_experiment(exp)

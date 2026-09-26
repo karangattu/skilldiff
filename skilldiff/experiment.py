@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,9 +17,20 @@ from typing import Any, Callable, Optional
 from skilldiff import __version__
 from skilldiff.config import ExperimentConfig, TaskConfig
 from skilldiff.grader import Grader
+from skilldiff.persistence import atomic_json, atomic_write, read_json, run_lock
 from skilldiff.reporter import calculate_metrics, create_reports
 from skilldiff.revisions import resolve_comparison
 from skilldiff.runner import AgentRunner, RunResult
+from skilldiff.snapshots import (
+    SNAPSHOT_VERSION,
+    create_snapshots,
+    file_hash,
+    grader_inputs,
+    input_sources,
+    load_snapshots,
+    snapshot_paths,
+    tree_contents,
+)
 from skilldiff.stats import paired_comparison
 from skilldiff.workspace import Workspace
 
@@ -92,20 +104,13 @@ def balanced_three_order(
     return list(rotations[(int(h[:8], 16) + (repetition - 1)) % 3])
 
 
-def _sha256_file(path: Path) -> Optional[str]:
-    try:
-        h = hashlib.sha256()
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                h.update(chunk)
-        return h.hexdigest()
-    except OSError:
-        return None
+def _sha256_file(path: Path) -> str:
+    return file_hash(path)
 
 
 def _hash_dir(
-    root: Path, limit_files: int | None = None, store_limit: int = 200
-) -> tuple[str, list[dict[str, str]], int]:
+    root: Path, store_limit: int = 200, *, grader: bool = False
+) -> tuple[str, list[dict[str, Any]], int]:
     """Hash every file under root. Never silently cap the hash input.
 
     All files contribute to the combined hash. Only the first `store_limit`
@@ -113,36 +118,14 @@ def _hash_dir(
     file count is always reported and hash mismatches from truncation are
     impossible.
     """
-    files: list[dict[str, str]] = []
-    if not root.is_dir():
-        return "", files, 0
-    paths = sorted(p for p in root.rglob("*") if p.is_file() and not p.is_symlink())
-    # Symlinked files are hashed by target content when inside the tree;
-    # escaping symlinks are rejected earlier by workspace validation.
-    total = len(paths)
-    if limit_files is not None:
-        paths_for_hash = paths[:limit_files]
-    else:
-        paths_for_hash = paths
-    hashed: list[dict[str, str]] = []
-    for p in paths_for_hash:
-        try:
-            rel = str(p.relative_to(root))
-        except ValueError:
-            rel = str(p)
-        digest = _sha256_file(p)
-        if digest:
-            hashed.append({"path": rel, "sha256": digest})
-    combined = (
-        hashlib.sha256("\n".join(f"{f['path']}:{f['sha256']}" for f in hashed).encode()).hexdigest()
-        if hashed
-        else ""
-    )
-    return combined, hashed[:store_limit], total
+    contents = tree_contents(root, grader=grader)
+    hashed = [item for item in contents if item["type"] != "directory"]
+    combined = hashlib.sha256(json.dumps(contents, sort_keys=True).encode()).hexdigest()
+    return combined, hashed[:store_limit], len(hashed)
 
 
 def _hash_dependency_locks(task_dir: Path | None) -> dict[str, str]:
-    """Hash lockfiles that affect evaluated inputs (best effort)."""
+    """Hash existing lockfiles that affect evaluated inputs, failing on unreadable files."""
     locks: dict[str, str] = {}
     if task_dir is None:
         return locks
@@ -164,13 +147,8 @@ def _hash_dependency_locks(task_dir: Path | None) -> dict[str, str]:
         [task_dir.parent / name for name in ("uv.lock", "requirements.txt", "pyproject.toml")]
     )
     for p in candidates:
-        try:
-            if p.is_file():
-                digest = _sha256_file(p)
-                if digest:
-                    locks[str(p.name)] = digest
-        except OSError:
-            continue
+        if p.is_file():
+            locks[str(p)] = _sha256_file(p)
     return locks
 
 
@@ -214,12 +192,12 @@ def _cli_version(binary: str) -> str:
 
 
 def collect_provenance(config: ExperimentConfig, tasks: list[TaskConfig]) -> dict[str, Any]:
-    """Hashes/snapshots of skills, prompts, fixtures, graders + CLI versions.
+    """Hashes of skills, prompts, fixtures, graders and CLI versions.
 
     The combined task hash includes grader contents and dependency locks, so
     `compare` can detect incompatible experiments. All files are hashed;
-    nothing is silently capped. Call once before execution and reuse the
-    snapshot so edits during a run cannot change later pairs.
+    nothing is silently capped. The runner separately freezes skill and fixture
+    files and verifies that the snapshot matches this provenance before execution.
     """
     skill_hashes: list[dict[str, Any]] = []
     combined_skill = hashlib.sha256()
@@ -259,6 +237,9 @@ def collect_provenance(config: ExperimentConfig, tasks: list[TaskConfig]) -> dic
     task_entries: list[dict[str, Any]] = []
     tasks_combined = hashlib.sha256()
     for t in tasks:
+        definition = asdict(t)
+        definition.pop("source_path", None)
+        tasks_combined.update(json.dumps(definition, sort_keys=True).encode())
         prompt_sha = hashlib.sha256(t.prompt.encode()).hexdigest()
         task_file_sha = _sha256_file(t.source_path) if t.source_path else None
         grader_sha = None
@@ -272,7 +253,7 @@ def collect_provenance(config: ExperimentConfig, tasks: list[TaskConfig]) -> dic
                 task_dir.parent / "graders" if task_dir.name == "tasks" else task_dir / "graders"
             )
             if graders_dir.is_dir():
-                gh, gfiles, gtotal = _hash_dir(graders_dir)
+                gh, gfiles, gtotal = _hash_dir(graders_dir, grader=True)
                 grader_sha = gh
                 grader_files_total = gtotal
             locks = _hash_dependency_locks(task_dir)
@@ -341,8 +322,8 @@ class ExperimentRunner:
         progress: Optional[Callable[[str], None]] = None,
         resume_dir: Path | None = None,
     ):
-        self.config = config
-        self.tasks = tasks
+        self.config = deepcopy(config)
+        self.tasks = deepcopy(tasks)
         if output_dir is None:
             base = config.config_path.parent if config.config_path else Path(".")
             output_dir = base / "runs"
@@ -359,6 +340,14 @@ class ExperimentRunner:
         )
         self._provenance_snapshot: dict[str, Any] = {}
         self._checkpoint_completed: set[tuple[str, str, int]] = set()
+        self._execution_config = self.config
+        self._snapshot_paths: dict[Path, Path] = {}
+        self._fixture_snapshots: dict[str, Path] = {}
+        self._record_hashes: dict[str, str] = {}
+        self._grader_inputs: dict[str, Any] = {}
+        self._snapshot_manifest_hash: str | None = None
+        self._timestamp = ""
+        self._stopped = threading.Event()
 
     # ------------------------------------------------------------------ setup
 
@@ -439,13 +428,12 @@ class ExperimentRunner:
         if self._provenance_snapshot:
             provenance = self._provenance_snapshot
         else:
-            try:
-                provenance = collect_provenance(self.config, self.tasks)
-            except Exception:
-                provenance = {}
+            provenance = collect_provenance(self.config, self.tasks)
             self._provenance_snapshot = provenance
         skill_comparison = self._skill_comparison_info()
         return {
+            "snapshot_version": SNAPSHOT_VERSION,
+            "snapshot_manifest_hash": self._snapshot_manifest_hash,
             "name": self.config.name,
             "skilldiff_version": __version__,
             "preset": getattr(self.config, "preset", None),
@@ -455,9 +443,9 @@ class ExperimentRunner:
             "include_baseline": bool(self.config.include_baseline),
             "skill_comparison": skill_comparison,
             "comparison": self.comparison,
-            "skill_names": self.config.skill_names,
-            "skill_a_names": self.config.skill_a_names if self.config.is_skill_comparison else [],
-            "skill_b_names": self.config.skill_b_names if self.config.is_skill_comparison else [],
+            "skill_names": self._execution_config.skill_names,
+            "skill_a_names": self._execution_config.skill_a_names,
+            "skill_b_names": self._execution_config.skill_b_names,
             "harness": self.config.harness,
             "models": self.config.models,
             "runs": self.config.runs,
@@ -492,63 +480,41 @@ class ExperimentRunner:
     def _checkpoint_path(self, run_root: Path) -> Path:
         return run_root / "checkpoint.json"
 
+    def _arms(self) -> list[str]:
+        arms = ["control", "treatment"]
+        if self.config.is_skill_comparison and self.config.include_baseline:
+            arms.append("baseline")
+        return arms
+
+    @staticmethod
+    def _arm_directory(root: Path, key: tuple[str, str, int], arm: str) -> Path:
+        model, task, rep = key
+        return root / safe_path_component(model) / safe_path_component(task) / arm / f"{rep:03d}"
+
     def _write_checkpoint(self, run_root: Path) -> None:
-        try:
-            data = {
-                "completed": sorted(
-                    [list(k) for k in self._checkpoint_completed],
-                    key=lambda x: (str(x[0]), str(x[1]), int(x[2])),
-                ),
-                "seed": self._seed,
-                "provenance": {
-                    "skill_hash": self._provenance_snapshot.get("skill_hash"),
-                    "tasks_hash": self._provenance_snapshot.get("tasks_hash"),
-                    "skilldiff_version": self._provenance_snapshot.get("skilldiff_version"),
-                },
-                "comparison": self.comparison,
-                "config": {
-                    "models": list(self.config.models),
-                    "tasks": [t.id for t in self.tasks],
-                    "harness": self.config.harness,
-                    "runs": int(self.config.runs),
-                    "skill": str(self.config.skill) if self.config.skill else None,
-                    "skill_a": str(self.config.skill_a) if self.config.skill_a else None,
-                    "skill_b": str(self.config.skill_b) if self.config.skill_b else None,
-                    "include_baseline": bool(self.config.include_baseline),
-                    "preset": getattr(self.config, "preset", None),
-                    "thresholds": dict(getattr(self.config, "thresholds", {}) or {}),
-                    "failure_policy": dict(
-                        getattr(self.config, "failure_policy", {}) or {}
-                    ),
-                },
-            }
-            (run_root / "checkpoint.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+        atomic_json(self._checkpoint_path(run_root), {
+            "version": 1,
+            "completed": [list(key) for key in sorted(self._checkpoint_completed)],
+            "seed": self._seed,
+            "record_hashes": self._record_hashes,
+            "experiment": self._metadata(self._timestamp),
+        })
 
     def _resume_mismatches(
-        self, prev_exp: dict[str, Any], ckpt: dict[str, Any] | None = None
+        self, prev_exp: dict[str, Any]
     ) -> list[str]:
         """Reasons the current config cannot resume the previous run."""
         reasons: list[str] = []
         prev_prov = (prev_exp.get("provenance") or {})
         cur_skill = self._provenance_snapshot.get("skill_hash")
         cur_tasks = self._provenance_snapshot.get("tasks_hash")
-        if (
-            cur_skill
-            and prev_prov.get("skill_hash")
-            and cur_skill != prev_prov.get("skill_hash")
-        ):
+        if cur_skill != prev_prov.get("skill_hash"):
             reasons.append(
                 "skill hashes differ "
                 f"(previous {str(prev_prov.get('skill_hash'))[:12]}, "
                 f"current {str(cur_skill)[:12]})"
             )
-        if (
-            cur_tasks
-            and prev_prov.get("tasks_hash")
-            and cur_tasks != prev_prov.get("tasks_hash")
-        ):
+        if cur_tasks != prev_prov.get("tasks_hash"):
             reasons.append("task/prompt/fixture/grader hashes differ")
         # PR revisions and workflow: resuming across different commits would
         # silently mix revisions.
@@ -557,7 +523,10 @@ class ExperimentRunner:
         if (prev_comp is None) != (cur_comp is None):
             reasons.append("PR mode changed between runs")
         elif prev_comp and cur_comp:
-            for key in ("control_commit", "treatment_commit", "mode", "pair", "repo"):
+            for key in (
+                "control_commit", "treatment_commit", "base_tip", "head_commit",
+                "merge_base", "mode", "pair", "repo",
+            ):
                 if prev_comp.get(key) != cur_comp.get(key):
                     reasons.append(
                         f"PR {key} changed ({prev_comp.get(key)} -> {cur_comp.get(key)})"
@@ -568,7 +537,10 @@ class ExperimentRunner:
             reasons.append(
                 f"models changed ({prev_exp.get('models')} -> {list(self.config.models)})"
             )
-        if list(prev_exp.get("tasks") or []) != [t.id for t in self.tasks]:
+        previous_tasks = [
+            t.get("id") if isinstance(t, dict) else t for t in prev_exp.get("tasks", [])
+        ]
+        if previous_tasks != [t.id for t in self.tasks]:
             reasons.append("task list changed")
         if (prev_exp.get("harness") or None) != self.config.harness:
             reasons.append(
@@ -593,231 +565,248 @@ class ExperimentRunner:
                 f"preset changed ({prev_exp.get('preset')} -> "
                 f"{getattr(self.config, 'preset', None)})"
             )
+        for key in ("timeout_seconds", "parallel", "thresholds", "failure_policy"):
+            if prev_exp.get(key) != getattr(self.config, key):
+                reasons.append(f"{key} changed")
+        harness = self.config.harness
+        current_harness = asdict(getattr(self.config, harness))
+        previous_harness = prev_exp.get(harness) or {}
+        for key in sorted(set(current_harness) | set(previous_harness)):
+            if current_harness.get(key) != previous_harness.get(key):
+                reasons.append(f"{harness}.{key} changed")
+        if self.config.seed is not None and self.config.seed != prev_exp.get("seed"):
+            reasons.append("seed changed")
+        if self.config.runs < int(prev_exp.get("runs", 0)):
+            reasons.append("runs decreased")
+        if prev_exp.get("skilldiff_version") != __version__:
+            reasons.append("skilldiff_version changed")
+        if prev_prov.get("agent_cli") != self._provenance_snapshot.get("agent_cli"):
+            reasons.append("agent_cli version changed")
+        if (prev_exp.get("system") or {}).get("python") != platform.python_version():
+            reasons.append("python version changed")
         return reasons
 
     def _load_resume_state(self, resume_dir: Path) -> set[tuple[str, str, int]]:
-        """Load completed pairs from a previous run. Only resumes when inputs,
-        revisions, and execution settings match; otherwise raises so stale
-        results cannot be mixed."""
-        ckpt_file = resume_dir / "checkpoint.json"
-        exp_file = resume_dir / "experiment.json"
-        if not ckpt_file.exists() or not exp_file.exists():
-            return set()
-        try:
-            ckpt = json.loads(ckpt_file.read_text(encoding="utf-8"))
-            prev_exp = json.loads(exp_file.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise ValueError(f"Cannot read resume state in {resume_dir}: {exc}") from exc
-        mismatches = self._resume_mismatches(prev_exp, ckpt)
-        # Back-compat: older checkpoints only stored hashes; keep those checks too.
-        if not mismatches:
-            prev_prov = (prev_exp.get("provenance") or {})
-            cur_skill = self._provenance_snapshot.get("skill_hash")
-            cur_tasks = self._provenance_snapshot.get("tasks_hash")
-            if (
-                cur_skill
-                and prev_prov.get("skill_hash")
-                and cur_skill != prev_prov.get("skill_hash")
-            ):
-                mismatches.append("skill hashes differ")
-            if (
-                cur_tasks
-                and prev_prov.get("tasks_hash")
-                and cur_tasks != prev_prov.get("tasks_hash")
-            ):
-                mismatches.append("task/prompt/fixture/grader hashes differ")
+        previous = read_json(resume_dir / "experiment.json")
+        checkpoint = read_json(resume_dir / "checkpoint.json")
+        if checkpoint.get("version") != 1 or not isinstance(checkpoint.get("experiment"), dict):
+            raise ValueError("Cannot resume without versioned checkpoint metadata; start a new run")
+        mismatches = self._resume_mismatches(checkpoint["experiment"])
+        if (checkpoint.get("seed") != previous.get("seed")
+                or checkpoint["experiment"].get("seed") != previous.get("seed")):
+            mismatches.append("checkpoint seed differs from metadata")
+        if checkpoint["experiment"].get("snapshot_manifest_hash") != self._snapshot_manifest_hash:
+            mismatches.append("checkpoint snapshot differs from metadata")
         if mismatches:
             raise ValueError(
-                "Resume refused: incompatible experiment (" + "; ".join(mismatches) + ")."
+                "Resume refused: incompatible checkpoint (" + "; ".join(mismatches) + ")"
             )
+        hashes = checkpoint.get("record_hashes")
+        if not isinstance(hashes, dict):
+            raise ValueError("Missing completed arm record hashes in checkpoint")
+        self._record_hashes = dict(hashes)
         completed: set[tuple[str, str, int]] = set()
-        for item in ckpt.get("completed", []):
-            try:
-                completed.add((str(item[0]), str(item[1]), int(item[2])))
-            except Exception:
-                continue
-        # Adopt the original seed so arm order stays reproducible.
-        if ckpt.get("seed") is not None:
-            try:
-                self._seed = int(ckpt["seed"])
-            except (TypeError, ValueError):
-                pass
+        allowed = {
+            (model, task.id, rep)
+            for model in self.config.models for task in self.tasks
+            for rep in range(1, int(previous["runs"]) + 1)
+        }
+        items = checkpoint.get("completed")
+        if not isinstance(items, list):
+            raise ValueError("Invalid completed pairs in checkpoint")
+        for item in items:
+            if not isinstance(item, list) or len(item) != 3:
+                raise ValueError("Invalid completed pair in checkpoint")
+            key = tuple(item)
+            if (not isinstance(item[0], str) or not isinstance(item[1], str)
+                    or type(item[2]) is not int or key not in allowed or key in completed):
+                raise ValueError(f"Invalid or duplicate completed pair in checkpoint: {item}")
+            completed.add(key)
         return completed
 
     def _load_previous_runs(
         self, resume_dir: Path, completed: set[tuple[str, str, int]]
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        control_runs: list[dict[str, Any]] = []
-        treatment_runs: list[dict[str, Any]] = []
-        for run_file in sorted(resume_dir.rglob("run.json")):
-            try:
-                d = json.loads(run_file.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            key = (str(d.get("model", "")), str(d.get("task_id", "")), int(d.get("repetition", 0)))
-            if key not in completed:
-                continue
-            d.setdefault("artifacts", str(run_file.parent.relative_to(resume_dir)))
-            if d.get("arm") == "control":
-                control_runs.append(d)
-            elif d.get("arm") in {"treatment", "skill"}:
-                treatment_runs.append(d)
-            # Baseline arms are reloaded separately below.
-        return control_runs, treatment_runs
+        runs: dict[str, list[dict[str, Any]]] = {"control": [], "treatment": [], "baseline": []}
+        expected_records = set()
+        for model in self.config.models:
+            for task in self.tasks:
+                for rep in range(1, self.config.runs + 1):
+                    key = (model, task.id, rep)
+                    for arm in self._arms():
+                        directory = self._arm_directory(resume_dir, key, arm)
+                        if key not in completed:
+                            if directory.exists():
+                                raise ValueError(
+                                    f"Incomplete saved pair at {directory}; artifacts preserved. "
+                                    "Start a new run; sessions will not be rerun automatically."
+                                )
+                            continue
+                        record = read_json(directory / "run.json")
+                        relative = str((directory / "run.json").relative_to(resume_dir))
+                        expected_records.add(relative)
+                        if file_hash(directory / "run.json") != self._record_hashes.get(relative):
+                            raise ValueError(f"Changed saved arm record: {directory / 'run.json'}")
+                        identity = (
+                            record.get("model"), record.get("task_id"), record.get("repetition")
+                        )
+                        if (identity != key or record.get("arm") != arm
+                                or not record.get("complete") or "grade_status" not in record):
+                            raise ValueError(
+                                f"Invalid completed arm record: {directory / 'run.json'}"
+                            )
+                        for name in ("transcript.txt", "diff.patch"):
+                            artifact = directory / name
+                            expected = (record.get("artifact_hashes") or {}).get(name)
+                            try:
+                                matches = expected and file_hash(artifact) == expected
+                            except OSError:
+                                matches = False
+                            if not matches:
+                                raise ValueError(f"Missing or changed saved artifact: {artifact}")
+                        runs[arm].append(record)
+        if expected_records != set(self._record_hashes):
+            raise ValueError("Checkpoint record hashes do not match its completed pairs")
+        self._baseline_runs = runs["baseline"]
+        return runs["control"], runs["treatment"]
+
+    def _check_graders(self) -> None:
+        if grader_inputs(self.tasks) != self._grader_inputs:
+            raise ValueError("Tracked grader files or dependency locks changed; pair not completed")
+
+    def _use_snapshots(self, run_root: Path, manifest: dict[str, Any]) -> None:
+        self._snapshot_paths = snapshot_paths(run_root, manifest)
+        self._fixture_snapshots = {
+            task.id: self._snapshot_paths[(task.source_path.parent / task.repo).resolve()]
+            for task in self.tasks
+            if task.source_path and task.repo and not self.config.pr
+        }
+        self._execution_config = deepcopy(self.config)
+        for field in ("skill", "skill_a", "skill_b"):
+            source = getattr(self.config, field)
+            if source:
+                setattr(self._execution_config, field, self._snapshot_paths[source.resolve()])
 
     def run(self, resume: bool | Path = False) -> dict[str, Any]:
-        self.comparison = resolve_comparison(self.config.pr) if self.config.pr else None
-        # Snapshot inputs before execution so edits during a run cannot change later pairs.
-        timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
-        if isinstance(resume, Path):
-            run_root = resume
-            run_root.mkdir(parents=True, exist_ok=True)
-            resume_requested = True
-        elif resume is True:
-            # Resume the latest run next to the config, if any.
-            base = self.config.config_path.parent if self.config.config_path else Path(".")
+        for label, values in (
+            ("models", self.config.models), ("tasks", [task.id for task in self.tasks])
+        ):
+            components = [safe_path_component(value) for value in values]
+            if any(c in {".", "..", "inputs"} for c in components):
+                raise ValueError(f"Reserved output path in {label}")
+            if len(set(components)) != len(components):
+                raise ValueError(f"Output path collision in {label}: {values}")
+        self._timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%S%fZ")
+        resume_dir = resume if isinstance(resume, Path) else self.resume_dir
+        if resume is True and resume_dir is None:
             candidates = sorted(
-                [p for p in (base / "runs").glob("*") if (p / "checkpoint.json").exists()]
-            ) if (base / "runs").exists() else []
+                p for p in self.output_dir.glob("*") if p.is_dir()
+                and (p / "experiment.json").exists()
+            )
             if candidates:
-                run_root = candidates[-1]
-                resume_requested = True
-            else:
-                run_root = self.output_dir / timestamp_str
-                run_root.mkdir(parents=True, exist_ok=True)
-                resume_requested = False
-        elif self.resume_dir is not None:
-            run_root = self.resume_dir
-            run_root.mkdir(parents=True, exist_ok=True)
-            resume_requested = True
+                resume_dir = candidates[-1]
+        if resume_dir is not None:
+            run_root = Path(resume_dir).resolve()
+            if not run_root.is_dir():
+                raise ValueError(f"Resume directory does not exist: {run_root}")
         else:
-            run_root = self.output_dir / timestamp_str
-            run_root.mkdir(parents=True, exist_ok=True)
-            resume_requested = False
-
-        # Provenance snapshot is taken once, before any pair runs and before
-        # any metadata is written, so resume validation cannot be bypassed by
-        # overwriting the previous metadata first.
-        try:
-            self._provenance_snapshot = collect_provenance(self.config, self.tasks)
-        except Exception:
-            self._provenance_snapshot = {}
-        # Ensure seed from config wins when explicitly set; otherwise keep the
-        # runner seed until resume validation adopts the original seed.
-        if self.config.seed is not None:
-            self._seed = int(self.config.seed)
-
-        # Validate resume compatibility BEFORE writing anything. A skill change,
-        # PR commit change, or execution-setting change must refuse rather than
-        # reuse old pairs while reporting "hashes match".
-        resume_prev_meta: dict[str, Any] | None = None
-        if resume_requested and (run_root / "experiment.json").exists():
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            run_root = Path(tempfile.mkdtemp(
+                prefix=self._timestamp + "-", dir=self.output_dir
+            )).resolve()
+        with run_lock(run_root):
             try:
-                resume_prev_meta = json.loads(
-                    (run_root / "experiment.json").read_text(encoding="utf-8")
-                )
-            except Exception as exc:
-                raise ValueError(
-                    f"Cannot read previous metadata in {run_root}: {exc}"
-                ) from exc
-            mismatches = self._resume_mismatches(resume_prev_meta, None)
+                return self._run_locked(run_root, resume_dir is not None)
+            except BaseException:
+                self._stopped.set()
+                self.agent_runner.terminate_all()
+                raise
+
+    def _run_locked(self, run_root: Path, resuming: bool) -> dict[str, Any]:
+        previous = read_json(run_root / "experiment.json") if resuming else None
+        if previous is not None and previous.get("snapshot_version") != SNAPSHOT_VERSION:
+            raise ValueError(
+                "Cannot resume a run without frozen-input metadata; start a new run"
+            )
+        self.comparison = (
+            resolve_comparison(self.config.pr, previous=(previous or {}).get("comparison"))
+            if self.config.pr else None
+        )
+        sources = input_sources(self.config, self.tasks)
+        if any(run_root.is_relative_to(source) for source in sources):
+            raise ValueError("Run directory must be outside skill and fixture input directories")
+        self._grader_inputs = grader_inputs(self.tasks)
+        self._provenance_snapshot = collect_provenance(self.config, self.tasks)
+        control_runs: list[dict[str, Any]] = []
+        treatment_runs: list[dict[str, Any]] = []
+        completed: set[tuple[str, str, int]] = set()
+        if resuming:
+            mismatches = self._resume_mismatches(previous)
             if mismatches:
                 raise ValueError(
-                    "Resume refused: incompatible experiment ("
-                    + "; ".join(mismatches)
-                    + ")."
+                    "Resume refused: incompatible experiment (" + "; ".join(mismatches) + ")"
                 )
-            # Reuse the original timestamp and seed for resumed runs.
-            timestamp_str = str(resume_prev_meta.get("timestamp") or timestamp_str)
-            if resume_prev_meta.get("seed") is not None and self.config.seed is None:
-                try:
-                    self._seed = int(resume_prev_meta["seed"])
-                except (TypeError, ValueError):
-                    pass
-
-        metadata = self._metadata(timestamp_str)
+            self._snapshot_manifest_hash = previous.get("snapshot_manifest_hash")
+            if file_hash(run_root / "inputs/manifest.json") != self._snapshot_manifest_hash:
+                raise ValueError("Snapshot manifest changed; resume refused")
+            manifest = load_snapshots(run_root, sources)
+            if manifest.get("grader_inputs") != self._grader_inputs:
+                raise ValueError("Tracked grader files or dependency locks differ from snapshot")
+            completed = self._load_resume_state(run_root)
+            control_runs, treatment_runs = self._load_previous_runs(run_root, completed)
+            self._seed = previous["seed"]
+            self._timestamp = previous["timestamp"]
+        else:
+            manifest = create_snapshots(run_root, sources, self._grader_inputs)
+            self._check_graders()
+            # Detect changes between provenance collection and copying, including task files.
+            after = collect_provenance(self.config, self.tasks)
+            if after != self._provenance_snapshot:
+                raise ValueError("Inputs changed while preparing snapshots; start a new run")
+            self._snapshot_manifest_hash = file_hash(run_root / "inputs/manifest.json")
+        self._use_snapshots(run_root, manifest)
+        self._checkpoint_completed = set(completed)
         warnings = self.preflight_warnings()
         for warning in warnings:
             self.progress(f"warning: {warning}")
-        with open(run_root / "experiment.json", "w", encoding="utf-8") as f:
-            json.dump(metadata, f, indent=2)
-
+        # Every resume validation above is read-only. Publication begins here.
+        atomic_json(run_root / "experiment.json", self._metadata(self._timestamp))
+        self._write_checkpoint(run_root)
         pairs = [
             _Pair(model, task, rep)
-            for model in self.config.models
-            for task in self.tasks
+            for model in self.config.models for task in self.tasks
             for rep in range(1, self.config.runs + 1)
+            if (model, task.id, rep) not in completed
         ]
-        control_runs: list[dict[str, Any]] = []
-        treatment_runs: list[dict[str, Any]] = []
-        # Resume: reload completed pairs and skip them.
-        resumed_count = 0
-        if resume_requested:
-            try:
-                completed = self._load_resume_state(run_root)
-                self._checkpoint_completed = set(completed)
-                prev_ctrl, prev_treat = self._load_previous_runs(run_root, completed)
-                # Copy previous artifacts into the current tree when resuming
-                # into a new directory; when resuming in place they already exist.
-                control_runs.extend(prev_ctrl)
-                treatment_runs.extend(prev_treat)
-                # Reload baselines if present.
-                for run_file in sorted(run_root.rglob("run.json")):
-                    try:
-                        d = json.loads(run_file.read_text(encoding="utf-8"))
-                    except Exception:
-                        continue
-                    if d.get("arm") == "baseline":
-                        key = (
-                            str(d.get("model", "")),
-                            str(d.get("task_id", "")),
-                            int(d.get("repetition", 0)),
-                        )
-                        if key in completed:
-                            d.setdefault(
-                                "artifacts", str(run_file.parent.relative_to(run_root))
-                            )
-                            self._baseline_runs.append(d)
-                resumed_count = len(completed)
-                if resumed_count:
-                    self.progress(
-                        f"Resuming: {resumed_count} completed pair(s) reused (hashes match)."
-                    )
-                pairs = [p for p in pairs if (p.model, p.task.id, p.repetition) not in completed]
-            except ValueError:
-                # Strict resume: refuse rather than mix incompatible inputs.
-                raise
-            except Exception as exc:
-                self.progress(f"warning: could not resume ({exc}); starting fresh")
-                self._checkpoint_completed = set()
-        else:
-            self._write_checkpoint(run_root)
-
-        done = resumed_count
-        total = resumed_count + len(pairs)
+        done = len(completed)
+        total = done + len(pairs)
+        if done:
+            self.progress(f"Resuming: {done} completed pair(s) reused (inputs verified).")
         interrupted = False
 
         def record(pair_result: tuple[dict[str, Any], dict[str, Any]]) -> None:
             nonlocal done
             ctrl, treat = pair_result
+            key = (ctrl["model"], ctrl["task_id"], ctrl["repetition"])
             with self._lock:
+                previous_hashes = dict(self._record_hashes)
+                for arm in self._arms():
+                    path = self._arm_directory(run_root, key, arm) / "run.json"
+                    self._record_hashes[str(path.relative_to(run_root))] = file_hash(path)
+                self._checkpoint_completed.add(key)
+                try:
+                    self._write_checkpoint(run_root)
+                except BaseException:
+                    self._checkpoint_completed.remove(key)
+                    self._record_hashes = previous_hashes
+                    raise
                 control_runs.append(ctrl)
                 treatment_runs.append(treat)
-                self._checkpoint_completed.add(
-                    (str(ctrl["model"]), str(ctrl["task_id"]), int(ctrl["repetition"]))
-                )
-                self._write_checkpoint(run_root)
                 done += 1
-                ctrl_label = "control"
-                treat_label = (
-                    "treatment" if (self.comparison or self.config.is_skill_comparison) else "skill"
-                )
-                if self.config.is_skill_comparison and not self.comparison:
-                    ctrl_label, treat_label = "skill-A", "skill-B"
                 self.progress(
                     f"[{done}/{total}] {ctrl['model']} · {ctrl['task_id']} · "
-                    f"run {ctrl['repetition']}: {ctrl_label} {_run_summary(ctrl)} | "
-                    f"{treat_label} {_run_summary(treat)}"
+                    f"run {ctrl['repetition']}: control {_run_summary(ctrl)} | "
+                    f"treatment {_run_summary(treat)}"
                 )
 
         try:
@@ -830,8 +819,8 @@ class ExperimentRunner:
                 try:
                     for future in as_completed(futures):
                         record(future.result())
-                except KeyboardInterrupt:
-                    # Agents run in their own process groups, so Ctrl-C doesn't reach them.
+                except BaseException:
+                    self._stopped.set()
                     pool.shutdown(wait=False, cancel_futures=True)
                     self.agent_runner.terminate_all()
                     pool.shutdown(wait=True)
@@ -840,37 +829,36 @@ class ExperimentRunner:
         except KeyboardInterrupt:
             interrupted = True
             self.progress("Interrupted: writing a report for the completed pairs...")
-
+        # A parallel baseline may finish before its pair can be checkpointed.
+        self._baseline_runs = [
+            r for r in self._baseline_runs
+            if (r["model"], r["task_id"], r["repetition"]) in self._checkpoint_completed
+        ]
         results = self._aggregate(
-            run_root,
-            timestamp_str,
-            control_runs,
-            treatment_runs,
-            warnings,
-            interrupted,
-            provenance_snapshot=self._provenance_snapshot,
+            run_root, self._timestamp, control_runs, treatment_runs, warnings,
+            interrupted, provenance_snapshot=self._provenance_snapshot,
         )
         paths = create_reports(results, run_root)
         results["report"] = {k: (str(v) if v else None) for k, v in paths.items()}
-
-        with open(run_root / "results.json", "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2)
+        atomic_json(run_root / "results.json", results)
         return results
 
     def _run_pair(self, pair: _Pair, run_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+        self._ensure_running()
         task = pair.task
         model = pair.model
+        execution = self._execution_config
         task_dir = task.source_path.parent if task.source_path else None
-        fixture_repo = (task_dir / task.repo).resolve() if task.repo and task_dir else None
-        if self.config.pr:
-            fixture_repo = self.config.pr.repo
+        fixture_repo = (
+            self.config.pr.repo if self.config.pr else self._fixture_snapshots.get(task.id)
+        )
         # Skill names differ per mode: A/B uses per-arm names for blind grading.
         if self.config.is_skill_comparison:
             grader_names = list(
-                dict.fromkeys(self.config.skill_a_names + self.config.skill_b_names)
+                dict.fromkeys(execution.skill_a_names + execution.skill_b_names)
             )
         else:
-            grader_names = self.config.skill_names
+            grader_names = execution.skill_names
         grader = Grader(task.grader, grader_names, model, task_dir=task_dir)
 
         rep_str = f"{pair.repetition:03d}"
@@ -890,8 +878,8 @@ class ExperimentRunner:
 
         # Arm -> skill root mapping.
         if is_ab:
-            ctrl_skill = self.config.skill_a
-            treat_skill = self.config.skill_b
+            ctrl_skill = execution.skill_a
+            treat_skill = execution.skill_b
             ctrl_is_treatment = True
             treat_is_treatment = True
         elif self.comparison:
@@ -902,8 +890,8 @@ class ExperimentRunner:
         else:
             # Single-skill mode: control knows the skill so it can strip
             # fixture copies; only the treatment arm installs it.
-            ctrl_skill = self.config.skill
-            treat_skill = self.config.skill
+            ctrl_skill = execution.skill
+            treat_skill = execution.skill
             ctrl_is_treatment = False
             treat_is_treatment = True
 
@@ -1001,8 +989,9 @@ class ExperimentRunner:
                 for arm in order:
                     if arm not in workspaces:
                         continue
+                    self._ensure_running()
                     results[arm] = self.agent_runner.run(
-                        task.prompt, workspaces[arm].root, model, self.config
+                        task.prompt, workspaces[arm].root, model, execution
                     )
                     # Persist each arm immediately so rerunning failures cannot
                     # silently improve the reported result; retries are logged.
@@ -1021,6 +1010,8 @@ class ExperimentRunner:
                     )
 
             diffs = {arm: workspaces[arm].get_diff() for arm in workspaces if arm in results}
+            self._ensure_running()
+            self._check_graders()
             grade_ctrl, grade_treat = grader.grade_pair(
                 control_ws=workspaces["control"].root,
                 treatment_ws=workspaces["treatment"].root,
@@ -1037,12 +1028,14 @@ class ExperimentRunner:
                     task.grader, grader_names, model, task_dir=task_dir
                 ).grade_workspace(workspaces["baseline"].root)
                 grades["baseline"] = baseline_grade
+            self._check_graders()
 
             records: dict[str, dict[str, Any]] = {}
             arm_dirs = {"control": ctrl_dir, "treatment": treat_dir}
             if "baseline" in results:
                 arm_dirs["baseline"] = baseline_dir
             for arm, arm_dir in arm_dirs.items():
+                self._ensure_running()
                 res = results[arm]
                 # PR mode has no skills; A/B arms both carry a skill.
                 if self.comparison and not is_ab:
@@ -1051,6 +1044,7 @@ class ExperimentRunner:
                 grade = grades[arm]
                 diff_text, files = diffs[arm]
                 records[arm] = {
+                    "complete": True,
                     "model": model,
                     "task_id": task.id,
                     "task_category": getattr(task, "category", "general"),
@@ -1130,6 +1124,10 @@ class ExperimentRunner:
                         )
 
         return records["control"], records["treatment"]
+
+    def _ensure_running(self) -> None:
+        if self._stopped.is_set():
+            raise RuntimeError("Experiment stopped after an earlier failure")
 
     # -------------------------------------------------------------- aggregate
 
@@ -1314,7 +1312,7 @@ class ExperimentRunner:
             "skill_b": str(self.config.skill_b) if self.config.skill_b else None,
             "skill_comparison": self._skill_comparison_info(),
             "comparison": self.comparison,
-            "skill_names": self.config.skill_names,
+            "skill_names": self._execution_config.skill_names,
             "timestamp": timestamp,
             "run_dir": str(run_root),
             "models": self.config.models,
@@ -1355,12 +1353,12 @@ class ExperimentRunner:
         transcript: str,
         diff: str,
     ) -> None:
-        with open(arm_dir / "run.json", "w", encoding="utf-8") as f:
-            json.dump(record, f, indent=2)
-        with open(arm_dir / "transcript.txt", "w", encoding="utf-8") as f:
-            f.write(transcript)
-        with open(arm_dir / "diff.patch", "w", encoding="utf-8") as f:
-            f.write(diff)
+        atomic_write(arm_dir / "transcript.txt", transcript)
+        atomic_write(arm_dir / "diff.patch", diff)
+        record["artifact_hashes"] = {
+            name: file_hash(arm_dir / name) for name in ("transcript.txt", "diff.patch")
+        }
+        atomic_json(arm_dir / "run.json", record)
 
 
 def _arm_labels(config: ExperimentConfig, comparison: dict[str, Any] | None) -> dict[str, str]:

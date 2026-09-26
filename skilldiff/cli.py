@@ -15,6 +15,7 @@ from skilldiff import __version__
 from skilldiff.config import find_skill_dirs, load_experiment, read_skill_frontmatter
 from skilldiff.experiment import ExperimentRunner, find_user_level_installs
 from skilldiff.grader import Grader
+from skilldiff.persistence import atomic_json, read_json, run_lock
 from skilldiff.reporter import create_reports, render_report_table
 from skilldiff.revisions import resolve_comparison
 from skilldiff.runner import AgentRunner
@@ -848,7 +849,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("Resume enabled: completed pairs reuse only when input hashes match.", flush=True)
     try:
         results = runner.run(resume=resume)
-    except (ValueError, subprocess.SubprocessError) as exc:
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
         print(f"Experiment error: {exc}", file=sys.stderr)
         return 1
 
@@ -902,7 +903,12 @@ def cmd_results(args: argparse.Namespace) -> int:
     if getattr(args, "markdown", False):
         md = run_dir / "report.md"
         if not md.exists():
-            create_reports(results, run_dir)
+            try:
+                with run_lock(run_dir):
+                    create_reports(read_json(results_file), run_dir)
+            except (ValueError, OSError) as exc:
+                print(f"Report error: {exc}", file=sys.stderr)
+                return 1
         print(md.read_text(encoding="utf-8"))
         return 0
 
@@ -916,10 +922,15 @@ def cmd_report(args: argparse.Namespace) -> int:
     if not run_dir or not (run_dir / "results.json").exists():
         print("No experiment run with results.json found.", file=sys.stderr)
         return 1
-    results = json.loads((run_dir / "results.json").read_text(encoding="utf-8"))
-    paths = create_reports(results, run_dir)
-    results["report"] = {k: str(v) for k, v in paths.items()}
-    (run_dir / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    try:
+        with run_lock(run_dir):
+            results = read_json(run_dir / "results.json")
+            paths = create_reports(results, run_dir)
+            results["report"] = {k: str(v) for k, v in paths.items()}
+            atomic_json(run_dir / "results.json", results)
+    except (ValueError, OSError) as exc:
+        print(f"Report error: {exc}", file=sys.stderr)
+        return 1
     _print_report_paths(results)
     return 0
 

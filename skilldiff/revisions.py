@@ -95,7 +95,9 @@ def _synthetic_merge_commit(repo: Path, base_sha: str, head_sha: str, merge_base
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def resolve_comparison(pr: PRConfig) -> dict[str, str]:
+def resolve_comparison(
+    pr: PRConfig, previous: dict[str, str] | None = None
+) -> dict[str, str]:
     """Resolve control/treatment commits for the configured PR workflow.
 
     Modes (pr.mode):
@@ -122,6 +124,14 @@ def resolve_comparison(pr: PRConfig) -> dict[str, str]:
         raise ValueError("pr.pair must be 'merge-base' or 'base-merge'")
 
     if pair == "base-merge":
+        # Reuse the recorded synthetic commit only while both source refs and
+        # the workflow still match. Recreating it changes its timestamp/SHA.
+        if previous and all(previous.get(key) == value for key, value in {
+            "repo": str(pr.repo), "base_tip": base_tip, "head_commit": head,
+            "merge_base": merge_base, "pair": pair, "mode": mode,
+        }.items()):
+            _git(pr.repo, "cat-file", "-e", previous["treatment_commit"] + "^{commit}")
+            return dict(previous)
         synthetic = _synthetic_merge_commit(pr.repo, base_tip, head, merge_base)
         return dict(
             type="pr",
