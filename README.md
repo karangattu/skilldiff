@@ -43,23 +43,26 @@ transcript and diff for every session.
 This table shows the summary in `report.md`. The numbers are illustrative. They are
 not results from a skilldiff experiment.
 
-| Metric | Control | Skill | Difference | 95% CI |
+| Metric | Control | Skill | Paired mean Δ | 95% CI |
 |:---|---:|---:|---:|---:|
-| Task score | 60% | 80% | +20 pp | +5 to +35 pp |
+| Task score (mean) | 60% | 80% | +20 pp | +5 to +35 pp (n=6) |
 | Success | 3/5 | 4/5 | +1 | |
-| Median cost | $0.30 | $0.24 | -$0.06 | -$0.10 to -$0.02 |
-| Median time | 90s | 75s | -15s | -25s to -5s |
-| Median tokens | 20k | 18k | -2.0k | -3.0k to -1.0k |
+| Cost (median) | $0.30 | $0.24 | -$0.06 | -$0.10 to -$0.02 (n=6) |
+| Time (median) | 90s | 75s | -15s | -25s to -5s (n=6) |
+| Tokens (median) | 20k | 18k | -2.0k | -3.0k to -1.0k (n=6) |
 | Skill used | unknown | 5/5 | | |
 
-In a skill report, the difference is **skill minus control**. A higher task score is
-better. Lower cost, time, and token counts are better. The 95% CI estimates the
+In a skill report, the difference is **skill minus control** as a paired-mean change.
+Control/Skill columns show means (score) or medians (cost/time/tokens) as descriptive
+statistics; the Δ and 95% CI measure the same paired-mean effect. A higher task score
+is better. Lower cost, time, and token counts are better. The 95% CI estimates the
 uncertainty in the mean paired difference. If it includes zero, the result does not
-show a clear effect.
+show a clear effect. `n=X/Y` shows valid pairs for that metric; unknown values are
+**N/A** (ungraded tasks, grader timeouts/errors, or missing cost/tokens).
 
 The report starts with a verdict for the mean paired score change and any warnings.
-After the summary, it shows key takeaways and results by model and task. It also links
-to each run's transcript and diff.
+After the summary, it shows key takeaways and results by model, task, check, and
+category. It also links to each run's transcript and diff.
 For Claude, cost is the API-equivalent price, even with a subscription. Token counts
 include cached input.
 
@@ -236,6 +239,7 @@ A task (`tasks/fix-parser.yaml`):
 
 ```yaml
 id: fix-parser
+category: intended   # intended | irrelevant | ambiguous | general
 repo: ../fixtures/parser     # copied into each workspace; relative to this file
 prompt: |
   Fix the parser so that it accepts empty input. Keep all existing tests passing.
@@ -243,6 +247,24 @@ grader:
   type: command
   command: python3 "$SKILLDIFF_TASK_DIR/../graders/fix_parser.py"
 ```
+
+Use `category` to measure both sides of a skill: `intended` tasks check whether the
+skill helps relevant work; `irrelevant` tasks check whether it stays out of the way
+(adoption should be low, cost should not rise); `ambiguous` covers unclear triggers.
+The report shows adoption and outcomes separately in *By category*.
+
+Practical thresholds (`skilldiff.yaml`, optional):
+
+```yaml
+thresholds:
+  acceptable_score_regression_pp: 5   # tolerated drop, e.g. -5pp ok if cheaper
+  required_cost_reduction_pct: 10     # required saving, e.g. 10% cheaper
+  meaningful_score_gain_pp: 5         # gain needed to call an improvement useful
+```
+
+The verdict then adds a practical check so you can distinguish a useful improvement
+from a merely detectable change. Tiny samples (`n<5`) and collapsed intervals
+(identical differences) are flagged in the headline.
 
 ### Graders
 
@@ -252,9 +274,15 @@ grader:
 A grader is a shell command that runs inside the workspace after the agent finishes:
 
 - Exit code 0 passes and any other exit code fails. For partial credit, print JSON with
-  a `score` from 0 to 1, for example `{"score": 0.8, "success": false, "checks": [true,
-  false]}`. The JSON can be the only output or the last line of the output. The report
-  shows `checks` as *Checks passed*.
+  a `score` from 0 to 1, for example `{"score": 0.8, "success": false, "checks": [{"name":
+  "parses empty", "passed": true}, {"name": "keeps tests", "passed": false}]}`. Bare
+  booleans (`[true, false]`) also work. The JSON can be the only output or the last line
+  of the output. The report shows `checks` as *Checks passed* and adds a *By check*
+  table showing which requirements the skill helps or hurts.
+- Ungraded tasks (no grader), grader timeouts, and grader errors score **N/A**, not
+  100% or 0%. They are excluded from means; valid-pair counts (`n=X/Y`) show how many
+  pairs contributed. Agent errors/timeouts are infrastructure failures, distinct from
+  low scores on completed runs.
 - The grader receives these environment variables: `SKILLDIFF_RESPONSE_FILE` (the
   agent's final message), `SKILLDIFF_DIFF_FILE` (a git diff of its changes),
   `SKILLDIFF_TASK_DIR` (the folder of the task file), and `SKILLDIFF_CANDIDATE_DIR`.
@@ -332,6 +360,20 @@ graders that measure your intended outcome.
 
 </details>
 
+## Compare skill revisions
+
+Each run records provenance: skill file hashes, prompt/fixture/grader hashes, agent CLI
+versions, and `skilldiff` version. Compare two runs (for example, before/after a skill
+edit) with:
+
+```bash
+skilldiff compare runs/2026-09-22T120000Z runs/2026-09-23T120000Z
+```
+
+This shows skill-score, adoption, and efficiency changes, plus newly failing/passing
+checks. It warns when models, tasks, harnesses, CLI versions, or task hashes differ
+enough to make the comparison unreliable.
+
 ## Commands
 
 | Command | What it does |
@@ -342,6 +384,7 @@ graders that measure your intended outcome.
 | `skilldiff run [-c CONFIG] [--runs N] [-j N] [-m MODEL] [-t TASK]` | Run the experiment, or a subset of it |
 | `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run, or export it |
 | `skilldiff report [RUN_DIR]` | Rebuild the reports for a run, including runs from older versions |
+| `skilldiff compare RUN_A RUN_B [--json]` | Compare two runs: score, adoption, efficiency, newly failing checks |
 
 ## Harness notes
 
