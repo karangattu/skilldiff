@@ -400,6 +400,7 @@ def render_report_table(
     paired: dict[str, Any] | None = None,
     treatment_label: str = "Skill",
     thresholds: dict[str, Any] | None = None,
+    preset: str | None = None,
 ) -> str:
     """Plain-text summary for the terminal.
 
@@ -612,6 +613,7 @@ def render_report_table(
             treatment_label.lower(),
             thresholds=thresholds,
             tasks_count=tasks_count,
+            preset=preset,
         )
         lines.append(_strip_inline(verdict))
     return "\n".join(lines)
@@ -634,6 +636,7 @@ def _verdict(
     thresholds: dict[str, Any] | None = None,
     tasks_count: int | None = None,
     failure_policy: dict[str, Any] | None = None,
+    preset: str | None = None,
 ) -> tuple[str, str]:
     """Return (sentence, callout kind) for the task-score effect.
 
@@ -685,7 +688,7 @@ def _verdict(
 
     practical_txt = ""
     if thresholds:
-        practical_txt = " " + _practical_assessment(paired, thresholds, mean_pp)
+        practical_txt = " " + _practical_assessment(paired, thresholds, mean_pp, preset=preset)
 
     if n_valid < 2:
         if mean_pp == 0:
@@ -708,6 +711,21 @@ def _verdict(
             "warning",
         )
     if mean_pp == 0 and lo == hi == 0:
+        # Equal scores still carry a decision when thresholds are set: for
+        # compression, preserved quality plus proven resource savings is the
+        # win. "No clear difference" alone does not establish preservation.
+        if thresholds:
+            if preset == "compression":
+                return (
+                    f"Quality preserved: both arms scored the same in all {pairs_txt} "
+                    f"(95% CI {ci}){caution_txt}.{practical_txt}".replace("..", "."),
+                    "tip" if "meets compression criteria" in practical_txt else "note",
+                )
+            return (
+                f"No task-score difference: both arms scored the same in all {pairs_txt} "
+                f"{caution_txt}.{practical_txt}".replace("..", "."),
+                "note",
+            )
         return (
             f"No task-score difference: both arms scored the same in all {pairs_txt}.{caution_txt}",
             "note",
@@ -719,7 +737,12 @@ def _verdict(
     )
 
 
-def _practical_assessment(paired: dict[str, Any], thresholds: dict[str, Any], mean_pp: int) -> str:
+def _practical_assessment(
+    paired: dict[str, Any],
+    thresholds: dict[str, Any],
+    mean_pp: int,
+    preset: str | None = None,
+) -> str:
     """Decision-oriented sentence from practical thresholds.
 
     Shipping decisions must depend on uncertainty, not point estimates: the
@@ -727,7 +750,10 @@ def _practical_assessment(paired: dict[str, Any], thresholds: dict[str, Any], me
     limit. Threshold keys (all optional):
       acceptable_score_regression_pp: score drop tolerated (e.g. 5 means -5pp ok).
       required_cost_reduction_pct: cost saving required (e.g. 10 means 10% cheaper).
+      required_token_reduction_pct: session-token saving required (compression).
       meaningful_score_gain_pp: gain needed to call an improvement useful.
+    For compression, quality must be preserved (lower bound within loss) AND
+    resource use must fall by bounds, not just by averages.
     """
     try:
         allowed_loss = float(thresholds.get("acceptable_score_regression_pp", 0))
@@ -737,6 +763,10 @@ def _practical_assessment(paired: dict[str, Any], thresholds: dict[str, Any], me
         required_saving = float(thresholds.get("required_cost_reduction_pct", 0))
     except (TypeError, ValueError):
         required_saving = 0.0
+    try:
+        required_tokens = float(thresholds.get("required_token_reduction_pct", 0))
+    except (TypeError, ValueError):
+        required_tokens = 0.0
     try:
         meaningful_gain = float(thresholds.get("meaningful_score_gain_pp", 0))
     except (TypeError, ValueError):
@@ -749,22 +779,26 @@ def _practical_assessment(paired: dict[str, Any], thresholds: dict[str, Any], me
     except (TypeError, ValueError):
         ci_low_pp = None
 
-    cost_metric = (paired or {}).get("cost") or {}
-    rel = cost_metric.get("relative_change", None)
-    saving_pct: Optional[float] = None
-    if rel is not None:
+    def _saving(key: str) -> tuple[Optional[float], bool, Any, Any]:
+        metric = (paired or {}).get(key) or {}
+        rel = metric.get("relative_change", None)
+        pct: Optional[float] = None
+        if rel is not None:
+            try:
+                pct = -float(rel) * 100
+            except (TypeError, ValueError):
+                pct = None
+        lo, hi = metric.get("ci_low"), metric.get("ci_high")
+        proven = False
         try:
-            saving_pct = -float(rel) * 100
+            if lo is not None and hi is not None and float(hi) < 0:
+                proven = True
         except (TypeError, ValueError):
-            saving_pct = None
-    # Cost uncertainty: the CI must also show a saving, not just the point estimate.
-    cost_lo, cost_hi = cost_metric.get("ci_low"), cost_metric.get("ci_high")
-    cost_proven_saving = False
-    try:
-        if cost_lo is not None and cost_hi is not None and float(cost_hi) < 0:
-            cost_proven_saving = True
-    except (TypeError, ValueError):
-        cost_proven_saving = False
+            proven = False
+        return pct, proven, lo, hi
+
+    saving_pct, cost_proven_saving, cost_lo, _ = _saving("cost")
+    token_pct, token_proven_saving, token_lo, _ = _saving("tokens")
 
     # Regression gate uses the lower confidence bound, not the mean.
     if ci_low_pp is not None:
@@ -782,6 +816,13 @@ def _practical_assessment(paired: dict[str, Any], thresholds: dict[str, Any], me
         cost_ok = (saving_pct >= required_saving) and (
             cost_proven_saving or cost_lo is None
         )
+    token_ok = True
+    if required_tokens and token_pct is None:
+        token_ok = False
+    elif required_tokens and token_pct is not None:
+        token_ok = (token_pct >= required_tokens) and (
+            token_proven_saving or token_lo is None
+        )
 
     if not score_ok:
         bound_txt = (
@@ -795,6 +836,8 @@ def _practical_assessment(paired: dict[str, Any], thresholds: dict[str, Any], me
         )
     if required_saving and saving_pct is None:
         return "Practical check: cost data missing, cannot verify required saving."
+    if required_tokens and token_pct is None:
+        return "Practical check: token data missing, cannot verify required saving."
     if required_saving and saving_pct is not None and not cost_ok:
         if not cost_proven_saving and cost_lo is not None:
             return (
@@ -806,11 +849,45 @@ def _practical_assessment(paired: dict[str, Any], thresholds: dict[str, Any], me
             f"Practical check: cost saving {saving_pct:+.0f}% is below required "
             f"{required_saving:g}%."
         )
-    if gain_ok and cost_ok:
-        if required_saving and saving_pct is not None:
+    if required_tokens and token_pct is not None and not token_ok:
+        if not token_proven_saving and token_lo is not None:
             return (
-                f"Practical check: meets criteria — bounds clear ({mean_pp:+d} pp, "
-                f"cost {saving_pct:+.0f}%)."
+                f"Practical check: token saving {token_pct:+.0f}% meets "
+                f"{required_tokens:g}% on average "
+                "but the token interval includes zero — saving not established."
+            )
+        return (
+            f"Practical check: token saving {token_pct:+.0f}% is below required "
+            f"{required_tokens:g}%."
+        )
+    # Compression decision: preserved quality + proven resource reduction.
+    if preset == "compression" and (required_saving or required_tokens):
+        if score_ok and cost_ok and token_ok:
+            parts = [f"{mean_pp:+d} pp"]
+            if required_saving and saving_pct is not None:
+                parts.append(f"cost {saving_pct:+.0f}%")
+            if required_tokens and token_pct is not None:
+                parts.append(f"tokens {token_pct:+.0f}%")
+            return (
+                "Practical check: meets compression criteria — quality preserved "
+                f"({', '.join(parts)}; bounds clear)."
+            )
+        return (
+            "Practical check: compression not established — quality must be preserved "
+            "by bounds and resource savings proven by intervals."
+        )
+    if gain_ok and cost_ok and token_ok:
+        if (required_saving and saving_pct is not None) or (
+            required_tokens and token_pct is not None
+        ):
+            bits = [f"{mean_pp:+d} pp"]
+            if required_saving and saving_pct is not None:
+                bits.append(f"cost {saving_pct:+.0f}%")
+            if required_tokens and token_pct is not None:
+                bits.append(f"tokens {token_pct:+.0f}%")
+            return (
+                "Practical check: meets criteria — bounds clear "
+                f"({', '.join(bits)})."
             )
         if meaningful_gain:
             bound_note = (
@@ -1549,11 +1626,22 @@ def build_report_blocks(
 ) -> tuple[str, list[tuple]]:
     comparison = results.get("comparison")
     skill_comparison = results.get("skill_comparison")
+    preset = results.get("preset") or (results.get("settings") or {}).get("preset")
+    arm_labels = results.get("arm_labels") or {}
     if skill_comparison:
+        preset = preset or skill_comparison.get("preset") or "revision"
+    if preset == "compression":
+        label = "Minified"
+        subject = "minified"
+    elif preset == "revision" or skill_comparison:
         label = "Skill B"
         subject = "skill B"
     else:
         label = "Treatment" if comparison else "Skill"
+        subject = label.lower()
+    # Prefer stored arm labels when present.
+    if arm_labels.get("treatment"):
+        label = str(arm_labels["treatment"])
         subject = label.lower()
     name = str(results.get("name", "experiment"))
     runs_data = _load_runs_for_report(results, run_root)
@@ -1584,6 +1672,7 @@ def build_report_blocks(
             thresholds=thresholds,
             tasks_count=tasks_count or None,
             failure_policy=failure_policy,
+            preset=preset,
         )
     else:
         diff = _score_difference(control, skill)
@@ -1781,6 +1870,71 @@ def build_report_blocks(
                 )
             )
 
+    # Baseline comparisons: baseline-vs-A and baseline-vs-B so the optional
+    # baseline answers whether either revision helps at all.
+    baseline_comps = results.get("baseline_comparisons") or {}
+    if baseline_comps:
+        blocks.append(("h", 2, "Baseline comparisons"))
+        blocks.append(
+            (
+                "p",
+                "Optional no-skill arm run on the same fixtures in balanced rotation. "
+                "Each row compares the baseline against one revision.",
+            )
+        )
+        brow: list[list[Cell]] = []
+        for key, aname in (("baseline_vs_a", "Baseline vs A"), ("baseline_vs_b", "Baseline vs B")):
+            comp = baseline_comps.get(key) or {}
+            pr = comp.get("paired") or {}
+            score_m = (pr.get("score") or {}).get("mean_diff")
+            if score_m is not None:
+                s_txt: Cell = (
+                    format_pp_diff(round(float(score_m) * 100)),
+                    _tone(round(float(score_m) * 100), True),
+                )
+            else:
+                s_txt = ("N/A", None)
+            cost_m = (pr.get("cost") or {}).get("mean_diff")
+            if cost_m is not None:
+                c_txt: Cell = (
+                    format_cost_diff(float(cost_m)),
+                    _tone(round(float(cost_m), 2), False),
+                )
+            else:
+                c_txt = ("N/A", None)
+            n = pr.get("pairs", 0)
+            scored = (pr.get("score") or {}).get("n", n)
+            brow.append([aname, s_txt, c_txt, f"{scored}/{n}" if n else "-"])
+        blocks.append(
+            (
+                "table",
+                ["Comparison", "Δ score (other-baseline)", "Δ cost", "Pairs"],
+                brow,
+                ["l", "r", "r", "r"],
+            )
+        )
+
+    # Compression static sizes: source reduction alongside session savings.
+    sc = skill_comparison or {}
+    if (preset == "compression" or sc.get("preset") == "compression") and (
+        sc.get("source_bytes_a") or sc.get("source_bytes_b")
+    ):
+        try:
+            ba = int(sc.get("source_bytes_a") or 0)
+            bb = int(sc.get("source_bytes_b") or 0)
+            red = float(sc.get("source_reduction_pct") or 0)
+            blocks.append(("h", 2, "Source size"))
+            blocks.append(
+                (
+                    "p",
+                    f"Static skill size: original {ba} bytes → minified {bb} bytes "
+                    f"({red:+.1f}% reduction). This is separate from session tokens, "
+                    "cost, and time measured per run.",
+                )
+            )
+        except Exception:
+            pass
+
     if control_runs or treatment_runs:
         headers, run_rows = _build_runs_table(
             control_runs,
@@ -1792,7 +1946,17 @@ def build_report_blocks(
         blocks.append(("h", 2, "Run details"))
         randomized = any("run_order" in r for r in control_runs)
         seeded = results.get("seed") is not None
-        if skill_comparison:
+        if preset == "compression":
+            run_note = (
+                "Each pair ran the original vs the minified skill on identical fixtures"
+                + (", in balanced arm order" if randomized else "")
+                + (f" (seed `{results.get('seed')}`)" if seeded else "")
+                + ". Control column is Original; treatment column is Minified. "
+                "Tune on dev tasks, then compare frozen versions on held-out tasks."
+            )
+            if skill_comparison.get("include_baseline"):
+                run_note += " A no-skill baseline arm also ran per pair (see runs/baseline)."
+        elif skill_comparison:
             run_note = (
                 "Each pair ran skill A vs skill B on identical fixtures"
                 + (", in balanced arm order" if randomized else "")
@@ -1800,7 +1964,10 @@ def build_report_blocks(
                 + ". Control column is Skill A; treatment column is Skill B."
             )
             if skill_comparison.get("include_baseline"):
-                run_note += " A no-skill baseline arm also ran per pair (see runs/baseline)."
+                run_note += (
+                    " A no-skill baseline arm also ran per pair in balanced rotation "
+                    "(see Baseline comparisons)."
+                )
         else:
             run_note = (
                 (
@@ -1821,6 +1988,7 @@ def build_report_blocks(
         blocks.append(("table", headers, run_rows, align))
 
     blocks.append(("h", 2, "Setup"))
+    preset_setup = results.get("preset") or (results.get("settings") or {}).get("preset")
     setup_items = [
         f"**Skill:** `{results.get('skill', '')}`"
         + (
@@ -1830,18 +1998,38 @@ def build_report_blocks(
         ),
         f"**Models:** {', '.join(f'`{m}`' for m in models)}",
     ]
+    if preset_setup:
+        setup_items.append(f"**Preset:** `{preset_setup}`")
     if skill_comparison:
         baseline_txt = (
-            "yes (no-skill arm per pair)"
+            "yes (no-skill arm per pair, balanced rotation)"
             if skill_comparison.get("include_baseline")
             else "no"
         )
-        setup_items = [
-            f"**Skill A (control):** `{skill_comparison.get('skill_a')}`",
-            f"**Skill B (treatment):** `{skill_comparison.get('skill_b')}`",
-            f"**Baseline:** {baseline_txt}",
-            setup_items[-1],
-        ]
+        if (preset_setup or skill_comparison.get("preset")) == "compression":
+            setup_items = [
+                f"**Original (control):** `{skill_comparison.get('skill_a')}`",
+                f"**Minified (treatment):** `{skill_comparison.get('skill_b')}`",
+                f"**Baseline:** {baseline_txt}",
+                setup_items[-1],
+            ]
+        else:
+            setup_items = [
+                f"**Skill A (control):** `{skill_comparison.get('skill_a')}`",
+                f"**Skill B (treatment):** `{skill_comparison.get('skill_b')}`",
+                f"**Baseline:** {baseline_txt}",
+                setup_items[-1],
+            ]
+        if skill_comparison.get("source_bytes_a") or skill_comparison.get("source_bytes_b"):
+            try:
+                ba = int(skill_comparison.get("source_bytes_a") or 0)
+                bb = int(skill_comparison.get("source_bytes_b") or 0)
+                red = float(skill_comparison.get("source_reduction_pct") or 0)
+                setup_items.append(
+                    f"**Source size:** {ba} → {bb} bytes ({red:+.1f}% static reduction)"
+                )
+            except Exception:
+                pass
     if comparison:
         pr_mode = comparison.get("mode", "agent")
         pr_pair = comparison.get("pair", "merge-base")

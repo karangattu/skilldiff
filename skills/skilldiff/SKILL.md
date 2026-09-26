@@ -177,12 +177,22 @@ paired results:
 
 ```bash
 skilldiff init --skill-a ./skills/v1 --skill-b ./skills/v2 --dir ./skill-ab --harness claude
-# add --include-baseline for a no-skill arm per pair
+# add --include-baseline for a no-skill arm per pair (balanced rotation)
+# add --preset revision (default) or --preset compression (original vs minified)
 ```
 
-Control is skill A, treatment is skill B. Use `skilldiff compare runA runB --strict`
-only for cross-run checks; prefer single-run A/B because `compare` must match
-tasks and repetitions to normalize efficiency.
+Control is skill A, treatment is skill B. The baseline rotates through all
+positions and the report shows baseline-vs-A and baseline-vs-B. Use
+`skilldiff compare runA runB --strict` only for cross-run checks; prefer
+single-run A/B because `compare` must match tasks and repetitions to
+normalize efficiency.
+
+For compression: keep the skill name and trigger description identical so
+adoption changes do not confound the body comparison. Record source-size
+reduction separately from session tokens, cost, and time. Fix acceptable loss
+before running (for example: at most 2pp loss with at least 20% fewer
+tokens) and require bounds to support it. Tune on dev tasks, then compare
+frozen versions on held-out tasks.
 
 ## 7. Evaluate a PR
 

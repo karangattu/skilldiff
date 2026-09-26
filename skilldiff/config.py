@@ -105,8 +105,14 @@ class ExperimentConfig:
     # Practical decision thresholds for verdicts (all optional):
     #   acceptable_score_regression_pp: tolerated score drop, e.g. 5 = -5pp ok.
     #   required_cost_reduction_pct: required saving, e.g. 10 = 10% cheaper.
+    #   required_token_reduction_pct: required session-token saving for compression.
     #   meaningful_score_gain_pp: gain needed to call an improvement useful.
     thresholds: dict[str, float] = field(default_factory=dict)
+    # Named preset that configures arm labels and decision criteria on top of
+    # the shared runner: "skill" (no skill vs skill), "pr" (without vs with PR),
+    # "revision" (skill A vs skill B), "compression" (original vs minified).
+    # None means infer from skill/pr/skill_a+b (compression must be explicit).
+    preset: Optional[str] = None
     # Skill A/B mode: compare two skill revisions in one experiment.
     # Exactly one of these holds: `skill`+`pr is None` (single skill),
     # `skill_a`+`skill_b` (A/B), or `pr` (PR mode).
@@ -434,6 +440,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     for key in (
         "acceptable_score_regression_pp",
         "required_cost_reduction_pct",
+        "required_token_reduction_pct",
         "meaningful_score_gain_pp",
     ):
         if key in raw_thresholds and raw_thresholds[key] is not None:
@@ -441,6 +448,21 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
                 thresholds[key] = float(raw_thresholds[key])
             except (TypeError, ValueError):
                 raise ValueError(f"Experiment thresholds.{key} must be a number")
+
+    preset_raw = data.get("preset")
+    preset: Optional[str] = None
+    if preset_raw is not None:
+        preset = str(preset_raw).strip().lower()
+        if preset not in {"skill", "pr", "revision", "compression"}:
+            raise ValueError("preset must be one of skill, pr, revision, compression")
+    # Infer when absent; compression must be explicit so its stricter rules apply.
+    if preset is None:
+        if pr_data is not None:
+            preset = "pr"
+        elif skill_a_str or skill_b_str:
+            preset = "revision"
+        else:
+            preset = "skill"
 
     seed = data.get("seed")
     if seed is not None:
@@ -473,6 +495,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         include_baseline=include_baseline,
         seed=seed,
         failure_policy=failure_policy,
+        preset=preset,
         pr=pr,
         models=[str(m) for m in models],
         tasks_patterns=task_patterns,
@@ -487,6 +510,39 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         parallel=parallel,
         thresholds=thresholds,
     )
+
+    # Preset consistency: each preset configures the shared runner with clear
+    # arms; mismatches fail fast instead of running the wrong comparison.
+    if preset == "skill" and (pr is not None or skill_a_path or skill_b_path):
+        raise ValueError("preset skill requires 'skill' (no pr, no skill_a/skill_b)")
+    if preset == "pr" and pr is None:
+        raise ValueError("preset pr requires a 'pr' block")
+    if preset == "revision" and not (skill_a_path and skill_b_path):
+        raise ValueError("preset revision requires 'skill_a' and 'skill_b'")
+    if preset == "compression":
+        if not (skill_a_path and skill_b_path):
+            raise ValueError("preset compression requires 'skill_a' and 'skill_b'")
+        # Body compression must not confound adoption: the trigger (name and
+        # description) must be identical so only the body differs.
+        if len(exp_config.skill_a_dirs) != len(exp_config.skill_b_dirs):
+            raise ValueError(
+                "preset compression requires the same number of skills in A and B"
+            )
+        # Compare (name, description) pairs; bodies may differ.
+        def _trigger(d: Path) -> tuple[str, str]:
+            meta = read_skill_frontmatter(d)
+            return (
+                str(meta.get("name", d.name) or d.name).strip(),
+                str(meta.get("description", "") or "").strip(),
+            )
+
+        trig_a = sorted(_trigger(d) for d in exp_config.skill_a_dirs)
+        trig_b = sorted(_trigger(d) for d in exp_config.skill_b_dirs)
+        if trig_a != trig_b:
+            raise ValueError(
+                "preset compression requires identical skill name and description "
+                "in A and B (compress the body, not the trigger)"
+            )
 
     loaded_tasks: list[TaskConfig] = []
     seen_ids: set[str] = set()

@@ -4,6 +4,30 @@ All notable changes to this project use this file.
 The format follows Keep a Changelog.
 This project uses semantic versioning.
 
+## [0.8.0] - 2026-09-27
+
+### Fixed
+
+- Resume no longer overwrites previous metadata before validation. Compatibility
+  covers skill hashes, task hashes, PR commits and workflow, models, tasks,
+  harness, skills, baseline, and preset. Mismatches refuse before any write.
+- A/B contamination warnings are mode-aware. Skill A in control and skill B in
+  treatment are expected; only wrong revisions, missing skills, and baseline
+  skill presence warn or invalidate.
+- Equal-score verdicts evaluate practical thresholds. Compression reports
+  preserved quality plus proven resource savings instead of skipping the check.
+
+### Added
+
+- Four presets (`skill`, `pr`, `revision`, `compression`) configuring the shared
+  runner with clear arm labels and decision criteria. Compression enforces
+  identical triggers, records source-size reduction separately from session
+  tokens, cost, and time, and adds `required_token_reduction_pct`.
+- Balanced three-arm baseline order with `baseline_vs_a` and `baseline_vs_b`
+  summaries in results and reports.
+- Focused tests for A/B config, baseline behavior, resume refusal, PR workflow
+  options, and compression verdicts.
+
 ## [0.7.0] - 2026-09-26
 
 ### Added

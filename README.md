@@ -241,7 +241,7 @@ failure_policy:
   missing: exclude
 ```
 
-Shipping needs bounds to clear the limits, not point estimates. The verdict checks the lower confidence bound for score and requires the cost interval to exclude increases. It separates a useful gain from a small but real gain.
+Shipping needs bounds to clear the limits, not point estimates. The verdict checks the lower confidence bound for score and requires the cost and token intervals to exclude increases. It separates a useful gain from a small but real gain. For compression, equal scores still evaluate thresholds: quality preserved plus proven resource savings is the win.
 
 The headline also flags weak proof:
 
@@ -254,6 +254,42 @@ Define `failure_policy` before you run. Grader timeouts and errors are always `N
 </details>
 
 <details>
+<summary>Presets: pr, skill, revision, compression</summary>
+
+Four named presets configure the same runner with clear arms and decision rules:
+
+| Preset | Control | Treatment | Decides |
+|---|---|---|---|
+| `skill` | Agent without the skill | Same agent with the skill | Does the skill help? |
+| `pr` | Code without PR changes | Code with PR changes | Does the PR change behaviour? |
+| `revision` | Skill A | Skill B | Which revision wins? |
+| `compression` | Original skill | Minified skill | Is quality preserved with fewer resources? |
+
+```bash
+# 1. PR correctness; fetch the PR ref first
+git -C /path/to/repo fetch origin refs/pull/42/head:refs/pull/42/head
+skilldiff init --pr 42 --repo /path/to/repo --base origin/main \
+  --pr-mode correctness --dir evaluations/pr-42
+
+# 2. No skill versus skill
+skilldiff init --skill /path/to/my-skill \
+  --dir evaluations/skill-effectiveness
+
+# 3. Skill A versus skill B
+skilldiff init --skill-a /path/to/v1/my-skill \
+  --skill-b /path/to/v2/my-skill --dir evaluations/skill-revisions
+
+# 4. Original versus an already-created minified skill
+skilldiff init --skill-a /path/to/original/my-skill \
+  --skill-b /path/to/minified/my-skill --preset compression \
+  --dir evaluations/skill-compression
+```
+
+Each template still needs representative tasks, fixtures, and graders. Tune the minified version on dev tasks, then compare frozen versions on held-out tasks. Compression keeps the skill name and trigger description identical so adoption changes do not confound the body comparison, records source-size reduction separately from session tokens, cost, and time, and requires bounds to support the decision (for example: at most 2pp loss with at least 20% fewer tokens).
+
+</details>
+
+<details>
 <summary>Compare skill revisions</summary>
 
 Each run records skill hashes, prompt hashes, fixture hashes, grader hashes, locks, and CLI versions. The task hash includes grader contents and locks. All files are hashed with no silent caps.
@@ -262,10 +298,11 @@ For a first-class test, run skill A versus skill B in one experiment:
 
 ```bash
 skilldiff init --skill-a ./skills/v1 --skill-b ./skills/v2 --dir ab-eval
-# add --include-baseline for a no-skill arm per pair
+# add --include-baseline for a no-skill arm per pair (balanced rotation)
+# add --preset compression for original vs minified with trigger checks
 ```
 
-Control is skill A and treatment is skill B, on identical fixtures with paired results.
+Control is skill A and treatment is skill B, on identical fixtures with paired results. The baseline arm rotates through all three positions and the report shows baseline-vs-A and baseline-vs-B alongside A-vs-B, plus source-size reduction for compression.
 
 To compare two old runs:
 
@@ -293,7 +330,7 @@ skilldiff check
 skilldiff run --runs 1
 ```
 
-Reports label the arms Control and Treatment. Use one of `skill`, `skill_a` plus `skill_b`, or `pr`, not more than one. Tasks omit `repo` in PR mode. Correctness mode runs no agents.
+Reports label the arms per preset (Original/Minified, Skill A/Skill B, Without/With PR). Use one of `skill`, `skill_a` plus `skill_b`, or `pr`, not more than one, with `preset` set to `skill`, `revision`, `compression`, or `pr`. Tasks omit `repo` in PR mode. Correctness mode runs no agents. Resume validates previous metadata before writing anything and refuses on changed skills, PR commits, or execution settings.
 
 </details>
 
@@ -303,7 +340,7 @@ Reports label the arms Control and Treatment. Use one of `skill`, `skill_a` plus
 | Command | What it does |
 |---|---|
 | `skilldiff init [--skill PATH] [--harness H] [--dir D]` | Make a demo or a template for your skill |
-| `skilldiff init --skill-a A --skill-b B [--include-baseline] [--dir D]` | Make a skill A/B test with paired results |
+| `skilldiff init --skill-a A --skill-b B [--include-baseline] [--preset revision\|compression] [--dir D]` | Make a skill A/B test with paired results |
 | `skilldiff init --pr N --repo PATH [--base REF] [--pr-mode M] [--pr-pair P]` | Make a PR test from local refs |
 | `skilldiff check [-c CONFIG]` | Check the config, the CLI, the skill, isolation, and the graders |
 | `skilldiff run [-c CONFIG] [--runs N] [-j N] [-m MODEL] [-t TASK] [--resume] [--seed N]` | Run the test |
@@ -340,6 +377,6 @@ pip install -e ".[dev]"
 pytest && ruff check skilldiff tests
 ```
 
-See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.7.0.
+See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.8.0.
 
 </details>

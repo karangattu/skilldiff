@@ -52,6 +52,8 @@ HARNESS_BLOCKS = {
 
 EXPERIMENT_YAML = """name: {name}
 
+# Preset skill: agent without the skill vs the same agent with the skill.
+preset: skill
 # A skill directory (containing SKILL.md) or a folder of skills, e.g. a package's skills/.
 skill: {skill}
 
@@ -80,12 +82,15 @@ parallel: 1                 # pairs to run at once
 # thresholds:
 #   acceptable_score_regression_pp: 5   # tolerated drop, e.g. -5pp ok if cheaper
 #   required_cost_reduction_pct: 10     # required saving, e.g. 10% cheaper
+#   required_token_reduction_pct: 20    # session-token saving (compression)
 #   meaningful_score_gain_pp: 5         # gain needed to call an improvement useful
 
 {harness_block}"""
 
 SKILL_AB_YAML = """name: {name}
 
+# Preset {preset}: {preset_note}
+preset: {preset}
 # Skill A/B: one experiment runs skill A vs skill B on identical fixtures,
 # interleaved with paired results. Set include_baseline to also run a
 # no-skill arm per pair (shows whether either revision helps at all).
@@ -100,10 +105,17 @@ models:
 
 tasks:
   - ./tasks/*.yaml
+  - ./tasks/heldout/*.yaml   # frozen validation set; tune on dev tasks first
 
 runs: 3
 timeout_seconds: 1800
 parallel: 1
+
+# Decision criteria, fixed before running (illustrative compression targets):
+# thresholds:
+#   acceptable_score_regression_pp: 2   # minified may lose at most 2pp
+#   required_token_reduction_pct: 20    # with at least 20% fewer session tokens
+#   required_cost_reduction_pct: 10
 
 {harness_block}"""
 
@@ -230,6 +242,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     skill_arg: Optional[str] = getattr(args, "skill", None)
     skill_a_arg: Optional[str] = getattr(args, "skill_a", None)
     skill_b_arg: Optional[str] = getattr(args, "skill_b", None)
+    preset_arg: Optional[str] = getattr(args, "preset", None)
+    if preset_arg is not None:
+        preset_arg = str(preset_arg).strip().lower()
+        if preset_arg not in {"skill", "pr", "revision", "compression"}:
+            print("--preset must be skill, pr, revision, or compression.", file=sys.stderr)
+            return 1
     config_file = root / "skilldiff.yaml"
 
     if config_file.exists() and not force:
@@ -263,7 +281,16 @@ def cmd_init(args: argparse.Namespace) -> int:
         print("Skill A/B mode requires both --skill-a and --skill-b.", file=sys.stderr)
         return 1
     if skill_a_arg and skill_b_arg:
-        return _init_skill_ab(args, root, force, harness)
+        if preset_arg not in (None, "revision", "compression"):
+            print("--preset revision/compression go with --skill-a/--skill-b.", file=sys.stderr)
+            return 1
+        return _init_skill_ab(args, root, force, harness, preset_arg or "revision")
+    if preset_arg in ("revision", "compression"):
+        print("--preset revision/compression require --skill-a and --skill-b.", file=sys.stderr)
+        return 1
+    if preset_arg == "pr" and pr_number is None:
+        print("--preset pr requires --pr and --repo.", file=sys.stderr)
+        return 1
 
     created: list[Path] = []
     if skill_arg:
@@ -323,15 +350,38 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def _init_skill_ab(args: argparse.Namespace, root: Path, force: bool, harness: str) -> int:
+def _init_skill_ab(
+    args: argparse.Namespace, root: Path, force: bool, harness: str, preset: str = "revision"
+) -> int:
     from skilldiff.config import find_skill_dirs as _find
+    from skilldiff.config import read_skill_frontmatter as _fm
 
     skill_a = Path(args.skill_a).expanduser().resolve()
     skill_b = Path(args.skill_b).expanduser().resolve()
+    if skill_a == skill_b:
+        print("skill_a and skill_b must be different directories.", file=sys.stderr)
+        return 1
     for label, p in (("skill-a", skill_a), ("skill-b", skill_b)):
         if not _find(p):
             print(f"No SKILL.md found in {p} or its subdirectories ({label}).", file=sys.stderr)
             return 1
+    if preset == "compression":
+        # Fail fast when the trigger differs: adoption would confound the result.
+        dirs_a, dirs_b = _find(skill_a), _find(skill_b)
+        if len(dirs_a) != len(dirs_b):
+            print("compression needs the same skills in A and B.", file=sys.stderr)
+            return 1
+        for da, db in zip(sorted(dirs_a), sorted(dirs_b)):
+            ma, mb = _fm(da), _fm(db)
+            if str(ma.get("name", da.name)).strip() != str(mb.get("name", db.name)).strip() or str(
+                ma.get("description", "")
+            ).strip() != str(mb.get("description", "")).strip():
+                print(
+                    "compression needs identical skill name and description in A and B "
+                    "(compress the body, not the trigger).",
+                    file=sys.stderr,
+                )
+                return 1
     base = root.resolve()
     rel_a = os.path.relpath(skill_a, base)
     rel_b = os.path.relpath(skill_b, base)
@@ -341,6 +391,13 @@ def _init_skill_ab(args: argparse.Namespace, root: Path, force: bool, harness: s
         rel_b = f"./{rel_b}"
     text = SKILL_AB_YAML.format(
         name=f"{skill_a.name}-vs-{skill_b.name}",
+        preset=preset,
+        preset_note=(
+            "original vs minified; triggers must match, decision needs preserved "
+            "quality plus proven token savings"
+            if preset == "compression"
+            else "skill A vs skill B on identical fixtures"
+        ),
         skill_a=rel_a,
         skill_b=rel_b,
         baseline="true" if getattr(args, "include_baseline", False) else "false",
@@ -351,6 +408,7 @@ def _init_skill_ab(args: argparse.Namespace, root: Path, force: bool, harness: s
     (root / "skilldiff.yaml").parent.mkdir(parents=True, exist_ok=True)
     (root / "skilldiff.yaml").write_text(text, encoding="utf-8")
     _write(root / "tasks" / "my-first-task.yaml", CUSTOM_TASK_YAML, force)
+    _write(root / "tasks" / "heldout" / "my-first-task.yaml", CUSTOM_TASK_YAML, force)
     _write(root / "graders" / "my_first_task.py", CUSTOM_GRADER, force)
     (root / "fixtures" / "my-project").mkdir(parents=True, exist_ok=True)
     print(f"Initialized skill A/B experiment in {root} (A={rel_a}, B={rel_b})")
@@ -375,6 +433,8 @@ def _init_pr(args: argparse.Namespace, root: Path, force: bool, harness: str) ->
         return 1
     config = {
         "name": f"pr-{args.pr}-eval",
+        # Preset pr: code without PR changes vs code with PR changes.
+        "preset": "pr",
         "pr": {
             "repo": os.path.relpath(repo, root.resolve()),
             "base": base,
@@ -466,10 +526,13 @@ def cmd_check(args: argparse.Namespace) -> int:
         if comparison.get("mode") == "correctness":
             ok("correctness mode: graders run on untouched revisions, no agent sessions")
 
+    if getattr(cfg, "preset", None):
+        ok(f"preset: {cfg.preset}")
+
     if cfg.is_skill_comparison:
         ok(f"skill A/B: {cfg.skill_a} vs {cfg.skill_b}")
         if cfg.include_baseline:
-            ok("include_baseline: a no-skill arm runs per pair")
+            ok("include_baseline: a no-skill arm runs per pair in balanced rotation")
         # Warn when revisions are identical (hash check is in preflight too).
         try:
             from skilldiff.experiment import collect_provenance as _prov
@@ -480,8 +543,33 @@ def cmd_check(args: argparse.Namespace) -> int:
                 roles.setdefault(s.get("role"), []).append(s.get("hash"))
             if roles.get("skill_a") == roles.get("skill_b") and roles.get("skill_a"):
                 warn("skill_a and skill_b have identical hashes")
+            sizes = prov.get("source_bytes") or {}
+            if sizes.get("skill_a") or sizes.get("skill_b"):
+                ba = int(sizes.get("skill_a") or 0)
+                bb = int(sizes.get("skill_b") or 0)
+                red = (ba - bb) / ba * 100 if ba else 0
+                ok(f"source size: {ba} → {bb} bytes ({red:+.1f}% static reduction)")
         except Exception:
             pass
+        if getattr(cfg, "preset", None) == "compression":
+            # Triggers must match or adoption confounds the body comparison.
+            from skilldiff.config import read_skill_frontmatter as _fm2
+
+            dirs_a = sorted(cfg.skill_a_dirs)
+            dirs_b = sorted(cfg.skill_b_dirs)
+            mismatch = False
+            for da, db in zip(dirs_a, dirs_b):
+                ma, mb = _fm2(da), _fm2(db)
+                if str(ma.get("name", da.name)).strip() != str(
+                    mb.get("name", db.name)
+                ).strip() or str(ma.get("description", "")).strip() != str(
+                    mb.get("description", "")
+                ).strip():
+                    mismatch = True
+            if mismatch:
+                fail("compression: skill name/description differ between A and B")
+                return 1
+            ok("compression: triggers match (name and description identical)")
 
     for skill_dir in cfg.skill_dirs:
         meta = read_skill_frontmatter(skill_dir)
@@ -875,16 +963,30 @@ def _format_results(results: dict) -> str:
     tasks_count = results.get("tasks_count", 0)
     runs_per_arm = results.get("runs_per_arm", 0)
     thresholds = results.get("thresholds") or (results.get("settings") or {}).get("thresholds")
+    preset = results.get("preset") or (results.get("settings") or {}).get("preset")
+    arm_labels = results.get("arm_labels") or {}
 
     sections: list[str] = []
     comparison = results.get("comparison")
     skill_comparison = results.get("skill_comparison")
+    if preset:
+        sections.append(f"Preset: {preset}")
     if skill_comparison:
+        a_label = arm_labels.get("control", "Skill A")
+        b_label = arm_labels.get("treatment", "Skill B")
         sections.append(
-            f"Skill A: {skill_comparison.get('skill_a')}\n"
-            f"Skill B: {skill_comparison.get('skill_b')}"
+            f"{a_label}: {skill_comparison.get('skill_a')}\n"
+            f"{b_label}: {skill_comparison.get('skill_b')}"
             + (" (plus no-skill baseline)" if skill_comparison.get("include_baseline") else "")
         )
+        if skill_comparison.get("source_bytes_a") or skill_comparison.get("source_bytes_b"):
+            try:
+                ba = int(skill_comparison.get("source_bytes_a") or 0)
+                bb = int(skill_comparison.get("source_bytes_b") or 0)
+                red = float(skill_comparison.get("source_reduction_pct") or 0)
+                sections.append(f"Source size: {ba} → {bb} bytes ({red:+.1f}%)")
+            except Exception:
+                pass
     elif comparison:
         pair = comparison.get("pair", "merge-base")
         mode = comparison.get("mode", "agent")
@@ -892,7 +994,10 @@ def _format_results(results: dict) -> str:
             f"Control (without PR): {comparison['control_commit']} ({pair})\n"
             f"Treatment (with PR): {comparison['treatment_commit']} [{mode}]"
         )
-    treat_label = "Skill B" if skill_comparison else ("Treatment" if comparison else "Skill")
+    treat_label = (
+        arm_labels.get("treatment")
+        or ("Skill B" if skill_comparison else ("Treatment" if comparison else "Skill"))
+    )
     if len(models) <= 1:
         model_name = models[0] if models else None
         model_data = by_model.get(model_name) if model_name else None
@@ -908,6 +1013,7 @@ def _format_results(results: dict) -> str:
                 paired=source.get("paired"),
                 treatment_label=treat_label,
                 thresholds=thresholds,
+                preset=preset,
             )
         )
     else:
@@ -927,8 +1033,20 @@ def _format_results(results: dict) -> str:
                     paired=model_data.get("paired"),
                     treatment_label=treat_label,
                     thresholds=thresholds,
+                    preset=preset,
                 )
             )
+
+    baseline_comps = results.get("baseline_comparisons") or {}
+    for key, title in (
+        ("baseline_vs_a", "Baseline vs A"),
+        ("baseline_vs_b", "Baseline vs B"),
+    ):
+        comp = baseline_comps.get(key)
+        if comp and comp.get("pairs"):
+            pm = ((comp.get("paired") or {}).get("score") or {}).get("mean_diff")
+            txt = f"{round(float(pm) * 100):+d} pp" if pm is not None else "N/A"
+            sections.append(f"{title}: {txt} ({comp.get('pairs')} pairs)")
 
     if results.get("valid") is False:
         sections.append("INVALID: no clean baseline (control contamination).")
@@ -960,6 +1078,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-baseline",
         action="store_true",
         help="A/B mode: also run a no-skill baseline arm per pair",
+    )
+    init_parser.add_argument(
+        "--preset",
+        choices=["skill", "pr", "revision", "compression"],
+        help="Named preset configuring arms and decision criteria",
     )
     init_parser.add_argument("--pr", type=int, help="Scaffold an evaluation of a GitHub PR number")
     init_parser.add_argument("--repo", help="Local repository containing the PR revisions")
