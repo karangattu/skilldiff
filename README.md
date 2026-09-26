@@ -52,7 +52,7 @@ How to read the table:
 - If the interval includes zero, the result can be noise.
 - `N/A` means the value is unknown, not zero.
 - `n=X/Y` shows how many pairs gave a value.
-- Cost is the API-equivalent estimate from token counts, not subscription spend. The report names the pricing version. Run `skilldiff prices` to see the rate table.
+- Cost is the harness-reported price. On subscription auth the real spend is $0 at the margin. The evaluating agent looks up current provider prices and shows the API-equivalent cost from token counts in its final summary.
 
 <details>
 <summary>Tips for clear results</summary>
@@ -276,7 +276,6 @@ Control is the merge base. Treatment is the head commit. Reports label the arms 
 | `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run |
 | `skilldiff report [RUN_DIR]` | Rebuild reports for a run |
 | `skilldiff compare RUN_A RUN_B [--json]` | Compare two runs |
-| `skilldiff prices [--json]` | Show the rate table for subscription costs |
 
 </details>
 
@@ -307,6 +306,6 @@ pip install -e ".[dev]"
 pytest && ruff check skilldiff tests
 ```
 
-See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.4.0.
+See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.5.0.
 
 </details>

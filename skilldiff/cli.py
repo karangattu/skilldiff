@@ -609,38 +609,6 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_prices(args: argparse.Namespace) -> int:
-    from skilldiff.pricing import PRICING_DATE, PRICING_VERSION, RATES, SOURCES
-
-    if getattr(args, "json", False):
-        print(
-            json.dumps(
-                {
-                    "version": PRICING_VERSION,
-                    "date": PRICING_DATE,
-                    "sources": SOURCES,
-                    "rates_usd_per_1m": RATES,
-                },
-                indent=2,
-            )
-        )
-        return 0
-    print(f"Token pricing {PRICING_VERSION} (looked up {PRICING_DATE}):")
-    print("USD per 1M tokens: input / cache-read / cache-write / output")
-    for model in sorted(RATES):
-        r = RATES[model]
-        print(
-            f"  {model}: ${r['input']:.3f} / ${r['cache_read']:.3f} "
-            f"/ ${r['cache_write']:.3f} / ${r['output']:.3f}"
-        )
-    print("Sources:")
-    for name, url in SOURCES.items():
-        print(f"  {name}: {url}")
-    print("If these look stale, check the provider pages above and add overrides")
-    print("under `pricing:` in skilldiff.yaml, then rerun.")
-    return 0
-
-
 def _print_report_paths(results: dict) -> None:
     report = results.get("report", {}) or {}
     if report.get("html"):
@@ -785,11 +753,6 @@ def build_parser() -> argparse.ArgumentParser:
     compare_parser.add_argument("--json", action="store_true", help="Output comparison as JSON")
     compare_parser.set_defaults(func=cmd_compare)
 
-    prices_parser = subparsers.add_parser(
-        "prices", help="Show the token-pricing table used for subscription costs"
-    )
-    prices_parser.add_argument("--json", action="store_true", help="Output pricing as JSON")
-    prices_parser.set_defaults(func=cmd_prices)
     return parser
 
 

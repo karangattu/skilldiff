@@ -57,11 +57,7 @@ def test_experiment_runner_end_to_end(tmp_path: Path, monkeypatch):
     with open(run_dir / "haiku" / "t1" / "treatment" / "001" / "run.json") as f:
         run_data = json.load(f)
         assert run_data["score"] == 1.0
-        # Subscription auth recomputes API-equivalent cost from mock tokens
-        # (100 in + 50 out at Haiku 4.5 rates); harness cost is preserved.
-        assert run_data["cost"] == 0.00035
-        assert run_data["harness_cost"] == 0.25
-        assert run_data["cost_basis"].startswith("token-pricing/")
+        assert run_data["cost"] == 0.25
 
 
 def _setup(tmp_path: Path, runs: int = 2, **cfg_kwargs):

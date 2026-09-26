@@ -256,21 +256,11 @@ def _skill_usage(metrics: dict[str, Any]) -> str:
 
 
 def _cost_basis_note(results: dict[str, Any]) -> str:
-    prov = results.get("provenance") or {}
-    version = prov.get("pricing_version") or "unversioned"
-    date = prov.get("pricing_date") or "unknown date"
-    settings = results.get("settings") or {}
-    basis = settings.get("cost_basis", "")
-    if "token-pricing" in str(basis):
-        return (
-            "Tokens include cached input where the harness reports it. Cost is the "
-            f"API-equivalent price recomputed from token counts (pricing {version}, "
-            f"{date}); actual subscription spend is $0 at the margin. "
-            "Refresh with `skilldiff prices`."
-        )
     return (
         "Tokens include cached input where the harness reports it. Cost is the "
-        "harness-reported price (API billing)."
+        "harness-reported price. On subscription auth the spend is $0 at the "
+        "margin, so the evaluating agent converts token counts with current "
+        "provider prices and shows the API-equivalent cost in its summary."
     )
 
 
@@ -1444,10 +1434,6 @@ def build_report_blocks(
         setup_items.append("**thresholds:** " + ", ".join(f"{k}={v}" for k, v in th.items()))
     prov = results.get("provenance") or {}
     if prov:
-        if prov.get("pricing_version"):
-            setup_items.append(
-                f"**Pricing:** `{prov['pricing_version']}` ({prov.get('pricing_date', '?')})"
-            )
         if prov.get("skill_hash"):
             setup_items.append(f"**Skill hash:** `{prov['skill_hash'][:12]}`")
         if prov.get("agent_cli"):

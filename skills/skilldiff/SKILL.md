@@ -99,19 +99,7 @@ signed-in CLI. Keep these points in mind:
   logged in", ask the user to sign in (for example `claude auth login`). Never ask for
   or handle their credentials yourself.
 
-## 5. Check prices, then full run
-
-On subscription auth, cost is $0 at the margin. SkillDiff instead reports an
-API-equivalent cost recomputed from token counts. Before the full run:
-
-```bash
-skilldiff prices
-```
-
-Check the table date against current provider pages (Anthropic, OpenAI, DeepSeek,
-Google). If a rate changed, add an override under `pricing:` in `skilldiff.yaml`
-and note the check in your summary. Unknown models keep the harness cost and get
-a warning.
+## 5. Full run and interpretation
 
 Use `runs: 5` or more. With fewer runs the confidence intervals are too wide to mean
 much. Use `--parallel N` only if the user's rate limits allow it.
@@ -123,8 +111,12 @@ Read `report.md` (for pull requests) or `report.html`. Report these results:
 2. **Adoption.** Say how many skill runs actually used the skill. Low adoption usually
    means that the skill's `description` doesn't match how users ask for the task.
 3. **Efficiency.** Give the cost, time, and token changes, and say which ones are
-   inside the noise. Cost is the token-based API-equivalent estimate with its
-   pricing version, not subscription spend.
+   inside the noise. Then add a final cost table: look up the current per-token
+   prices for the models in the run on the providers' own pricing pages, multiply
+   them by the token counts in the report, and show the API-equivalent cost per
+   arm. Name the price source and date next to the table. On subscription auth
+   the real spend is $0 at the margin, so this table is the comparison that
+   matters.
 4. **Warnings.** Report agent errors or timeouts, control contamination, tasks without
    graders, and ceiling effects.
 5. **Next step.** Suggest harder tasks, a sharper skill description, or more

@@ -4,6 +4,13 @@ All notable changes to this project use this file.
 The format follows Keep a Changelog.
 This project uses semantic versioning.
 
+## [0.5.0] - 2026-09-26
+
+### Changed
+
+- Removed the hardcoded token-pricing table. Costs are harness-reported again. No prices live in this repo and go stale here.
+- The skill now prompts the evaluating agent. In its final summary the agent looks up current provider prices on the web, multiplies them by the token counts in the report, and shows the API-equivalent cost per arm with source and date.
+
 ## [0.4.0] - 2026-09-26
 
 ### Added
