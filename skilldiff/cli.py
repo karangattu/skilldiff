@@ -67,15 +67,23 @@ runs: 3                     # repetitions per arm; use 5+ before drawing conclus
 timeout_seconds: 1800       # per agent session
 parallel: 1                 # pairs to run at once
 
+# Practical decision thresholds (optional, shown in the verdict):
+# thresholds:
+#   acceptable_score_regression_pp: 5   # tolerated drop, e.g. -5pp ok if cheaper
+#   required_cost_reduction_pct: 10     # required saving, e.g. 10% cheaper
+#   meaningful_score_gain_pp: 5         # gain needed to call an improvement useful
+
 {harness_block}"""
 
 DEMO_SKILL_MD = (
-    "---\n"
-    "name: changelog-style\n"
-    "description: House style for CHANGELOG.md entries. Use whenever you add, edit, "
-    "or review a changelog entry in this repository.\n"
-    "---\n"
-) + """
+    (
+        "---\n"
+        "name: changelog-style\n"
+        "description: House style for CHANGELOG.md entries. Use whenever you add, edit, "
+        "or review a changelog entry in this repository.\n"
+        "---\n"
+    )
+    + """
 
 # Changelog style
 
@@ -93,8 +101,10 @@ format:
 
 Example: `- [FIX] Fixed crash when parsing empty input (#42)`
 """
+)
 
 DEMO_TASK_YAML = """id: changelog-entry
+category: intended   # intended | irrelevant | ambiguous | general
 
 # The fixture is copied into a fresh workspace for every run.
 repo: ../fixtures/changelog
@@ -125,18 +135,23 @@ unreleased = text.split("## Unreleased", 1)[-1]
 entries = [line.strip() for line in unreleased.splitlines() if line.strip().startswith("-")]
 entry = entries[0] if entries else ""
 
-checks = [
-    bool(entry),
-    bool(re.match(r"^- \\[(FEAT|FIX|DOCS|CHORE)\\] ", entry)),
-    entry.startswith("- [FIX]"),
-    bool(re.search(r"\\(#42\\)$", entry)),
-    bool(entry) and not entry.endswith("."),
+# Named checks are recommended: [{"name": ..., "passed": bool}].
+# Bare booleans also work: [true, false]. The report shows per-check gains.
+named = [
+    ("has entry", bool(entry)),
+    ("type tag", bool(re.match(r"^- \\[(FEAT|FIX|DOCS|CHORE)\\] ", entry))),
+    ("is FIX", entry.startswith("- [FIX]")),
+    ("issue ref", bool(re.search(r"\\(#42\\)$", entry))),
+    ("no trailing period", bool(entry) and not entry.endswith(".")),
 ]
-score = sum(checks) / len(checks)
-print(json.dumps({"score": score, "success": all(checks), "checks": checks}))
+checks = [{"name": name, "passed": passed} for name, passed in named]
+score = sum(p for _, p in named) / len(named)
+print(json.dumps({"score": score, "success": all(p for _, p in named), "checks": checks}))
 '''
 
 CUSTOM_TASK_YAML = """id: my-first-task
+# intended: skill should help; irrelevant: stay out of the way
+category: intended   # intended | irrelevant | ambiguous | general
 
 # TODO: a small project where your skill should make a difference.
 # Relative paths resolve from this file. Remove `repo` to start from an empty folder.
@@ -149,6 +164,7 @@ prompt: |
 grader:
   type: command
   # Exit 0 = pass, or print JSON such as {"score": 0.75, "success": false}.
+  # For per-check gains, print {"score": ..., "checks": [{"name": "x", "passed": true}]}.
   command: python3 "$SKILLDIFF_TASK_DIR/../graders/my_first_task.py"
 """
 
@@ -189,8 +205,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     pr_number = getattr(args, "pr", None)
     if pr_number is not None:
         if skill_arg or pr_number <= 0 or not getattr(args, "repo", None):
-            print("--pr requires a positive PR number and --repo, without --skill.",
-                  file=sys.stderr)
+            print(
+                "--pr requires a positive PR number and --repo, without --skill.", file=sys.stderr
+            )
             return 1
         return _init_pr(args, root, force, harness)
     if getattr(args, "repo", None) or getattr(args, "base", None):
@@ -265,12 +282,18 @@ def _init_pr(args: argparse.Namespace, root: Path, force: bool, harness: str) ->
     config = {
         "name": f"pr-{args.pr}-eval",
         "pr": {"repo": os.path.relpath(repo, root.resolve()), "base": base, "head": head},
-        "harness": harness, "models": [DEFAULT_MODELS[harness]],
-        "tasks": ["./tasks/*.yaml"], "runs": 3, "timeout_seconds": 1800, "parallel": 1,
+        "harness": harness,
+        "models": [DEFAULT_MODELS[harness]],
+        "tasks": ["./tasks/*.yaml"],
+        "runs": 3,
+        "timeout_seconds": 1800,
+        "parallel": 1,
     }
     text = yaml.safe_dump(config, sort_keys=False) + "\n" + HARNESS_BLOCKS[harness]
     _write(root / "skilldiff.yaml", text, force)
-    _write(root / "tasks" / "my-first-task.yaml", """id: my-first-task
+    _write(
+        root / "tasks" / "my-first-task.yaml",
+        """id: my-first-task
 # Both arms start from pr.repo at their respective revisions. Do not set task.repo.
 prompt: |
   TODO: describe a realistic task that uses the feature introduced by this PR.
@@ -278,7 +301,9 @@ prompt: |
 grader:
   type: command
   command: python3 "$SKILLDIFF_TASK_DIR/../graders/my_first_task.py"
-""", force)
+""",
+        force,
+    )
     _write(root / "graders" / "my_first_task.py", CUSTOM_GRADER, force)
     print(f"Initialized PR #{args.pr} experiment in {root}")
     print("Fetch the GitHub PR head into your local repository before check/run:")
@@ -320,8 +345,10 @@ def cmd_check(args: argparse.Namespace) -> int:
     except Exception as exc:
         fail(f"configuration: {exc}")
         return 1
-    ok(f"configuration loads: {len(cfg.models)} model(s), {len(tasks)} task(s), "
-       f"{cfg.runs} run(s) per arm")
+    ok(
+        f"configuration loads: {len(cfg.models)} model(s), {len(tasks)} task(s), "
+        f"{cfg.runs} run(s) per arm"
+    )
 
     comparison = None
     if cfg.pr:
@@ -337,8 +364,10 @@ def cmd_check(args: argparse.Namespace) -> int:
         meta = read_skill_frontmatter(skill_dir)
         fm_name = str(meta["name"]).strip() if meta.get("name") else None
         if not meta.get("description"):
-            warn(f"{skill_dir.name}: SKILL.md has no `description` in its frontmatter; "
-                 "agents decide whether to load a skill from its description")
+            warn(
+                f"{skill_dir.name}: SKILL.md has no `description` in its frontmatter; "
+                "agents decide whether to load a skill from its description"
+            )
         else:
             ok(f"skill `{fm_name or skill_dir.name}` ({skill_dir})")
         if fm_name and fm_name != skill_dir.name:
@@ -353,7 +382,10 @@ def cmd_check(args: argparse.Namespace) -> int:
         version = ""
         try:
             proc = subprocess.run(
-                [resolved, "--version"], capture_output=True, text=True, timeout=30,
+                [resolved, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=30,
                 stdin=subprocess.DEVNULL,
             )
             version = next(iter((proc.stdout or proc.stderr).strip().splitlines()), "")
@@ -374,26 +406,32 @@ def cmd_check(args: argparse.Namespace) -> int:
         if cfg.harness == "claude" and cfg.claude.isolate:
             ok("skill is installed at user level, but claude.isolate keeps it out of control")
         else:
-            warn("skill is installed at user level, so control can load it too: "
-                 + ", ".join(installs))
+            warn(
+                "skill is installed at user level, so control can load it too: "
+                + ", ".join(installs)
+            )
 
     for task in tasks:
         task_dir = task.source_path.parent if task.source_path else Path(".")
-        fixture = cfg.pr.repo if cfg.pr else (
-            (task_dir / task.repo).resolve() if task.repo else None
+        fixture = (
+            cfg.pr.repo if cfg.pr else ((task_dir / task.repo).resolve() if task.repo else None)
         )
         if fixture and not fixture.exists():
             fail(f"task {task.id}: repo not found: {fixture}")
             continue
         if not (task.grader and task.grader.command):
-            warn(f"task {task.id}: no grader, so every run scores 100%")
+            warn(f"task {task.id}: no grader, so every run scores N/A (only cost/time compared)")
             continue
         if getattr(args, "no_grade", False):
             ok(f"task {task.id}: grader configured (not run)")
             continue
         with tempfile.TemporaryDirectory(prefix="skilldiff-check-") as tmp:
             ws = Workspace(
-                Path(tmp) / "workspace", False, cfg.skill, fixture, cfg.harness,
+                Path(tmp) / "workspace",
+                False,
+                cfg.skill,
+                fixture,
+                cfg.harness,
                 source_commit=(comparison or {}).get("control_commit"),
             )
             try:
@@ -405,15 +443,23 @@ def cmd_check(args: argparse.Namespace) -> int:
             grade = grader.grade_workspace(ws.root)
         feedback = grade.feedback or ""
         errored = any(s in feedback for s in ("Traceback", "No such file", "not found"))
-        if errored and grade.score == 0:
-            fail(f"task {task.id}: grader errored on the untouched fixture: "
-                 f"{feedback.strip().splitlines()[-1][:200]}")
-        elif grade.score >= 1.0:
-            warn(f"task {task.id}: the untouched fixture already scores 100%, so this "
-                 "task cannot show a difference")
+        if grade.grade_status in ("timeout", "error") or (
+            errored and (grade.score or 0) == 0
+        ):
+            last = feedback.strip().splitlines()[-1][:200] if feedback.strip() else ""
+            fail(
+                f"task {task.id}: grader errored on the untouched fixture: "
+                f"{last or grade.grade_status}"
+            )
+        elif grade.score is not None and grade.score >= 1.0:
+            warn(
+                f"task {task.id}: the untouched fixture already scores 100%, so this "
+                "task cannot show a difference"
+            )
+        elif grade.score is None:
+            warn(f"task {task.id}: grader returned {grade.grade_status}; scores will be N/A")
         else:
-            ok(f"task {task.id}: grader runs; untouched fixture scores "
-               f"{round(grade.score * 100)}%")
+            ok(f"task {task.id}: grader runs; untouched fixture scores {round(grade.score * 100)}%")
 
     sessions = len(cfg.models) * len(tasks) * cfg.runs * 2
     line = f"{sessions} agent sessions per full run"
@@ -434,8 +480,11 @@ def cmd_check(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     config_path = Path(args.config)
     if not config_path.exists():
-        print(f"Error: configuration file '{config_path}' not found. "
-              "Run `skilldiff init` to create one.", file=sys.stderr)
+        print(
+            f"Error: configuration file '{config_path}' not found. "
+            "Run `skilldiff init` to create one.",
+            file=sys.stderr,
+        )
         return 1
 
     try:
@@ -545,6 +594,23 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compare(args: argparse.Namespace) -> int:
+    from skilldiff.compare import compare_results, format_comparison, load_results
+
+    try:
+        a, _ = load_results(Path(args.run_a))
+        b, _ = load_results(Path(args.run_b))
+    except Exception as exc:
+        print(f"Could not load runs: {exc}", file=sys.stderr)
+        return 1
+    comp = compare_results(a, b)
+    if getattr(args, "json", False):
+        print(json.dumps(comp, indent=2))
+    else:
+        print(format_comparison(comp))
+    return 0
+
+
 def _print_report_paths(results: dict) -> None:
     report = results.get("report", {}) or {}
     if report.get("html"):
@@ -561,6 +627,7 @@ def _format_results(results: dict) -> str:
     models = results.get("models", [])
     tasks_count = results.get("tasks_count", 0)
     runs_per_arm = results.get("runs_per_arm", 0)
+    thresholds = results.get("thresholds") or (results.get("settings") or {}).get("thresholds")
 
     sections: list[str] = []
     comparison = results.get("comparison")
@@ -583,6 +650,7 @@ def _format_results(results: dict) -> str:
                 runs_per_arm=runs_per_arm,
                 paired=source.get("paired"),
                 treatment_label="Treatment" if results.get("comparison") else "Skill",
+                thresholds=thresholds,
             )
         )
     else:
@@ -601,6 +669,7 @@ def _format_results(results: dict) -> str:
                     model_name=model_name,
                     paired=model_data.get("paired"),
                     treatment_label="Treatment" if results.get("comparison") else "Skill",
+                    thresholds=thresholds,
                 )
             )
 
@@ -677,6 +746,14 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser.add_argument("run_dir", nargs="?", help="Path to specific run directory")
     report_parser.add_argument("--config", "-c", help="Look for runs next to this config")
     report_parser.set_defaults(func=cmd_report)
+
+    compare_parser = subparsers.add_parser(
+        "compare", help="Compare two runs (skill revisions): score, adoption, efficiency, checks"
+    )
+    compare_parser.add_argument("run_a", help="First run dir or results.json")
+    compare_parser.add_argument("run_b", help="Second run dir or results.json")
+    compare_parser.add_argument("--json", action="store_true", help="Output comparison as JSON")
+    compare_parser.set_defaults(func=cmd_compare)
     return parser
 
 
