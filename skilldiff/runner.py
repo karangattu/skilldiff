@@ -25,16 +25,16 @@ class RunResult:
     prompt: str
     response: str
     transcript: str
-    duration: float
-    cost: float
-    input_tokens: int
-    output_tokens: int
+    duration: Optional[float]
+    cost: Optional[float]
+    input_tokens: Optional[int]
+    output_tokens: Optional[int]
     tool_calls: int
     exit_code: int
     error: Optional[str] = None
-    cache_read_tokens: int = 0
-    cache_creation_tokens: int = 0
-    num_turns: int = 0
+    cache_read_tokens: Optional[int] = 0
+    cache_creation_tokens: Optional[int] = 0
+    num_turns: Optional[int] = 0
     # True/False when the harness output says whether the agent loaded the skill;
     # None when it cannot be determined.
     skill_invoked: Optional[bool] = None
@@ -104,13 +104,16 @@ def _failed_result(prompt: str, exc: Exception, duration: float) -> RunResult:
         response="",
         transcript=str(exc),
         duration=duration,
-        cost=0.0,
-        input_tokens=0,
-        output_tokens=0,
+        cost=None,
+        input_tokens=None,
+        output_tokens=None,
         tool_calls=0,
         exit_code=-1,
         error=str(exc),
         status="error",
+        cache_read_tokens=None,
+        cache_creation_tokens=None,
+        num_turns=None,
     )
 
 

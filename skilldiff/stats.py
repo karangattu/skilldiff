@@ -45,20 +45,68 @@ def bootstrap_ci(
     return lo, hi
 
 
-def _total_tokens(run: dict[str, Any]) -> float:
-    return float(
-        int(run.get("input_tokens", 0) or 0)
-        + int(run.get("cache_read_tokens", 0) or 0)
-        + int(run.get("cache_creation_tokens", 0) or 0)
-        + int(run.get("output_tokens", 0) or 0)
-    )
+def _get_score(run: dict[str, Any]) -> Optional[float]:
+    status = run.get("grade_status")
+    if status in ("ungraded", "timeout", "error"):
+        return None
+    val = run.get("score", None)
+    if val is None:
+        # Backward compat: runs without grade_status but with no score key
+        # are treated as unknown only when explicitly marked; otherwise
+        # missing score means 0 only for very old records. Prefer None
+        # when the key is absent to avoid silently inventing 0/100%.
+        if "score" not in run:
+            return None
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
 
 
-METRICS: dict[str, Callable[[dict[str, Any]], float]] = {
-    "score": lambda r: float(r.get("score", 0.0) or 0.0),
-    "cost": lambda r: float(r.get("cost", 0.0) or 0.0),
-    "duration": lambda r: float(r.get("duration", 0.0) or 0.0),
+def _get_cost(run: dict[str, Any]) -> Optional[float]:
+    if "cost" not in run or run.get("cost") is None:
+        return None
+    try:
+        return float(run.get("cost"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_duration(run: dict[str, Any]) -> Optional[float]:
+    if "duration" not in run or run.get("duration") is None:
+        return None
+    try:
+        return float(run.get("duration"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _total_tokens(run: dict[str, Any]) -> Optional[float]:
+    keys = ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens")
+    if all(k not in run or run.get(k) is None for k in keys):
+        return None
+    try:
+        return float(sum(int(run.get(k) or 0) for k in keys))
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_turns(run: dict[str, Any]) -> Optional[float]:
+    if "num_turns" not in run or run.get("num_turns") is None:
+        return None
+    try:
+        return float(run.get("num_turns"))
+    except (TypeError, ValueError):
+        return None
+
+
+METRICS: dict[str, Callable[[dict[str, Any]], Optional[float]]] = {
+    "score": _get_score,
+    "cost": _get_cost,
+    "duration": _get_duration,
     "tokens": _total_tokens,
+    "turns": _get_turns,
 }
 
 
@@ -68,20 +116,30 @@ def paired_comparison(
     pairs = pair_runs(control_runs, treatment_runs)
     result: dict[str, Any] = {"pairs": len(pairs)}
     for name, getter in METRICS.items():
-        diffs = [getter(t) - getter(c) for c, t in pairs]
-        control_total = sum(getter(c) for c, _ in pairs)
+        valid = [(getter(c), getter(t)) for c, t in pairs]
+        valid = [(c, t) for c, t in valid if c is not None and t is not None]
+        diffs = [t - c for c, t in valid]
+        control_total = sum(c for c, _ in valid)
         ci = bootstrap_ci(diffs)
         result[name] = {
-            "mean_diff": statistics.mean(diffs) if diffs else 0.0,
-            "median_diff": statistics.median(diffs) if diffs else 0.0,
+            "mean_diff": statistics.mean(diffs) if diffs else None,
+            "median_diff": statistics.median(diffs) if diffs else None,
             "ci_low": ci[0] if ci else None,
             "ci_high": ci[1] if ci else None,
             "relative_change": (sum(diffs) / control_total) if control_total else None,
+            # Valid pairs for this metric; total pairs is result["pairs"].
+            "n": len(valid),
         }
-    score_diffs = [METRICS["score"](t) - METRICS["score"](c) for c, t in pairs]
+    # Wins/losses/ties use only pairs where both scores are known.
+    score_pairs = [
+        (METRICS["score"](c), METRICS["score"](t)) for c, t in pairs
+    ]
+    score_pairs = [(c, t) for c, t in score_pairs if c is not None and t is not None]
+    score_diffs = [t - c for c, t in score_pairs]
     result["wins"] = sum(1 for d in score_diffs if d > 1e-9)
     result["losses"] = sum(1 for d in score_diffs if d < -1e-9)
     result["ties"] = len(score_diffs) - result["wins"] - result["losses"]
+    result["scored_pairs"] = len(score_pairs)
     return result
 
 

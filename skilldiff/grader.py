@@ -28,10 +28,12 @@ class Candidate:
 
 @dataclass
 class GradeResult:
-    score: float
-    success: bool
+    score: Optional[float]
+    success: Optional[bool]
     label: str
     feedback: Optional[str] = None
+    # "graded" | "ungraded" | "timeout" | "error"
+    grade_status: str = "graded"
 
 
 def sanitize_text(text: str, clues: list[str]) -> str:
@@ -105,7 +107,13 @@ class Grader:
 
     def _evaluate_candidate(self, cand: Candidate) -> GradeResult:
         if not self.config or self.config.type != "command" or not self.config.command:
-            return GradeResult(score=1.0, success=True, label=cand.label)
+            return GradeResult(
+                score=None,
+                success=None,
+                label=cand.label,
+                feedback="No grader configured",
+                grade_status="ungraded",
+            )
 
         with tempfile.TemporaryDirectory(prefix="skilldiff-grade-") as tmp:
             response_file = Path(tmp) / "response.txt"
@@ -160,20 +168,23 @@ class Grader:
                 success=success,
                 label=cand.label,
                 feedback=stdout or stderr,
+                grade_status="graded",
             )
         except subprocess.TimeoutExpired:
             return GradeResult(
-                score=0.0,
-                success=False,
+                score=None,
+                success=None,
                 label=cand.label,
                 feedback=f"Grader timed out after {self.timeout}s",
+                grade_status="timeout",
             )
         except Exception as exc:
             return GradeResult(
-                score=0.0,
-                success=False,
+                score=None,
+                success=None,
                 label=cand.label,
                 feedback=str(exc),
+                grade_status="error",
             )
 
 
