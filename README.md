@@ -1,6 +1,6 @@
 # SkillDiff
 
-![SkillDiff logo](assets/skill_diff_logo.png)
+![SkillDiff — paired agent terminals, with and without a skill, joined by a delta comparison symbol](assets/skill_diff_logo.png)
 
 Does your Agent Skill help? SkillDiff runs the same task with and without your skill. It grades both runs and reports the difference in score, cost, time, and tokens.
 
