@@ -31,3 +31,4 @@ runs/
 /graders/
 /skilldiff.yaml
 .DS_Store
+/evaluations

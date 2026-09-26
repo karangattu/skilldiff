@@ -63,15 +63,47 @@ models:
 tasks:
   - ./tasks/*.yaml
 
-runs: 3                     # repetitions per arm; use 5+ before drawing conclusions
+runs: 3                     # repetitions per arm; use 5+ as a starting point, not a rule
 timeout_seconds: 1800       # per agent session
 parallel: 1                 # pairs to run at once
 
-# Practical decision thresholds (optional, shown in the verdict):
+# Reproducibility: fixed seed for balanced arm order (recorded per run).
+# seed: 1234
+
+# Failure / missing-result policy, decided before running (not after):
+# failure_policy:
+#   agent_failure: exclude  # or "zero" (failed sessions score 0)
+#   missing: exclude
+
+# Practical decision thresholds (optional, shown in the verdict).
+# Shipping requires confidence bounds to clear these, not point estimates:
 # thresholds:
 #   acceptable_score_regression_pp: 5   # tolerated drop, e.g. -5pp ok if cheaper
 #   required_cost_reduction_pct: 10     # required saving, e.g. 10% cheaper
 #   meaningful_score_gain_pp: 5         # gain needed to call an improvement useful
+
+{harness_block}"""
+
+SKILL_AB_YAML = """name: {name}
+
+# Skill A/B: one experiment runs skill A vs skill B on identical fixtures,
+# interleaved with paired results. Set include_baseline to also run a
+# no-skill arm per pair (shows whether either revision helps at all).
+skill_a: {skill_a}
+skill_b: {skill_b}
+include_baseline: {baseline}
+
+harness: {harness}
+
+models:
+  - {model}
+
+tasks:
+  - ./tasks/*.yaml
+
+runs: 3
+timeout_seconds: 1800
+parallel: 1
 
 {harness_block}"""
 
@@ -196,6 +228,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     force = bool(getattr(args, "force", False))
     harness = getattr(args, "harness", None) or "claude"
     skill_arg: Optional[str] = getattr(args, "skill", None)
+    skill_a_arg: Optional[str] = getattr(args, "skill_a", None)
+    skill_b_arg: Optional[str] = getattr(args, "skill_b", None)
     config_file = root / "skilldiff.yaml"
 
     if config_file.exists() and not force:
@@ -204,15 +238,32 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     pr_number = getattr(args, "pr", None)
     if pr_number is not None:
-        if skill_arg or pr_number <= 0 or not getattr(args, "repo", None):
+        if (
+            skill_arg
+            or skill_a_arg
+            or skill_b_arg
+            or pr_number <= 0
+            or not getattr(args, "repo", None)
+        ):
             print(
-                "--pr requires a positive PR number and --repo, without --skill.", file=sys.stderr
+                "--pr requires a positive PR number and --repo, "
+                "without --skill/--skill-a/--skill-b.",
+                file=sys.stderr,
             )
             return 1
         return _init_pr(args, root, force, harness)
     if getattr(args, "repo", None) or getattr(args, "base", None):
         print("--repo and --base require --pr.", file=sys.stderr)
         return 1
+
+    if (skill_a_arg or skill_b_arg) and skill_arg:
+        print("Use either --skill or --skill-a/--skill-b, not both.", file=sys.stderr)
+        return 1
+    if bool(skill_a_arg) != bool(skill_b_arg):
+        print("Skill A/B mode requires both --skill-a and --skill-b.", file=sys.stderr)
+        return 1
+    if skill_a_arg and skill_b_arg:
+        return _init_skill_ab(args, root, force, harness)
 
     created: list[Path] = []
     if skill_arg:
@@ -272,6 +323,41 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _init_skill_ab(args: argparse.Namespace, root: Path, force: bool, harness: str) -> int:
+    from skilldiff.config import find_skill_dirs as _find
+
+    skill_a = Path(args.skill_a).expanduser().resolve()
+    skill_b = Path(args.skill_b).expanduser().resolve()
+    for label, p in (("skill-a", skill_a), ("skill-b", skill_b)):
+        if not _find(p):
+            print(f"No SKILL.md found in {p} or its subdirectories ({label}).", file=sys.stderr)
+            return 1
+    base = root.resolve()
+    rel_a = os.path.relpath(skill_a, base)
+    rel_b = os.path.relpath(skill_b, base)
+    if not rel_a.startswith("."):
+        rel_a = f"./{rel_a}"
+    if not rel_b.startswith("."):
+        rel_b = f"./{rel_b}"
+    text = SKILL_AB_YAML.format(
+        name=f"{skill_a.name}-vs-{skill_b.name}",
+        skill_a=rel_a,
+        skill_b=rel_b,
+        baseline="true" if getattr(args, "include_baseline", False) else "false",
+        harness=harness,
+        model=DEFAULT_MODELS[harness],
+        harness_block=HARNESS_BLOCKS[harness],
+    )
+    (root / "skilldiff.yaml").parent.mkdir(parents=True, exist_ok=True)
+    (root / "skilldiff.yaml").write_text(text, encoding="utf-8")
+    _write(root / "tasks" / "my-first-task.yaml", CUSTOM_TASK_YAML, force)
+    _write(root / "graders" / "my_first_task.py", CUSTOM_GRADER, force)
+    (root / "fixtures" / "my-project").mkdir(parents=True, exist_ok=True)
+    print(f"Initialized skill A/B experiment in {root} (A={rel_a}, B={rel_b})")
+    print("Same fixtures run with skill A vs skill B, interleaved and paired.")
+    return 0
+
+
 def _init_pr(args: argparse.Namespace, root: Path, force: bool, harness: str) -> int:
     repo = Path(args.repo).expanduser().resolve()
     if not repo.is_dir():
@@ -279,9 +365,23 @@ def _init_pr(args: argparse.Namespace, root: Path, force: bool, harness: str) ->
         return 1
     base = args.base or "origin/main"
     head = f"refs/pull/{args.pr}/head"
+    pr_mode = getattr(args, "pr_mode", None) or "agent"
+    pr_pair = getattr(args, "pr_pair", None) or "merge-base"
+    if pr_mode not in {"agent", "correctness"}:
+        print("--pr-mode must be 'agent' or 'correctness'.", file=sys.stderr)
+        return 1
+    if pr_pair not in {"merge-base", "base-merge"}:
+        print("--pr-pair must be 'merge-base' or 'base-merge'.", file=sys.stderr)
+        return 1
     config = {
         "name": f"pr-{args.pr}-eval",
-        "pr": {"repo": os.path.relpath(repo, root.resolve()), "base": base, "head": head},
+        "pr": {
+            "repo": os.path.relpath(repo, root.resolve()),
+            "base": base,
+            "head": head,
+            "mode": pr_mode,
+            "pair": pr_pair,
+        },
         "harness": harness,
         "models": [DEFAULT_MODELS[harness]],
         "tasks": ["./tasks/*.yaml"],
@@ -359,6 +459,29 @@ def cmd_check(args: argparse.Namespace) -> int:
             return 1
         ok(f"control: {comparison['control_commit']}")
         ok(f"treatment: {comparison['treatment_commit']}")
+        ok(
+            f"PR workflow: {comparison.get('mode', 'agent')} "
+            f"(pair {comparison.get('pair', 'merge-base')})"
+        )
+        if comparison.get("mode") == "correctness":
+            ok("correctness mode: graders run on untouched revisions, no agent sessions")
+
+    if cfg.is_skill_comparison:
+        ok(f"skill A/B: {cfg.skill_a} vs {cfg.skill_b}")
+        if cfg.include_baseline:
+            ok("include_baseline: a no-skill arm runs per pair")
+        # Warn when revisions are identical (hash check is in preflight too).
+        try:
+            from skilldiff.experiment import collect_provenance as _prov
+
+            prov = _prov(cfg, tasks)
+            roles = {}
+            for s in prov.get("skills") or []:
+                roles.setdefault(s.get("role"), []).append(s.get("hash"))
+            if roles.get("skill_a") == roles.get("skill_b") and roles.get("skill_a"):
+                warn("skill_a and skill_b have identical hashes")
+        except Exception:
+            pass
 
     for skill_dir in cfg.skill_dirs:
         meta = read_skill_frontmatter(skill_dir)
@@ -404,12 +527,27 @@ def cmd_check(args: argparse.Namespace) -> int:
     installs = find_user_level_installs(cfg.skill_names, cfg.harness)
     if installs:
         if cfg.harness == "claude" and cfg.claude.isolate:
-            ok("skill is installed at user level, but claude.isolate keeps it out of control")
+            # Skills are blocked by isolate, but instructions/plugins/memory are not.
+            non_skill = [i for i in installs if "skill installed" not in i]
+            if non_skill:
+                warn(
+                    "harness inheritance outside skills may leak into both arms: "
+                    + ", ".join(non_skill)
+                )
+            else:
+                ok("skill is installed at user level, but claude.isolate keeps it out of control")
         else:
             warn(
                 "skill is installed at user level, so control can load it too: "
                 + ", ".join(installs)
             )
+
+    # Failure policy is pre-registered, not decided after seeing results.
+    fp = dict(getattr(cfg, "failure_policy", {}) or {})
+    if fp:
+        ok(f"failure policy: {', '.join(f'{k}={v}' for k, v in fp.items())}")
+    if getattr(cfg, "seed", None) is not None:
+        ok(f"seed: {cfg.seed} (balanced arm order is reproducible)")
 
     for task in tasks:
         task_dir = task.source_path.parent if task.source_path else Path(".")
@@ -419,28 +557,104 @@ def cmd_check(args: argparse.Namespace) -> int:
         if fixture and not fixture.exists():
             fail(f"task {task.id}: repo not found: {fixture}")
             continue
+        # Isolation: escaping symlinks and .git history must never enter workspaces.
+        if fixture and fixture.is_dir() and not cfg.pr:
+            try:
+
+                escaping = []
+                for p in fixture.rglob("*"):
+                    try:
+                        if p.is_symlink():
+                            import os as _os
+
+                            target = (p.parent / _os.readlink(p)).resolve()
+                            try:
+                                target.relative_to(fixture.resolve())
+                            except ValueError:
+                                escaping.append(str(p.relative_to(fixture)))
+                    except OSError:
+                        continue
+                if escaping:
+                    fail(
+                        f"task {task.id}: fixture has escaping symlinks: "
+                        f"{', '.join(escaping[:3])}"
+                    )
+                    continue
+                if (fixture / ".git").is_dir():
+                    warn(
+                        f"task {task.id}: fixture contains .git history; "
+                        "workspaces strip it so removed skills cannot be resurrected"
+                    )
+            except Exception:
+                pass
         if not (task.grader and task.grader.command):
             warn(f"task {task.id}: no grader, so every run scores N/A (only cost/time compared)")
             continue
         if getattr(args, "no_grade", False):
             ok(f"task {task.id}: grader configured (not run)")
             continue
+        # Choose the skill root for workspace construction (A/B uses skill_a for checks).
+        check_skill = cfg.skill_a if cfg.is_skill_comparison else cfg.skill
         with tempfile.TemporaryDirectory(prefix="skilldiff-check-") as tmp:
             ws = Workspace(
                 Path(tmp) / "workspace",
                 False,
-                cfg.skill,
+                check_skill,
                 fixture,
                 cfg.harness,
                 source_commit=(comparison or {}).get("control_commit"),
+                strip_skill_dirs=(
+                    [cfg.skill_b] if cfg.is_skill_comparison and cfg.skill_b else None
+                ),
             )
             try:
                 ws.setup()
             except Exception as exc:
                 fail(f"task {task.id}: could not build workspace: {exc}")
                 continue
+            if ws.isolation_issues:
+                warn(f"task {task.id}: workspace isolation notes: {'; '.join(ws.isolation_issues)}")
             grader = Grader(task.grader, cfg.skill_names, cfg.models[0], task_dir=task_dir)
             grade = grader.grade_workspace(ws.root)
+            # Validation fixtures: untouched must fail, known-good must pass,
+            # deliberately broken must fail. A grader that fails everything is broken.
+            validation = getattr(task, "validation", {}) or {}
+            if validation:
+                from skilldiff.grader import validate_grader_against_directories as _validate
+
+                good = validation.get("good")
+                broken = validation.get("broken") or validation.get("bad") or []
+                if isinstance(broken, str):
+                    broken = [broken]
+                good_dir = (task_dir / good).resolve() if good else None
+                broken_dirs = [(task_dir / b).resolve() for b in (broken or [])]
+                missing = [
+                    str(d)
+                    for d in ([good_dir] if good_dir else []) + broken_dirs
+                    if not d.exists()
+                ]
+                if missing:
+                    fail(f"task {task.id}: validation paths not found: {', '.join(missing)}")
+                    continue
+                report = _validate(grader, ws.root, good_dir, broken_dirs)
+                verdict = report.get("verdict")
+                if verdict != "ok":
+                    fail(
+                        f"task {task.id}: grader validation {verdict}: "
+                        f"{'; '.join(report.get('checks', []))}"
+                    )
+                    continue
+                ok(f"task {task.id}: grader validation ok (untouched/good/broken)")
+            # Grader isolation note: outside the fixture is not isolation by itself.
+            try:
+                from skilldiff.grader import grader_isolation_note as _gin
+
+                note = _gin(task_dir, fixture)
+                if note and "inside the fixture" in note:
+                    fail(f"task {task.id}: {note}")
+                    continue
+            except Exception:
+                pass
         feedback = grade.feedback or ""
         errored = any(s in feedback for s in ("Traceback", "No such file", "not found"))
         if grade.grade_status in ("timeout", "error") or (errored and (grade.score or 0) == 0):
@@ -458,11 +672,21 @@ def cmd_check(args: argparse.Namespace) -> int:
             warn(f"task {task.id}: grader returned {grade.grade_status}; scores will be N/A")
         else:
             ok(f"task {task.id}: grader runs; untouched fixture scores {round(grade.score * 100)}%")
+            if not validation:
+                warn(
+                    f"task {task.id}: no validation.good/broken fixtures; "
+                    "add a known-good solution and deliberately broken solutions so "
+                    "`check` can tell a strict grader from a broken one"
+                )
 
-    sessions = len(cfg.models) * len(tasks) * cfg.runs * 2
-    line = f"{sessions} agent sessions per full run"
-    if cfg.harness == "claude" and cfg.claude.max_budget_usd:
-        line += f" (at most ${sessions * cfg.claude.max_budget_usd:.2f} API-equivalent)"
+    arms = 3 if (cfg.is_skill_comparison and cfg.include_baseline) else 2
+    sessions = len(cfg.models) * len(tasks) * cfg.runs * arms
+    if cfg.pr and (comparison or {}).get("mode") == "correctness":
+        line = f"{len(tasks)} untouched revision pair(s) to grade (no agent sessions)"
+    else:
+        line = f"{sessions} agent sessions per full run"
+        if cfg.harness == "claude" and cfg.claude.max_budget_usd:
+            line += f" (at most ${sessions * cfg.claude.max_budget_usd:.2f} API-equivalent)"
     ok(line)
     if cfg.runs < 3:
         warn(f"runs: {cfg.runs} is fine for a smoke test, but use 5+ for conclusions")
@@ -497,6 +721,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         exp_config.parallel = int(args.parallel)
     if getattr(args, "model", None):
         exp_config.models = list(args.model)
+    if getattr(args, "seed", None) is not None:
+        exp_config.seed = int(getattr(args, "seed"))
     task_filter = getattr(args, "task", None)
     if task_filter:
         tasks = [t for t in tasks if t.id in task_filter]
@@ -505,26 +731,44 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 1
 
     quiet = bool(getattr(args, "quiet", False))
+    resume_arg = getattr(args, "resume", False)
+    resume_path = getattr(args, "resume_from", None)
+    resume: bool | Path = False
+    if resume_path:
+        resume = Path(resume_path)
+    elif resume_arg:
+        resume = True
     runner = ExperimentRunner(
         exp_config,
         tasks,
         progress=None if quiet else (lambda msg: print(msg, flush=True)),
     )
-    sessions = len(exp_config.models) * len(tasks) * exp_config.runs * 2
-    print(
-        f"Running '{exp_config.name}' with {exp_config.harness}: {len(exp_config.models)} "
-        f"model(s) × {len(tasks)} task(s) × {exp_config.runs} run(s) × 2 arms = "
-        f"{sessions} sessions",
-        flush=True,
+    arms = 3 if (exp_config.is_skill_comparison and exp_config.include_baseline) else 2
+    is_correctness = bool(exp_config.pr) and (
+        getattr(exp_config.pr, "mode", "agent") == "correctness"
     )
+    if is_correctness:
+        sessions_txt = f"{len(tasks)} untouched pair(s), no agent sessions (correctness mode)"
+    else:
+        sessions = len(exp_config.models) * len(tasks) * exp_config.runs * arms
+        sessions_txt = (
+            f"{len(exp_config.models)} model(s) × {len(tasks)} task(s) × "
+            f"{exp_config.runs} run(s) × {arms} arms = {sessions} sessions"
+        )
+    print(f"Running '{exp_config.name}' with {exp_config.harness}: {sessions_txt}", flush=True)
+    if resume:
+        print("Resume enabled: completed pairs reuse only when input hashes match.", flush=True)
     try:
-        results = runner.run()
+        results = runner.run(resume=resume)
     except (ValueError, subprocess.SubprocessError) as exc:
         print(f"Experiment error: {exc}", file=sys.stderr)
         return 1
 
     print("\n" + _format_results(results))
     _print_report_paths(results)
+    if results.get("valid") is False:
+        print("\nINVALID: no clean baseline (control contamination).", file=sys.stderr)
+        return 2
     return 130 if results.get("interrupted") else 0
 
 
@@ -601,7 +845,12 @@ def cmd_compare(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"Could not load runs: {exc}", file=sys.stderr)
         return 1
-    comp = compare_results(a, b)
+    strict = bool(getattr(args, "strict", False))
+    try:
+        comp = compare_results(a, b, strict=strict)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     if getattr(args, "json", False):
         print(json.dumps(comp, indent=2))
     else:
@@ -629,11 +878,21 @@ def _format_results(results: dict) -> str:
 
     sections: list[str] = []
     comparison = results.get("comparison")
-    if comparison:
+    skill_comparison = results.get("skill_comparison")
+    if skill_comparison:
         sections.append(
-            f"Control (without PR): {comparison['control_commit']} (merge base)\n"
-            f"Treatment (with PR): {comparison['treatment_commit']}"
+            f"Skill A: {skill_comparison.get('skill_a')}\n"
+            f"Skill B: {skill_comparison.get('skill_b')}"
+            + (" (plus no-skill baseline)" if skill_comparison.get("include_baseline") else "")
         )
+    elif comparison:
+        pair = comparison.get("pair", "merge-base")
+        mode = comparison.get("mode", "agent")
+        sections.append(
+            f"Control (without PR): {comparison['control_commit']} ({pair})\n"
+            f"Treatment (with PR): {comparison['treatment_commit']} [{mode}]"
+        )
+    treat_label = "Skill B" if skill_comparison else ("Treatment" if comparison else "Skill")
     if len(models) <= 1:
         model_name = models[0] if models else None
         model_data = by_model.get(model_name) if model_name else None
@@ -647,7 +906,7 @@ def _format_results(results: dict) -> str:
                 tasks_count=tasks_count,
                 runs_per_arm=runs_per_arm,
                 paired=source.get("paired"),
-                treatment_label="Treatment" if results.get("comparison") else "Skill",
+                treatment_label=treat_label,
                 thresholds=thresholds,
             )
         )
@@ -666,11 +925,13 @@ def _format_results(results: dict) -> str:
                     runs_per_arm=runs_per_arm,
                     model_name=model_name,
                     paired=model_data.get("paired"),
-                    treatment_label="Treatment" if results.get("comparison") else "Skill",
+                    treatment_label=treat_label,
                     thresholds=thresholds,
                 )
             )
 
+    if results.get("valid") is False:
+        sections.append("INVALID: no clean baseline (control contamination).")
     warnings = results.get("warnings") or []
     if warnings:
         sections.append("Warnings:\n" + "\n".join(f"  - {w}" for w in warnings))
@@ -693,9 +954,31 @@ def build_parser() -> argparse.ArgumentParser:
         "init", help="Create an experiment (a runnable demo, or a template for your skill)"
     )
     init_parser.add_argument("--skill", help="Path to your skill (or a folder of skills)")
+    init_parser.add_argument("--skill-a", help="Skill revision A for A/B mode")
+    init_parser.add_argument("--skill-b", help="Skill revision B for A/B mode")
+    init_parser.add_argument(
+        "--include-baseline",
+        action="store_true",
+        help="A/B mode: also run a no-skill baseline arm per pair",
+    )
     init_parser.add_argument("--pr", type=int, help="Scaffold an evaluation of a GitHub PR number")
     init_parser.add_argument("--repo", help="Local repository containing the PR revisions")
     init_parser.add_argument("--base", help="PR target ref (default: origin/main)")
+    init_parser.add_argument(
+        "--pr-mode",
+        choices=["agent", "correctness"],
+        default="agent",
+        help="PR workflow: agent effectiveness or PR correctness (default: agent)",
+    )
+    init_parser.add_argument(
+        "--pr-pair",
+        choices=["merge-base", "base-merge"],
+        default="merge-base",
+        help=(
+            "PR revisions: merge-base vs head, or base tip vs synthetic merge "
+            "(default: merge-base)"
+        ),
+    )
     init_parser.add_argument(
         "--harness", choices=sorted(HARNESS_BLOCKS), default="claude", help="Agent CLI to use"
     )
@@ -725,6 +1008,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--task", "-t", action="append", help="Only run this task id (repeatable)"
     )
     run_parser.add_argument("--quiet", "-q", action="store_true", help="Hide per-run progress")
+    run_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume the latest run: reuse completed pairs only when input hashes match",
+    )
+    run_parser.add_argument(
+        "--resume-from", help="Resume a specific run directory (strict hash check)"
+    )
+    run_parser.add_argument("--seed", type=int, help="Override the randomization seed")
     run_parser.set_defaults(func=cmd_run)
 
     results_parser = subparsers.add_parser(
@@ -751,6 +1043,11 @@ def build_parser() -> argparse.ArgumentParser:
     compare_parser.add_argument("run_a", help="First run dir or results.json")
     compare_parser.add_argument("run_b", help="Second run dir or results.json")
     compare_parser.add_argument("--json", action="store_true", help="Output comparison as JSON")
+    compare_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Reject incompatible experiments (different models/tasks/hashes) instead of warning",
+    )
     compare_parser.set_defaults(func=cmd_compare)
 
     return parser

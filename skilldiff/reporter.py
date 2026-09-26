@@ -607,7 +607,12 @@ def render_report_table(
         ["", f"Models: {models_count}    Tasks: {tasks_count}    Runs per arm: {runs_per_arm}"]
     )
     if paired and paired.get("pairs"):
-        verdict, _ = _verdict(paired, treatment_label.lower(), thresholds=thresholds)
+        verdict, _ = _verdict(
+            paired,
+            treatment_label.lower(),
+            thresholds=thresholds,
+            tasks_count=tasks_count,
+        )
         lines.append(_strip_inline(verdict))
     return "\n".join(lines)
 
@@ -624,14 +629,20 @@ def _tone(value: float, higher_is_better: bool, eps: float = 1e-9) -> Optional[s
 
 
 def _verdict(
-    paired: dict[str, Any], subject: str = "skill", thresholds: dict[str, Any] | None = None
+    paired: dict[str, Any],
+    subject: str = "skill",
+    thresholds: dict[str, Any] | None = None,
+    tasks_count: int | None = None,
+    failure_policy: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Return (sentence, callout kind) for the task-score effect.
 
     Flags tiny samples and collapsed intervals in the headline so a
     +100pp win on 2 identical pairs is not mistaken for conclusive evidence.
     When practical thresholds are configured, adds a decision-oriented
-    assessment (useful improvement vs merely detectable change).
+    assessment that requires confidence bounds (not point estimates) to clear
+    the gain/regression limits. Also separates repetition uncertainty from
+    task uncertainty: many reps of few tasks still generalize poorly.
     """
     total = int(paired.get("pairs", 0))
     score = paired.get("score") or {}
@@ -646,10 +657,14 @@ def _verdict(
         pairs_txt = f"{n_valid} paired run{'s' if n_valid != 1 else ''}"
 
     if mean_raw is None or n_valid == 0:
+        policy_txt = ""
+        if failure_policy:
+            fp = failure_policy.get("agent_failure", "exclude")
+            policy_txt = f" Failure policy: agent_failure={fp} (failed sessions excluded as N/A)."
         return (
             f"No graded task-score pairs in {total} pair(s). "
             "Scores are N/A (ungraded tasks or grader failures); "
-            "only cost/time can be compared.",
+            f"only cost/time can be compared.{policy_txt}",
             "note",
         )
 
@@ -661,6 +676,11 @@ def _verdict(
         cautions.append(f"only {n_valid} pair(s) — treat as preliminary")
     if lo is not None and hi is not None and lo == hi:
         cautions.append("CI collapsed (identical differences) — uncertainty is underestimated")
+    if tasks_count is not None and tasks_count < 3 and total >= 4:
+        cautions.append(
+            f"only {tasks_count} task(s) — repetitions measure those tasks, "
+            "not general skill effect"
+        )
     caution_txt = f" ({'; '.join(cautions)})" if cautions else ""
 
     practical_txt = ""
@@ -702,7 +722,9 @@ def _verdict(
 def _practical_assessment(paired: dict[str, Any], thresholds: dict[str, Any], mean_pp: int) -> str:
     """Decision-oriented sentence from practical thresholds.
 
-    Threshold keys (all optional):
+    Shipping decisions must depend on uncertainty, not point estimates: the
+    confidence bound (not the rounded mean) must clear the gain or regression
+    limit. Threshold keys (all optional):
       acceptable_score_regression_pp: score drop tolerated (e.g. 5 means -5pp ok).
       required_cost_reduction_pct: cost saving required (e.g. 10 means 10% cheaper).
       meaningful_score_gain_pp: gain needed to call an improvement useful.
@@ -720,6 +742,13 @@ def _practical_assessment(paired: dict[str, Any], thresholds: dict[str, Any], me
     except (TypeError, ValueError):
         meaningful_gain = 0.0
 
+    score_metric = (paired or {}).get("score") or {}
+    ci_low = score_metric.get("ci_low")
+    try:
+        ci_low_pp = float(ci_low) * 100 if ci_low is not None else None
+    except (TypeError, ValueError):
+        ci_low_pp = None
+
     cost_metric = (paired or {}).get("cost") or {}
     rel = cost_metric.get("relative_change", None)
     saving_pct: Optional[float] = None
@@ -728,34 +757,73 @@ def _practical_assessment(paired: dict[str, Any], thresholds: dict[str, Any], me
             saving_pct = -float(rel) * 100
         except (TypeError, ValueError):
             saving_pct = None
+    # Cost uncertainty: the CI must also show a saving, not just the point estimate.
+    cost_lo, cost_hi = cost_metric.get("ci_low"), cost_metric.get("ci_high")
+    cost_proven_saving = False
+    try:
+        if cost_lo is not None and cost_hi is not None and float(cost_hi) < 0:
+            cost_proven_saving = True
+    except (TypeError, ValueError):
+        cost_proven_saving = False
 
-    score_ok = mean_pp >= -allowed_loss
-    gain_ok = mean_pp >= meaningful_gain if meaningful_gain else mean_pp > 0
+    # Regression gate uses the lower confidence bound, not the mean.
+    if ci_low_pp is not None:
+        score_ok = ci_low_pp >= -allowed_loss
+        gain_ok = (ci_low_pp >= meaningful_gain) if meaningful_gain else (ci_low_pp > 0)
+    else:
+        # No interval (n<2): fall back to point but flag as provisional.
+        score_ok = mean_pp >= -allowed_loss
+        gain_ok = mean_pp >= meaningful_gain if meaningful_gain else mean_pp > 0
     cost_ok = True
     if required_saving and saving_pct is None:
         cost_ok = False  # required saving but no cost data
     elif required_saving and saving_pct is not None:
-        cost_ok = saving_pct >= required_saving
+        # Point estimate must meet the bar AND the interval must exclude cost increases.
+        cost_ok = (saving_pct >= required_saving) and (
+            cost_proven_saving or cost_lo is None
+        )
 
     if not score_ok:
+        bound_txt = (
+            f"{ci_low_pp:+.0f} pp lower bound"
+            if ci_low_pp is not None
+            else f"{mean_pp:+d} pp"
+        )
         return (
-            f"Practical check: {mean_pp:+d} pp exceeds the allowed regression "
-            f"(-{allowed_loss:g} pp)."
+            f"Practical check: {bound_txt} does not clear the allowed regression "
+            f"(-{allowed_loss:g} pp). Do not ship on point estimates."
         )
     if required_saving and saving_pct is None:
         return "Practical check: cost data missing, cannot verify required saving."
     if required_saving and saving_pct is not None and not cost_ok:
+        if not cost_proven_saving and cost_lo is not None:
+            return (
+                f"Practical check: cost saving {saving_pct:+.0f}% meets "
+                f"{required_saving:g}% on average "
+                "but the cost interval includes zero — saving not established."
+            )
         return (
             f"Practical check: cost saving {saving_pct:+.0f}% is below required "
             f"{required_saving:g}%."
         )
     if gain_ok and cost_ok:
         if required_saving and saving_pct is not None:
-            return f"Practical check: meets criteria ({mean_pp:+d} pp, cost {saving_pct:+.0f}%)."
+            return (
+                f"Practical check: meets criteria — bounds clear ({mean_pp:+d} pp, "
+                f"cost {saving_pct:+.0f}%)."
+            )
         if meaningful_gain:
-            return f"Practical check: meets +{meaningful_gain:g} pp gain criterion."
-        return "Practical check: meets criteria."
-    return "Practical check: detectable but not practically meaningful yet."
+            bound_note = (
+                f"lower bound {ci_low_pp:+.0f} pp clears +{meaningful_gain:g} pp"
+                if ci_low_pp is not None
+                else f"mean {mean_pp:+d} pp (no interval)"
+            )
+            return f"Practical check: meets criteria — {bound_note} gain criterion."
+        return "Practical check: meets criteria — bounds clear."
+    return (
+        "Practical check: detectable but not practically meaningful yet "
+        "(bounds do not clear gain)."
+    )
 
 
 def _efficiency_sentence(paired: dict[str, Any], subject: str = "skill") -> Optional[str]:
@@ -1449,11 +1517,18 @@ def _key_takeaways(
         )
 
     runs_per_arm = int(results.get("runs_per_arm") or 1)
+    tasks_count = int(results.get("tasks_count") or len(results.get("tasks") or []) or 0)
     if n and (runs_per_arm < 5 or n < 5):
         bullets.append(
             f"**Sample size.** {n} pair(s) with {runs_per_arm} repetition(s) per task "
-            "gives wide error bars. Use `runs: 5` or more before treating the result "
-            "as conclusive."
+            "gives wide error bars. Use `runs: 5` or more as a starting point, not a "
+            "sufficiency rule — pre-register the run budget before looking at results."
+        )
+    if n and tasks_count and tasks_count < 3:
+        bullets.append(
+            f"**Task coverage.** Only {tasks_count} distinct task(s): many repetitions "
+            "narrow repetition noise but still describe only those tasks. Add "
+            "representative, irrelevant, ambiguous, and regression tasks before generalizing."
         )
     # Grading validity note (infra vs agent failures).
     grade_issues = 0
@@ -1473,8 +1548,13 @@ def build_report_blocks(
     results: dict[str, Any], run_root: Path | None = None
 ) -> tuple[str, list[tuple]]:
     comparison = results.get("comparison")
-    label = "Treatment" if comparison else "Skill"
-    subject = label.lower()
+    skill_comparison = results.get("skill_comparison")
+    if skill_comparison:
+        label = "Skill B"
+        subject = "skill B"
+    else:
+        label = "Treatment" if comparison else "Skill"
+        subject = label.lower()
     name = str(results.get("name", "experiment"))
     runs_data = _load_runs_for_report(results, run_root)
     control_runs = runs_data["control"]
@@ -1492,9 +1572,19 @@ def build_report_blocks(
 
     blocks: list[tuple] = []
     thresholds = results.get("thresholds") or (results.get("settings") or {}).get("thresholds")
+    failure_policy = results.get("failure_policy") or (results.get("settings") or {}).get(
+        "failure_policy"
+    )
+    tasks_count = int(results.get("tasks_count") or len(results.get("tasks") or []) or 0)
 
     if paired.get("pairs"):
-        verdict, kind = _verdict(paired, subject, thresholds=thresholds)
+        verdict, kind = _verdict(
+            paired,
+            subject,
+            thresholds=thresholds,
+            tasks_count=tasks_count or None,
+            failure_policy=failure_policy,
+        )
     else:
         diff = _score_difference(control, skill)
         if diff is not None and diff > 0:
@@ -1506,10 +1596,33 @@ def build_report_blocks(
             verdict, kind = "No graded scores; task-score change is N/A.", "note"
         else:
             verdict, kind = f"No measured task-score change between control and {subject}.", "note"
+    # Invalid experiments (control contamination) must not read as shippable.
+    if results.get("valid") is False:
+        verdict = "INVALID: no clean baseline. " + verdict
+        kind = "warning"
     body = [verdict]
     efficiency = _efficiency_sentence(paired, subject) if paired.get("pairs") else None
     if efficiency:
         body.append(efficiency)
+    # Task-level uncertainty: repetitions vs tasks.
+    try:
+        from skilldiff.stats import task_level_effects as _tle
+
+        tle = _tle(control_runs, treatment_runs) if (control_runs or treatment_runs) else {}
+        if tle and tle.get("tasks") and paired.get("pairs", 0) >= 4 and tle["tasks"] < 3:
+            body.append(
+                f"Task coverage: only {tle['tasks']} distinct task(s) across "
+                f"{paired.get('pairs')} pair(s). Repetitions narrow repetition noise, "
+                "not task variation — add tasks before generalizing."
+            )
+    except Exception:
+        pass
+    if failure_policy:
+        body.append(
+            "Failure policy (pre-registered): "
+            + ", ".join(f"{k}={v}" for k, v in failure_policy.items())
+            + ". Grader timeouts/errors are always N/A."
+        )
     blocks.append(("callout", kind, "Verdict", body))
 
     warnings = list(results.get("warnings") or [])
@@ -1678,22 +1791,32 @@ def build_report_blocks(
         )
         blocks.append(("h", 2, "Run details"))
         randomized = any("run_order" in r for r in control_runs)
-        blocks.append(
-            (
-                "p",
+        seeded = results.get("seed") is not None
+        if skill_comparison:
+            run_note = (
+                "Each pair ran skill A vs skill B on identical fixtures"
+                + (", in balanced arm order" if randomized else "")
+                + (f" (seed `{results.get('seed')}`)" if seeded else "")
+                + ". Control column is Skill A; treatment column is Skill B."
+            )
+            if skill_comparison.get("include_baseline"):
+                run_note += " A no-skill baseline arm also ran per pair (see runs/baseline)."
+        else:
+            run_note = (
                 (
                     "Each pair ran in fresh workspaces from the recorded revisions"
                     if comparison
                     else "Each pair ran in identical fresh workspaces"
                 )
-                + (", in random order" if randomized else "")
+                + (", in balanced arm order" if randomized else "")
+                + (f" (seed `{results.get('seed')}`)" if seeded else "")
                 + (
                     ". Control excludes the PR; treatment includes it."
                     if comparison
                     else ". Only the skill arm had the skill installed."
-                ),
+                )
             )
-        )
+        blocks.append(("p", run_note))
         align = ["r" if h in _NUMERIC_RUN_COLUMNS else "l" for h in headers]
         blocks.append(("table", headers, run_rows, align))
 
@@ -1707,12 +1830,37 @@ def build_report_blocks(
         ),
         f"**Models:** {', '.join(f'`{m}`' for m in models)}",
     ]
+    if skill_comparison:
+        baseline_txt = (
+            "yes (no-skill arm per pair)"
+            if skill_comparison.get("include_baseline")
+            else "no"
+        )
+        setup_items = [
+            f"**Skill A (control):** `{skill_comparison.get('skill_a')}`",
+            f"**Skill B (treatment):** `{skill_comparison.get('skill_b')}`",
+            f"**Baseline:** {baseline_txt}",
+            setup_items[-1],
+        ]
     if comparison:
+        pr_mode = comparison.get("mode", "agent")
+        pr_pair = comparison.get("pair", "merge-base")
+        mode_note = (
+            "agent effectiveness (agents work on each revision)"
+            if pr_mode == "agent"
+            else "PR correctness (graders run on untouched revisions, no agents)"
+        )
+        pair_note = (
+            "merge-base vs head"
+            if pr_pair == "merge-base"
+            else "base tip vs synthetic merge (integration)"
+        )
         setup_items = [
             f"**Repository:** `{comparison['repo']}`",
-            f"**Control (without PR):** `{comparison['control_commit']}` (merge base)",
+            f"**Control (without PR):** `{comparison['control_commit']}`",
             f"**Treatment (with PR):** `{comparison['treatment_commit']}`",
             f"**Base ref:** `{comparison['base']}` · **Head ref:** `{comparison['head']}`",
+            f"**PR workflow:** {pr_mode} — {mode_note}; revisions: {pair_note}",
             setup_items[-1],
         ]
     for key, value in (results.get("settings") or {}).items():
@@ -1727,6 +1875,19 @@ def build_report_blocks(
     if results.get("thresholds") and "thresholds" not in (results.get("settings") or {}):
         th = results["thresholds"]
         setup_items.append("**thresholds:** " + ", ".join(f"{k}={v}" for k, v in th.items()))
+    if results.get("failure_policy"):
+        fp = results["failure_policy"]
+        setup_items.append(
+            "**Failure policy:** " + ", ".join(f"{k}={v}" for k, v in fp.items())
+        )
+    if results.get("seed") is not None:
+        setup_items.append(f"**Seed:** `{results.get('seed')}` (balanced arm order)")
+    if results.get("valid") is False:
+        setup_items.append("**Validity:** INVALID (control contamination — no clean baseline)")
+    if results.get("retries"):
+        setup_items.append(
+            f"**Retries:** {len(results['retries'])} retry record(s) preserved with costs"
+        )
     prov = results.get("provenance") or {}
     if prov:
         if prov.get("skill_hash"):
@@ -1735,7 +1896,9 @@ def build_report_blocks(
             cli_txt = ", ".join(f"{k} {v}" for k, v in prov["agent_cli"].items())
             setup_items.append(f"**Agent CLI:** {cli_txt}")
         if prov.get("tasks_hash"):
-            setup_items.append(f"**Tasks hash:** `{str(prov['tasks_hash'])[:12]}`")
+            setup_items.append(
+                f"**Tasks hash (prompts+graders+fixtures+locks):** `{str(prov['tasks_hash'])[:12]}`"
+            )
     if results.get("task_categories"):
         cats = results["task_categories"]
         setup_items.append(

@@ -58,11 +58,14 @@ How to read the table:
 <details>
 <summary>Tips for clear results</summary>
 
-- Use 5 or more runs. One run cannot separate signal from noise.
+- Use 5 or more runs as a starting point, not a rule. Fix the budget before you look at results.
+- Cover four kinds: intended tasks, normal representative tasks, irrelevant tasks, and ambiguous plus regression tasks.
+- Split `tasks/dev/` (iterate) from `tasks/heldout/` (freeze before the full run).
 - Write tasks that need what only the skill gives. Good tasks use obscure APIs, recent changes, or house rules.
 - Do not name the skill in prompts. Adoption is part of the test.
 - If control scores 100%, the task is too easy. The report calls this a ceiling effect.
 - Read warnings about agent errors, grader errors, and skill runs that ignored the skill.
+- Many repetitions of two tasks still describe only those two tasks. Add tasks before you generalize.
 
 </details>
 
@@ -86,9 +89,9 @@ Then complete these steps:
 <details>
 <summary>What each folder holds</summary>
 
-- `skilldiff.yaml`: name, skill path, harness, models, tasks, and run count.
-- `tasks/`: one YAML file per task with an id, a prompt, and a category.
-- `fixtures/`: small test projects. SkillDiff copies each fixture to a fresh workspace for each run.
+- `skilldiff.yaml`: name, skill path, harness, models, tasks, run count, seed, and failure policy.
+- `tasks/`: one YAML file per task with an id, a prompt, a category, and optional `validation: {good, broken}`.
+- `fixtures/`: small test projects. SkillDiff copies each fixture to a fresh workspace for each run, without `.git` history. Escaping symlinks are rejected.
 - `graders/`: scripts that grade the work in each workspace.
 
 </details>
@@ -156,13 +159,13 @@ flowchart LR
     A --> R
 ```
 
-- Fresh workspaces. Each pair gets two clean copies of the fixture. Only the skill arm has the skill.
-- Isolation. For Claude the default blocks user skills and plugins from both arms.
-- Random order. Each pair picks the first arm at random.
+- Fresh workspaces. Each pair gets clean copies of the fixture, without `.git` history. Escaping symlinks are rejected.
+- Isolation. For Claude the default blocks user skills and plugins from both arms. `check` also notes instructions, plugins, and memory that can leak. Control contamination marks the run INVALID.
+- Balanced order. Each task and model alternates which arm runs first, from a recorded seed. No arm gets the warm cache every time.
 - Blind grading. Graders see anonymous work with names and arm labels removed.
 - Adoption check. The report shows how many skill runs used the skill.
 - Paired statistics. Each difference has a bootstrap 95% interval.
-- Safe stops. Each agent run has a timeout. Press Ctrl-C to stop and keep a report for done pairs.
+- Safe stops and resume. Each agent run has a timeout. Press Ctrl-C to stop and keep a report for done pairs. Each arm is saved at once, completed pairs checkpoint, and `--resume` reuses only when input hashes match.
 
 </details>
 
@@ -193,11 +196,12 @@ The report shows adoption and results for each group in By category.
 
 A grader runs in the workspace after the agent stops:
 
-- Exit 0 passes. Other exit codes fail.
+- Exit 0 with no JSON passes. Exit non-zero with no JSON fails, unless the output shows a crash.
 - For part scores, print JSON with a `score` from 0 to 1.
 - For named checks, print `checks` as a list of `{"name": ..., "passed": ...}`. Bare booleans also work.
-- The JSON can be the full output or the last line.
-- Keep graders outside the fixture.
+- The JSON can be the full output or the last line. Bad shapes report `error`, not a score.
+- A crashing grader (traceback, missing file, bad exit) shows `N/A`, not `0%`. Test failure shows `0%`.
+- Keep graders outside the fixture. Outside is not isolation by itself: confine agents so they cannot read parent paths.
 - Accept all valid solutions, not only the skill solution.
 
 Example grader output:
@@ -209,6 +213,16 @@ Example grader output:
 The report adds a By check table. It shows which checks improve and which checks regress.
 
 Ungraded tasks show `N/A`, not `100%`. Grader timeouts and errors show `N/A`, not `0%`.
+
+Validate the grader three ways in the task file:
+
+```yaml
+validation:
+  good: ../validation/fix-parser-good
+  broken: [../validation/fix-parser-bad]
+```
+
+`check` then grades untouched (must be below 100%), known-good (must be 100%), and broken (must fail).
 
 </details>
 
@@ -222,46 +236,64 @@ thresholds:
   acceptable_score_regression_pp: 5
   required_cost_reduction_pct: 10
   meaningful_score_gain_pp: 5
+failure_policy:
+  agent_failure: exclude  # or "zero" (failed sessions score 0)
+  missing: exclude
 ```
 
-The verdict then states if the result meets the limits. It separates a useful gain from a small but real gain.
+Shipping needs bounds to clear the limits, not point estimates. The verdict checks the lower confidence bound for score and requires the cost interval to exclude increases. It separates a useful gain from a small but real gain.
 
 The headline also flags weak proof:
 
 - `only 2 pairs` means the sample is too small.
 - `CI collapsed` means all pairs gave the same difference.
+- `only 2 tasks` means repetitions describe those tasks, not the skill in general.
+
+Define `failure_policy` before you run. Grader timeouts and errors are always `N/A`.
 
 </details>
 
 <details>
 <summary>Compare skill revisions</summary>
 
-Each run records skill hashes, prompt hashes, fixture hashes, grader hashes, and CLI versions.
+Each run records skill hashes, prompt hashes, fixture hashes, grader hashes, locks, and CLI versions. The task hash includes grader contents and locks. All files are hashed with no silent caps.
 
-Run this command to compare two runs:
+For a first-class test, run skill A versus skill B in one experiment:
+
+```bash
+skilldiff init --skill-a ./skills/v1 --skill-b ./skills/v2 --dir ab-eval
+# add --include-baseline for a no-skill arm per pair
+```
+
+Control is skill A and treatment is skill B, on identical fixtures with paired results.
+
+To compare two old runs:
 
 ```bash
 skilldiff compare runs/2026-09-22T120000Z runs/2026-09-23T120000Z
+# add --strict to reject mismatched models, tasks, or hashes
 ```
 
-The output shows score changes, adoption changes, efficiency changes, and newly failing or passing checks. It warns if models, tasks, or versions differ.
+The output shows score changes, adoption changes, efficiency changes, and newly failing or passing checks. Efficiency uses per-run means over matched tasks and repetitions, not totals. It warns if models, tasks, or versions differ.
 
 </details>
 
 <details>
 <summary>Evaluate a PR</summary>
 
-Run the same tasks with and without a PR:
+Pick what the PR test measures and which revisions to use:
 
 ```bash
 git -C ~/code/my-package fetch origin refs/pull/42/head:refs/pull/42/head
 skilldiff init --pr 42 --repo ~/code/my-package --base origin/main --dir pr-42-eval
+# --pr-mode agent (agents work on each revision) or correctness (graders run on untouched revisions)
+# --pr-pair merge-base (merge-base vs head) or base-merge (base tip vs synthetic merge)
 cd pr-42-eval
 skilldiff check
 skilldiff run --runs 1
 ```
 
-Control is the merge base. Treatment is the head commit. Reports label the arms Control and Treatment. Use one of `skill` or `pr`, not both. Tasks omit `repo` in PR mode.
+Reports label the arms Control and Treatment. Use one of `skill`, `skill_a` plus `skill_b`, or `pr`, not more than one. Tasks omit `repo` in PR mode. Correctness mode runs no agents.
 
 </details>
 
@@ -271,12 +303,13 @@ Control is the merge base. Treatment is the head commit. Reports label the arms 
 | Command | What it does |
 |---|---|
 | `skilldiff init [--skill PATH] [--harness H] [--dir D]` | Make a demo or a template for your skill |
-| `skilldiff init --pr N --repo PATH [--base REF] [--dir D]` | Make a PR test from local refs |
-| `skilldiff check [-c CONFIG]` | Check the config, the CLI, the skill, and the graders |
-| `skilldiff run [-c CONFIG] [--runs N] [-j N] [-m MODEL] [-t TASK]` | Run the test |
+| `skilldiff init --skill-a A --skill-b B [--include-baseline] [--dir D]` | Make a skill A/B test with paired results |
+| `skilldiff init --pr N --repo PATH [--base REF] [--pr-mode M] [--pr-pair P]` | Make a PR test from local refs |
+| `skilldiff check [-c CONFIG]` | Check the config, the CLI, the skill, isolation, and the graders |
+| `skilldiff run [-c CONFIG] [--runs N] [-j N] [-m MODEL] [-t TASK] [--resume] [--seed N]` | Run the test |
 | `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run |
 | `skilldiff report [RUN_DIR]` | Rebuild reports for a run |
-| `skilldiff compare RUN_A RUN_B [--json]` | Compare two runs |
+| `skilldiff compare RUN_A RUN_B [--json] [--strict]` | Compare two runs |
 
 </details>
 

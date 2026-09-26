@@ -64,6 +64,11 @@ class TaskConfig:
     # stay out of the way), ambiguous (unclear trigger), general (default),
     # or any custom label. Reported separately in By category.
     category: str = "general"
+    # Optional grader validation fixtures (relative to the task file):
+    #   validation: {good: ../validation/<id>-good, broken: [../validation/<id>-bad1]}
+    # `good` is a workspace that must score ~100%; `broken` entries must score <100%.
+    # When present, `skilldiff check` grades all three (untouched, good, broken).
+    validation: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -71,6 +76,14 @@ class PRConfig:
     repo: Path
     base: str
     head: str
+    # What the PR experiment measures:
+    #   agent: give agents the same task on each revision (agent effectiveness).
+    #   correctness: run the same graders/tests against untouched revisions (PR correctness).
+    mode: str = "agent"
+    # Which revisions to compare:
+    #   merge-base: merge-base(base, head) vs head (did the branch change behaviour?).
+    #   base-merge: base tip vs synthetic merge of head into base (does it integrate?).
+    pair: str = "merge-base"
 
 
 @dataclass
@@ -94,16 +107,76 @@ class ExperimentConfig:
     #   required_cost_reduction_pct: required saving, e.g. 10 = 10% cheaper.
     #   meaningful_score_gain_pp: gain needed to call an improvement useful.
     thresholds: dict[str, float] = field(default_factory=dict)
+    # Skill A/B mode: compare two skill revisions in one experiment.
+    # Exactly one of these holds: `skill`+`pr is None` (single skill),
+    # `skill_a`+`skill_b` (A/B), or `pr` (PR mode).
+    skill_a: Optional[Path] = None
+    skill_b: Optional[Path] = None
+    # When True, A/B mode also runs a no-skill baseline arm per pair so the
+    # report can show whether either revision helps at all.
+    include_baseline: bool = False
+    # Reproducibility: fixed seed for arm order; None means derive and record one.
+    seed: Optional[int] = None
+    # Failure / missing-result policy, decided before running:
+    #   agent_failure: "exclude" (default, failed sessions are N/A) or "zero"
+    #     (failed sessions score 0). Grader timeouts/errors are always N/A.
+    #   missing: currently always "exclude".
+    failure_policy: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def is_skill_comparison(self) -> bool:
+        return self.skill_a is not None or self.skill_b is not None
 
     @property
     def skill_dirs(self) -> list[Path]:
-        return find_skill_dirs(self.skill) if self.skill else []
+        if self.skill:
+            return find_skill_dirs(self.skill) if self.skill else []
+        # A/B mode: union of both revisions (for contamination checks).
+        out: list[Path] = []
+        for s in (self.skill_a, self.skill_b):
+            if s:
+                out.extend(find_skill_dirs(s))
+        # De-duplicate by resolved path while keeping order.
+        seen: set[str] = set()
+        uniq: list[Path] = []
+        for d in out:
+            key = str(d.resolve()) if d.exists() else str(d)
+            if key not in seen:
+                seen.add(key)
+                uniq.append(d)
+        return uniq
+
+    @property
+    def skill_a_dirs(self) -> list[Path]:
+        return find_skill_dirs(self.skill_a) if self.skill_a else []
+
+    @property
+    def skill_b_dirs(self) -> list[Path]:
+        return find_skill_dirs(self.skill_b) if self.skill_b else []
 
     @property
     def skill_names(self) -> list[str]:
         """Every name an agent might use for the skill(s): directory and frontmatter names."""
         names: list[str] = []
         for skill_dir in self.skill_dirs:
+            for name in (skill_dir.name, read_skill_name(skill_dir)):
+                if name and name not in names:
+                    names.append(name)
+        return names
+
+    @property
+    def skill_a_names(self) -> list[str]:
+        names: list[str] = []
+        for skill_dir in self.skill_a_dirs:
+            for name in (skill_dir.name, read_skill_name(skill_dir)):
+                if name and name not in names:
+                    names.append(name)
+        return names
+
+    @property
+    def skill_b_names(self) -> list[str]:
+        names: list[str] = []
+        for skill_dir in self.skill_b_dirs:
             for name in (skill_dir.name, read_skill_name(skill_dir)):
                 if name and name not in names:
                     names.append(name)
@@ -172,6 +245,9 @@ def load_task(task_path: Path) -> TaskConfig:
     grader_data = data.get("grader")
     grader = parse_grader_config(grader_data)
     category = str(data.get("category", "general") or "general").strip().lower() or "general"
+    validation = data.get("validation") or {}
+    if validation is not None and not isinstance(validation, dict):
+        raise ValueError(f"Task {task_id}: 'validation' must be a mapping")
 
     return TaskConfig(
         id=str(task_id),
@@ -180,6 +256,7 @@ def load_task(task_path: Path) -> TaskConfig:
         grader=grader,
         source_path=task_path.resolve(),
         category=category,
+        validation=dict(validation or {}),
     )
 
 
@@ -195,11 +272,21 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         raise ValueError("Experiment config must specify 'name'")
 
     skill_str = data.get("skill")
+    skill_a_str = data.get("skill_a")
+    skill_b_str = data.get("skill_b")
+    include_baseline = bool(data.get("include_baseline", False))
     pr_data = data.get("pr")
-    if bool(skill_str) == (pr_data is not None):
-        raise ValueError("Experiment must specify exactly one of 'skill' or 'pr'")
+    modes_present = sum(
+        [bool(skill_str), bool(skill_a_str or skill_b_str), pr_data is not None]
+    )
+    if modes_present != 1:
+        raise ValueError(
+            "Experiment must specify exactly one of 'skill', 'skill_a'+'skill_b', or 'pr'"
+        )
     base_dir = experiment_path.parent.resolve()
     skill_path = None
+    skill_a_path = None
+    skill_b_path = None
     pr = None
     if pr_data is not None:
         if not isinstance(pr_data, dict) or any(
@@ -207,11 +294,37 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
             for k in ("repo", "base", "head")
         ):
             raise ValueError("pr must specify non-empty repo, base, and head strings")
-        pr = PRConfig((base_dir / pr_data["repo"]).resolve(), pr_data["base"], pr_data["head"])
+        mode = str(pr_data.get("mode", "agent") or "agent").strip().lower()
+        if mode not in {"agent", "correctness"}:
+            raise ValueError("pr.mode must be 'agent' or 'correctness'")
+        pair = str(pr_data.get("pair", "merge-base") or "merge-base").strip().lower()
+        if pair not in {"merge-base", "base-merge"}:
+            raise ValueError("pr.pair must be 'merge-base' or 'base-merge'")
+        pr = PRConfig(
+            (base_dir / pr_data["repo"]).resolve(),
+            pr_data["base"],
+            pr_data["head"],
+            mode=mode,
+            pair=pair,
+        )
         if not pr.repo.is_dir():
             raise FileNotFoundError(f"PR repo not found: {pr.repo}")
+    elif skill_a_str or skill_b_str:
+        if not (skill_a_str and skill_b_str):
+            raise ValueError("Skill A/B mode requires both 'skill_a' and 'skill_b'")
+        skill_a_path = (base_dir / str(skill_a_str)).resolve()
+        skill_b_path = (base_dir / str(skill_b_str)).resolve()
+        for label, p in (("skill_a", skill_a_path), ("skill_b", skill_b_path)):
+            if not p.exists():
+                raise FileNotFoundError(f"Skill directory not found ({label}): {p}")
+            if not find_skill_dirs(p):
+                raise FileNotFoundError(
+                    f"No SKILL.md found in {p} or its immediate subdirectories ({label})"
+                )
+        if skill_a_path.resolve() == skill_b_path.resolve():
+            raise ValueError("skill_a and skill_b must be different directories")
     else:
-        skill_path = (base_dir / skill_str).resolve()
+        skill_path = (base_dir / str(skill_str)).resolve()
         if not skill_path.exists():
             raise FileNotFoundError(f"Skill directory not found: {skill_path}")
         if not find_skill_dirs(skill_path):
@@ -329,9 +442,37 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
             except (TypeError, ValueError):
                 raise ValueError(f"Experiment thresholds.{key} must be a number")
 
+    seed = data.get("seed")
+    if seed is not None:
+        try:
+            seed = int(seed)
+        except (TypeError, ValueError):
+            raise ValueError("Experiment 'seed' must be an integer")
+
+    failure_policy: dict[str, str] = {}
+    raw_failure = data.get("failure_policy") or data.get("on_failure") or {}
+    if raw_failure is not None and not isinstance(raw_failure, dict):
+        raise ValueError("Experiment 'failure_policy' must be a mapping")
+    for key in ("agent_failure", "missing"):
+        if isinstance(raw_failure, dict) and key in raw_failure and raw_failure[key] is not None:
+            val = str(raw_failure[key]).strip().lower()
+            if key == "agent_failure" and val not in {"exclude", "zero"}:
+                raise ValueError("failure_policy.agent_failure must be 'exclude' or 'zero'")
+            if key == "missing" and val not in {"exclude"}:
+                raise ValueError("failure_policy.missing must be 'exclude'")
+            failure_policy[key] = val
+    # Defaults, decided before running: failed/missing sessions are excluded (N/A).
+    failure_policy.setdefault("agent_failure", "exclude")
+    failure_policy.setdefault("missing", "exclude")
+
     exp_config = ExperimentConfig(
         name=name,
         skill=skill_path,
+        skill_a=skill_a_path,
+        skill_b=skill_b_path,
+        include_baseline=include_baseline,
+        seed=seed,
+        failure_policy=failure_policy,
         pr=pr,
         models=[str(m) for m in models],
         tasks_patterns=task_patterns,

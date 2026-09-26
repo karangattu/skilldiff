@@ -153,3 +153,35 @@ def classify_effect(metric: dict[str, Any], higher_is_better: bool = True) -> st
     if hi < 0:
         return "worse" if higher_is_better else "better"
     return "unclear"
+
+
+def task_level_effects(
+    control_runs: list[dict[str, Any]], treatment_runs: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Separate uncertainty across tasks from uncertainty across repetitions.
+
+    Many repetitions of two tasks still provide evidence about only those two
+    tasks. Returns per-task mean diffs plus the mean across tasks and how many
+    distinct tasks contribute. Callers should warn when task count is small
+    even if pair count is large.
+    """
+    pairs = pair_runs(control_runs, treatment_runs)
+    by_task: dict[str, list[float]] = {}
+    for c, t in pairs:
+        cs, ts = METRICS["score"](c), METRICS["score"](t)
+        if cs is None or ts is None:
+            continue
+        task_id = str(c.get("task_id") or t.get("task_id") or "")
+        by_task.setdefault(task_id, []).append(float(ts) - float(cs))
+    per_task_mean = {
+        task_id: (sum(diffs) / len(diffs)) for task_id, diffs in by_task.items() if diffs
+    }
+    means = list(per_task_mean.values())
+    return {
+        "tasks": len(per_task_mean),
+        "pairs": len(pairs),
+        "per_task_mean": per_task_mean,
+        "mean_across_tasks": (sum(means) / len(means)) if means else None,
+        "min_task_effect": min(means) if means else None,
+        "max_task_effect": max(means) if means else None,
+    }

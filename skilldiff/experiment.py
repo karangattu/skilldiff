@@ -47,6 +47,32 @@ def find_user_level_installs(skill_names: list[str], harness: str) -> list[str]:
     return found
 
 
+def find_harness_inheritance(skill_names: list[str], harness: str) -> list[str]:
+    """Harness-specific instructions/plugins/memory that can leak into both arms."""
+    try:
+        from skilldiff.workspace import find_harness_contamination
+
+        return find_harness_contamination(skill_names, harness)
+    except Exception:
+        return []
+
+
+def balanced_arm_order(model: str, task_id: str, repetition: int, seed: int) -> list[str]:
+    """Deterministic, balanced arm order within each task/model.
+
+    Random shuffling per pair can imbalance first-arm counts (warm caches,
+    rate limits favour one arm). Instead, alternate which arm runs first for
+    successive repetitions, offset by a hash of (seed, model, task) so the
+    starting arm is still randomized. With N reps per task/model, each arm
+    goes first ceil/floor(N/2) times.
+    """
+    h = hashlib.sha256(f"{seed}:{model}:{task_id}".encode()).hexdigest()
+    start_with_control = (int(h[:8], 16) + (repetition - 1)) % 2 == 0
+    if start_with_control:
+        return ["control", "treatment"]
+    return ["treatment", "control"]
+
+
 def _sha256_file(path: Path) -> Optional[str]:
     try:
         h = hashlib.sha256()
@@ -58,25 +84,75 @@ def _sha256_file(path: Path) -> Optional[str]:
         return None
 
 
-def _hash_dir(root: Path, limit_files: int = 1000) -> tuple[str, list[dict[str, str]]]:
+def _hash_dir(
+    root: Path, limit_files: int | None = None, store_limit: int = 200
+) -> tuple[str, list[dict[str, str]], int]:
+    """Hash every file under root. Never silently cap the hash input.
+
+    All files contribute to the combined hash. Only the first `store_limit`
+    entries are returned for provenance JSON so reports stay small; the total
+    file count is always reported and hash mismatches from truncation are
+    impossible.
+    """
     files: list[dict[str, str]] = []
     if not root.is_dir():
-        return "", files
-    paths = sorted(p for p in root.rglob("*") if p.is_file())
-    for p in paths[:limit_files]:
+        return "", files, 0
+    paths = sorted(p for p in root.rglob("*") if p.is_file() and not p.is_symlink())
+    # Symlinked files are hashed by target content when inside the tree;
+    # escaping symlinks are rejected earlier by workspace validation.
+    total = len(paths)
+    if limit_files is not None:
+        paths_for_hash = paths[:limit_files]
+    else:
+        paths_for_hash = paths
+    hashed: list[dict[str, str]] = []
+    for p in paths_for_hash:
         try:
             rel = str(p.relative_to(root))
         except ValueError:
             rel = str(p)
         digest = _sha256_file(p)
         if digest:
-            files.append({"path": rel, "sha256": digest})
+            hashed.append({"path": rel, "sha256": digest})
     combined = (
-        hashlib.sha256("\n".join(f"{f['path']}:{f['sha256']}" for f in files).encode()).hexdigest()
-        if files
+        hashlib.sha256("\n".join(f"{f['path']}:{f['sha256']}" for f in hashed).encode()).hexdigest()
+        if hashed
         else ""
     )
-    return combined, files
+    return combined, hashed[:store_limit], total
+
+
+def _hash_dependency_locks(task_dir: Path | None) -> dict[str, str]:
+    """Hash lockfiles that affect evaluated inputs (best effort)."""
+    locks: dict[str, str] = {}
+    if task_dir is None:
+        return locks
+    candidates = [
+        task_dir / name
+        for name in (
+            "requirements.txt",
+            "requirements.lock",
+            "uv.lock",
+            "poetry.lock",
+            "package-lock.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+            "pyproject.toml",
+        )
+    ]
+    # Also check parent (experiment root) for locks.
+    candidates.extend(
+        [task_dir.parent / name for name in ("uv.lock", "requirements.txt", "pyproject.toml")]
+    )
+    for p in candidates:
+        try:
+            if p.is_file():
+                digest = _sha256_file(p)
+                if digest:
+                    locks[str(p.name)] = digest
+        except OSError:
+            continue
+    return locks
 
 
 def _cli_version(binary: str) -> str:
@@ -102,13 +178,31 @@ def _cli_version(binary: str) -> str:
 
 
 def collect_provenance(config: ExperimentConfig, tasks: list[TaskConfig]) -> dict[str, Any]:
-    """Hashes/snapshots of skills, prompts, fixtures, graders + CLI versions."""
+    """Hashes/snapshots of skills, prompts, fixtures, graders + CLI versions.
+
+    The combined task hash includes grader contents and dependency locks, so
+    `compare` can detect incompatible experiments. All files are hashed;
+    nothing is silently capped. Call once before execution and reuse the
+    snapshot so edits during a run cannot change later pairs.
+    """
     skill_hashes: list[dict[str, Any]] = []
     combined_skill = hashlib.sha256()
-    for d in config.skill_dirs:
-        h, files = _hash_dir(d)
-        skill_hashes.append({"dir": str(d), "hash": h, "files": files[:200]})
-        combined_skill.update(h.encode())
+    # In A/B mode record each revision separately plus the combined hash.
+    skill_groups: list[tuple[str, list[Path]]] = []
+    if config.is_skill_comparison:
+        skill_groups = [
+            ("skill_a", config.skill_a_dirs),
+            ("skill_b", config.skill_b_dirs),
+        ]
+    else:
+        skill_groups = [("skill", config.skill_dirs)]
+    for label, dirs in skill_groups:
+        for d in dirs:
+            h, files, total = _hash_dir(d)
+            skill_hashes.append(
+                {"dir": str(d), "hash": h, "files": files, "total_files": total, "role": label}
+            )
+            combined_skill.update(f"{label}:{h}".encode())
     skill_hash = combined_skill.hexdigest() if skill_hashes else ""
 
     task_entries: list[dict[str, Any]] = []
@@ -117,6 +211,8 @@ def collect_provenance(config: ExperimentConfig, tasks: list[TaskConfig]) -> dic
         prompt_sha = hashlib.sha256(t.prompt.encode()).hexdigest()
         task_file_sha = _sha256_file(t.source_path) if t.source_path else None
         grader_sha = None
+        grader_files_total = 0
+        locks: dict[str, str] = {}
         fixture_info: dict[str, Any] = {}
         if t.source_path:
             task_dir = t.source_path.parent
@@ -125,13 +221,15 @@ def collect_provenance(config: ExperimentConfig, tasks: list[TaskConfig]) -> dic
                 task_dir.parent / "graders" if task_dir.name == "tasks" else task_dir / "graders"
             )
             if graders_dir.is_dir():
-                gh, _ = _hash_dir(graders_dir, limit_files=200)
+                gh, gfiles, gtotal = _hash_dir(graders_dir)
                 grader_sha = gh
+                grader_files_total = gtotal
+            locks = _hash_dependency_locks(task_dir)
             if t.repo and not config.pr:
                 fixture = (task_dir / t.repo).resolve() if t.repo else None
                 if fixture and fixture.exists() and fixture.is_dir():
-                    fh, files = _hash_dir(fixture, limit_files=500)
-                    fixture_info = {"hash": fh, "files": len(files)}
+                    fh, ffiles, ftotal = _hash_dir(fixture)
+                    fixture_info = {"hash": fh, "files": len(ffiles), "total_files": ftotal}
                     tasks_combined.update(fh.encode())
         entry = {
             "id": t.id,
@@ -141,11 +239,18 @@ def collect_provenance(config: ExperimentConfig, tasks: list[TaskConfig]) -> dic
             "task_file_sha256": task_file_sha,
             "grader": t.grader.command if t.grader else None,
             "graders_hash": grader_sha,
+            "graders_total_files": grader_files_total,
+            "locks": locks or None,
             "fixture": fixture_info or None,
+            "validation": getattr(t, "validation", {}) or None,
         }
         task_entries.append(entry)
         tasks_combined.update(prompt_sha.encode())
         tasks_combined.update(str(t.grader.command if t.grader else "").encode())
+        if grader_sha:
+            tasks_combined.update(grader_sha.encode())
+        for lock_name in sorted(locks):
+            tasks_combined.update(f"{lock_name}:{locks[lock_name]}".encode())
         if task_file_sha:
             tasks_combined.update(task_file_sha.encode())
 
@@ -182,6 +287,7 @@ class ExperimentRunner:
         output_dir: Path | None = None,
         agent_runner: AgentRunner | None = None,
         progress: Optional[Callable[[str], None]] = None,
+        resume_dir: Path | None = None,
     ):
         self.config = config
         self.tasks = tasks
@@ -193,6 +299,14 @@ class ExperimentRunner:
         self.progress = progress or (lambda _msg: None)
         self._lock = threading.Lock()
         self.comparison = None
+        self.resume_dir = resume_dir
+        self._baseline_runs: list[dict[str, Any]] = []
+        self._retry_history: list[dict[str, Any]] = []
+        self._seed: int = (
+            int(config.seed) if config.seed is not None else random.randint(0, 2**31 - 1)
+        )
+        self._provenance_snapshot: dict[str, Any] = {}
+        self._checkpoint_completed: set[tuple[str, str, int]] = set()
 
     # ------------------------------------------------------------------ setup
 
@@ -205,25 +319,77 @@ class ExperimentRunner:
                 "The skill is also installed at user level, so the control arm can load it: "
                 + ", ".join(installs)
             )
+        # Harness-specific inheritance (instructions/plugins/memory) is checked
+        # for skill experiments; PR mode has no skill so generic host files are
+        # not flagged here (they are still noted by `check` when relevant).
+        if (self.config.skill or self.config.is_skill_comparison) and self.config.skill_names:
+            extra = [
+                i
+                for i in find_harness_inheritance(self.config.skill_names, self.config.harness)
+                if "skill installed" not in i
+            ]
+            if extra and not isolated:
+                warnings.append(
+                    "Possible harness inheritance outside skills (instructions/plugins/memory): "
+                    + ", ".join(extra)
+                )
+        # A/B mode: both revisions must differ.
+        if self.config.is_skill_comparison:
+            try:
+                prov = collect_provenance(self.config, self.tasks)
+                skills = prov.get("skills") or []
+                hashes = {}
+                for s in skills:
+                    hashes.setdefault(s.get("role"), []).append(s.get("hash"))
+                ha = "".join(hashes.get("skill_a", []))
+                hb = "".join(hashes.get("skill_b", []))
+                if ha and hb and ha == hb:
+                    warnings.append(
+                        "skill_a and skill_b have identical hashes; A/B compares the same revision."
+                    )
+            except Exception:
+                pass
         return warnings
+
+    def _skill_comparison_info(self) -> dict[str, Any] | None:
+        if not self.config.is_skill_comparison:
+            return None
+        return {
+            "type": "skill_ab",
+            "skill_a": str(self.config.skill_a) if self.config.skill_a else None,
+            "skill_b": str(self.config.skill_b) if self.config.skill_b else None,
+            "include_baseline": bool(self.config.include_baseline),
+            "control_is": "skill_a",
+            "treatment_is": "skill_b",
+        }
 
     def _metadata(self, timestamp: str) -> dict[str, Any]:
         try:
             provenance = collect_provenance(self.config, self.tasks)
         except Exception:
             provenance = {}
+        self._provenance_snapshot = provenance
+        skill_comparison = self._skill_comparison_info()
         return {
             "name": self.config.name,
             "skilldiff_version": __version__,
             "skill": str(self.config.skill) if self.config.skill else None,
+            "skill_a": str(self.config.skill_a) if self.config.skill_a else None,
+            "skill_b": str(self.config.skill_b) if self.config.skill_b else None,
+            "include_baseline": bool(self.config.include_baseline),
+            "skill_comparison": skill_comparison,
             "comparison": self.comparison,
             "skill_names": self.config.skill_names,
+            "skill_a_names": self.config.skill_a_names if self.config.is_skill_comparison else [],
+            "skill_b_names": self.config.skill_b_names if self.config.is_skill_comparison else [],
             "harness": self.config.harness,
             "models": self.config.models,
             "runs": self.config.runs,
             "timeout_seconds": self.config.timeout_seconds,
             "parallel": self.config.parallel,
             "thresholds": dict(getattr(self.config, "thresholds", {}) or {}),
+            "failure_policy": dict(getattr(self.config, "failure_policy", {}) or {}),
+            "seed": self._seed,
             "claude": asdict(self.config.claude),
             "codex": asdict(self.config.codex),
             "opencode": asdict(self.config.opencode),
@@ -247,11 +413,134 @@ class ExperimentRunner:
 
     # -------------------------------------------------------------------- run
 
-    def run(self) -> dict[str, Any]:
+    def _checkpoint_path(self, run_root: Path) -> Path:
+        return run_root / "checkpoint.json"
+
+    def _write_checkpoint(self, run_root: Path) -> None:
+        try:
+            data = {
+                "completed": sorted(
+                    [list(k) for k in self._checkpoint_completed],
+                    key=lambda x: (str(x[0]), str(x[1]), int(x[2])),
+                ),
+                "seed": self._seed,
+                "provenance": {
+                    "skill_hash": self._provenance_snapshot.get("skill_hash"),
+                    "tasks_hash": self._provenance_snapshot.get("tasks_hash"),
+                    "skilldiff_version": self._provenance_snapshot.get("skilldiff_version"),
+                },
+            }
+            (run_root / "checkpoint.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _load_resume_state(self, resume_dir: Path) -> set[tuple[str, str, int]]:
+        """Load completed pairs from a previous run. Only resumes when input
+        hashes match; otherwise raises so stale results cannot be mixed."""
+        ckpt_file = resume_dir / "checkpoint.json"
+        exp_file = resume_dir / "experiment.json"
+        if not ckpt_file.exists() or not exp_file.exists():
+            return set()
+        try:
+            ckpt = json.loads(ckpt_file.read_text(encoding="utf-8"))
+            prev_exp = json.loads(exp_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError(f"Cannot read resume state in {resume_dir}: {exc}") from exc
+        prev_prov = (prev_exp.get("provenance") or {})
+        cur_skill = self._provenance_snapshot.get("skill_hash")
+        cur_tasks = self._provenance_snapshot.get("tasks_hash")
+        if cur_skill and prev_prov.get("skill_hash") and cur_skill != prev_prov.get("skill_hash"):
+            raise ValueError(
+                "Resume refused: skill hashes differ. "
+                f"Previous {str(prev_prov.get('skill_hash'))[:12]}, current {str(cur_skill)[:12]}."
+            )
+        if cur_tasks and prev_prov.get("tasks_hash") and cur_tasks != prev_prov.get("tasks_hash"):
+            raise ValueError(
+                "Resume refused: task/prompt/fixture/grader hashes differ. "
+                "Inputs changed since the checkpoint."
+            )
+        completed: set[tuple[str, str, int]] = set()
+        for item in ckpt.get("completed", []):
+            try:
+                completed.add((str(item[0]), str(item[1]), int(item[2])))
+            except Exception:
+                continue
+        # Adopt the original seed so arm order stays reproducible.
+        if ckpt.get("seed") is not None:
+            try:
+                self._seed = int(ckpt["seed"])
+            except (TypeError, ValueError):
+                pass
+        return completed
+
+    def _load_previous_runs(
+        self, resume_dir: Path, completed: set[tuple[str, str, int]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        control_runs: list[dict[str, Any]] = []
+        treatment_runs: list[dict[str, Any]] = []
+        for run_file in sorted(resume_dir.rglob("run.json")):
+            try:
+                d = json.loads(run_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            key = (str(d.get("model", "")), str(d.get("task_id", "")), int(d.get("repetition", 0)))
+            if key not in completed:
+                continue
+            d.setdefault("artifacts", str(run_file.parent.relative_to(resume_dir)))
+            if d.get("arm") == "control":
+                control_runs.append(d)
+            elif d.get("arm") in {"treatment", "skill"}:
+                treatment_runs.append(d)
+            # Baseline arms are reloaded separately below.
+        return control_runs, treatment_runs
+
+    def run(self, resume: bool | Path = False) -> dict[str, Any]:
         self.comparison = resolve_comparison(self.config.pr) if self.config.pr else None
+        # Snapshot inputs before execution so edits during a run cannot change later pairs.
         timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
-        run_root = self.output_dir / timestamp_str
-        run_root.mkdir(parents=True, exist_ok=True)
+        if isinstance(resume, Path):
+            run_root = resume
+            run_root.mkdir(parents=True, exist_ok=True)
+            resume_requested = True
+        elif resume is True:
+            # Resume the latest run next to the config, if any.
+            base = self.config.config_path.parent if self.config.config_path else Path(".")
+            candidates = sorted(
+                [p for p in (base / "runs").glob("*") if (p / "checkpoint.json").exists()]
+            ) if (base / "runs").exists() else []
+            if candidates:
+                run_root = candidates[-1]
+                resume_requested = True
+            else:
+                run_root = self.output_dir / timestamp_str
+                run_root.mkdir(parents=True, exist_ok=True)
+                resume_requested = False
+        elif self.resume_dir is not None:
+            run_root = self.resume_dir
+            run_root.mkdir(parents=True, exist_ok=True)
+            resume_requested = True
+        else:
+            run_root = self.output_dir / timestamp_str
+            run_root.mkdir(parents=True, exist_ok=True)
+            resume_requested = False
+
+        # Provenance snapshot is taken once, before any pair runs.
+        # _metadata() stores it in self._provenance_snapshot.
+        if run_root.exists() and (run_root / "experiment.json").exists() and resume_requested:
+            # Reuse the original timestamp for resumed runs.
+            try:
+                prev_meta = json.loads((run_root / "experiment.json").read_text(encoding="utf-8"))
+                timestamp_str = str(prev_meta.get("timestamp") or timestamp_str)
+                if prev_meta.get("seed") is not None:
+                    try:
+                        self._seed = int(prev_meta["seed"])
+                    except (TypeError, ValueError):
+                        pass
+            except Exception:
+                pass
+        # Ensure seed from config wins when explicitly set.
+        if self.config.seed is not None:
+            self._seed = int(self.config.seed)
 
         metadata = self._metadata(timestamp_str)
         warnings = self.preflight_warnings()
@@ -268,7 +557,51 @@ class ExperimentRunner:
         ]
         control_runs: list[dict[str, Any]] = []
         treatment_runs: list[dict[str, Any]] = []
-        done = 0
+        # Resume: reload completed pairs and skip them.
+        resumed_count = 0
+        if resume_requested:
+            try:
+                completed = self._load_resume_state(run_root)
+                self._checkpoint_completed = set(completed)
+                prev_ctrl, prev_treat = self._load_previous_runs(run_root, completed)
+                # Copy previous artifacts into the current tree when resuming
+                # into a new directory; when resuming in place they already exist.
+                control_runs.extend(prev_ctrl)
+                treatment_runs.extend(prev_treat)
+                # Reload baselines if present.
+                for run_file in sorted(run_root.rglob("run.json")):
+                    try:
+                        d = json.loads(run_file.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if d.get("arm") == "baseline":
+                        key = (
+                            str(d.get("model", "")),
+                            str(d.get("task_id", "")),
+                            int(d.get("repetition", 0)),
+                        )
+                        if key in completed:
+                            d.setdefault(
+                                "artifacts", str(run_file.parent.relative_to(run_root))
+                            )
+                            self._baseline_runs.append(d)
+                resumed_count = len(completed)
+                if resumed_count:
+                    self.progress(
+                        f"Resuming: {resumed_count} completed pair(s) reused (hashes match)."
+                    )
+                pairs = [p for p in pairs if (p.model, p.task.id, p.repetition) not in completed]
+            except ValueError:
+                # Strict resume: refuse rather than mix incompatible inputs.
+                raise
+            except Exception as exc:
+                self.progress(f"warning: could not resume ({exc}); starting fresh")
+                self._checkpoint_completed = set()
+        else:
+            self._write_checkpoint(run_root)
+
+        done = resumed_count
+        total = resumed_count + len(pairs)
         interrupted = False
 
         def record(pair_result: tuple[dict[str, Any], dict[str, Any]]) -> None:
@@ -277,11 +610,21 @@ class ExperimentRunner:
             with self._lock:
                 control_runs.append(ctrl)
                 treatment_runs.append(treat)
+                self._checkpoint_completed.add(
+                    (str(ctrl["model"]), str(ctrl["task_id"]), int(ctrl["repetition"]))
+                )
+                self._write_checkpoint(run_root)
                 done += 1
+                ctrl_label = "control"
+                treat_label = (
+                    "treatment" if (self.comparison or self.config.is_skill_comparison) else "skill"
+                )
+                if self.config.is_skill_comparison and not self.comparison:
+                    ctrl_label, treat_label = "skill-A", "skill-B"
                 self.progress(
-                    f"[{done}/{len(pairs)}] {ctrl['model']} · {ctrl['task_id']} · "
-                    f"run {ctrl['repetition']}: control {_run_summary(ctrl)} | "
-                    f"{'treatment' if self.comparison else 'skill'} {_run_summary(treat)}"
+                    f"[{done}/{total}] {ctrl['model']} · {ctrl['task_id']} · "
+                    f"run {ctrl['repetition']}: {ctrl_label} {_run_summary(ctrl)} | "
+                    f"{treat_label} {_run_summary(treat)}"
                 )
 
         try:
@@ -306,7 +649,13 @@ class ExperimentRunner:
             self.progress("Interrupted: writing a report for the completed pairs...")
 
         results = self._aggregate(
-            run_root, timestamp_str, control_runs, treatment_runs, warnings, interrupted
+            run_root,
+            timestamp_str,
+            control_runs,
+            treatment_runs,
+            warnings,
+            interrupted,
+            provenance_snapshot=self._provenance_snapshot,
         )
         paths = create_reports(results, run_root)
         results["report"] = {k: (str(v) if v else None) for k, v in paths.items()}
@@ -322,52 +671,171 @@ class ExperimentRunner:
         fixture_repo = (task_dir / task.repo).resolve() if task.repo and task_dir else None
         if self.config.pr:
             fixture_repo = self.config.pr.repo
-        grader = Grader(task.grader, self.config.skill_names, model, task_dir=task_dir)
+        # Skill names differ per mode: A/B uses per-arm names for blind grading.
+        if self.config.is_skill_comparison:
+            grader_names = list(
+                dict.fromkeys(self.config.skill_a_names + self.config.skill_b_names)
+            )
+        else:
+            grader_names = self.config.skill_names
+        grader = Grader(task.grader, grader_names, model, task_dir=task_dir)
 
         rep_str = f"{pair.repetition:03d}"
         model_dir = safe_path_component(model)
         task_path = safe_path_component(task.id)
         ctrl_dir = run_root / model_dir / task_path / "control" / rep_str
         treat_dir = run_root / model_dir / task_path / "treatment" / rep_str
+        baseline_dir = run_root / model_dir / task_path / "baseline" / rep_str
         ctrl_dir.mkdir(parents=True, exist_ok=True)
         treat_dir.mkdir(parents=True, exist_ok=True)
+        if self.config.is_skill_comparison and self.config.include_baseline:
+            baseline_dir.mkdir(parents=True, exist_ok=True)
+
+        is_ab = self.config.is_skill_comparison
+        pr_mode = (self.comparison or {}).get("mode", "agent") if self.comparison else "agent"
+        is_correctness = bool(self.comparison) and pr_mode == "correctness"
+
+        # Arm -> skill root mapping.
+        if is_ab:
+            ctrl_skill = self.config.skill_a
+            treat_skill = self.config.skill_b
+            ctrl_is_treatment = True
+            treat_is_treatment = True
+        elif self.comparison:
+            ctrl_skill = None
+            treat_skill = None
+            ctrl_is_treatment = False
+            treat_is_treatment = False
+        else:
+            # Single-skill mode: control knows the skill so it can strip
+            # fixture copies; only the treatment arm installs it.
+            ctrl_skill = self.config.skill
+            treat_skill = self.config.skill
+            ctrl_is_treatment = False
+            treat_is_treatment = True
 
         with (
             tempfile.TemporaryDirectory(prefix="skilldiff-") as tmp_ctrl,
             tempfile.TemporaryDirectory(prefix="skilldiff-") as tmp_treat,
+            tempfile.TemporaryDirectory(prefix="skilldiff-") as tmp_base,
         ):
             workspaces = {
                 "control": Workspace(
                     root=Path(tmp_ctrl) / "workspace",
-                    is_treatment=False,
+                    is_treatment=ctrl_is_treatment,
                     source_commit=(self.comparison or {}).get("control_commit"),
-                    skill_dir=self.config.skill,
+                    skill_dir=ctrl_skill,
+                    strip_skill_dirs=([treat_skill] if is_ab and treat_skill else None),
                     fixture_repo=fixture_repo,
                     harness=self.config.harness,
                 ),
                 "treatment": Workspace(
                     root=Path(tmp_treat) / "workspace",
-                    is_treatment=True,
+                    is_treatment=treat_is_treatment,
                     source_commit=(self.comparison or {}).get("treatment_commit"),
-                    skill_dir=self.config.skill,
+                    skill_dir=treat_skill,
+                    strip_skill_dirs=([ctrl_skill] if is_ab and ctrl_skill else None),
                     fixture_repo=fixture_repo,
                     harness=self.config.harness,
                 ),
             }
+            if is_ab and self.config.include_baseline:
+                workspaces["baseline"] = Workspace(
+                    root=Path(tmp_base) / "workspace",
+                    is_treatment=False,
+                    source_commit=None,
+                    skill_dir=None,
+                    strip_skill_dirs=[
+                        s for s in (ctrl_skill, treat_skill) if s is not None
+                    ] or None,
+                    fixture_repo=fixture_repo,
+                    harness=self.config.harness,
+                )
             for ws in workspaces.values():
                 ws.setup()
 
-            # Randomize which arm runs first so warm caches, rate limits, and time-of-day
-            # effects do not systematically favor one arm.
-            order = ["control", "treatment"]
-            random.shuffle(order)
+            # Balanced arm order within each task/model (seeded, auditable).
+            order = balanced_arm_order(model, task.id, pair.repetition, self._seed)
             results: dict[str, RunResult] = {}
-            for arm in order:
-                results[arm] = self.agent_runner.run(
-                    task.prompt, workspaces[arm].root, model, self.config
-                )
+            if is_correctness:
+                # PR correctness: same external tests against untouched revisions.
+                # No agents run; workspaces are graded as-is.
+                from skilldiff.runner import RunResult as _RR
 
-            diffs = {arm: workspaces[arm].get_diff() for arm in order}
+                for arm in ("control", "treatment"):
+                    results[arm] = _RR(
+                        prompt=f"[correctness] untouched {arm} revision",
+                        response="",
+                        transcript="correctness mode: no agent session",
+                        duration=0.0,
+                        cost=0.0,
+                        input_tokens=0,
+                        output_tokens=0,
+                        tool_calls=0,
+                        exit_code=0,
+                        num_turns=0,
+                        skill_invoked=None,
+                        skill_available=None,
+                        status="correctness",
+                    )
+                # Persist each arm immediately (auditable even if grading fails).
+                for arm, arm_dir in (("control", ctrl_dir), ("treatment", treat_dir)):
+                    self._save_run_artifacts(
+                        arm_dir,
+                        {
+                            "model": model,
+                            "task_id": task.id,
+                            "repetition": pair.repetition,
+                            "arm": arm,
+                            "status": "correctness",
+                            "transcript": "correctness mode",
+                        },
+                        "correctness mode: no agent session",
+                        "",
+                    )
+            else:
+                for arm in order:
+                    if arm == "baseline":
+                        continue
+                    results[arm] = self.agent_runner.run(
+                        task.prompt, workspaces[arm].root, model, self.config
+                    )
+                    # Persist each arm immediately so rerunning failures cannot
+                    # silently improve the reported result; retries are logged.
+                    arm_dir = ctrl_dir if arm == "control" else treat_dir
+                    self._save_run_artifacts(
+                        arm_dir,
+                        {
+                            "model": model,
+                            "task_id": task.id,
+                            "repetition": pair.repetition,
+                            "arm": arm,
+                            "status": results[arm].status,
+                            "attempt": 1,
+                        },
+                        results[arm].transcript,
+                        "",
+                    )
+                # Optional no-skill baseline arm (same fixtures, interleaved).
+                if "baseline" in workspaces:
+                    results["baseline"] = self.agent_runner.run(
+                        task.prompt, workspaces["baseline"].root, model, self.config
+                    )
+                    self._save_run_artifacts(
+                        baseline_dir,
+                        {
+                            "model": model,
+                            "task_id": task.id,
+                            "repetition": pair.repetition,
+                            "arm": "baseline",
+                            "status": results["baseline"].status,
+                            "attempt": 1,
+                        },
+                        results["baseline"].transcript,
+                        "",
+                    )
+
+            diffs = {arm: workspaces[arm].get_diff() for arm in workspaces if arm in results}
             grade_ctrl, grade_treat = grader.grade_pair(
                 control_ws=workspaces["control"].root,
                 treatment_ws=workspaces["treatment"].root,
@@ -379,11 +847,20 @@ class ExperimentRunner:
                 treatment_transcript=results["treatment"].transcript,
             )
             grades = {"control": grade_ctrl, "treatment": grade_treat}
+            if "baseline" in results:
+                baseline_grade = Grader(
+                    task.grader, grader_names, model, task_dir=task_dir
+                ).grade_workspace(workspaces["baseline"].root)
+                grades["baseline"] = baseline_grade
 
             records: dict[str, dict[str, Any]] = {}
-            for arm, arm_dir in (("control", ctrl_dir), ("treatment", treat_dir)):
+            arm_dirs = {"control": ctrl_dir, "treatment": treat_dir}
+            if "baseline" in results:
+                arm_dirs["baseline"] = baseline_dir
+            for arm, arm_dir in arm_dirs.items():
                 res = results[arm]
-                if self.comparison:
+                # PR mode has no skills; A/B arms both carry a skill.
+                if self.comparison and not is_ab:
                     res.skill_invoked = None
                     res.skill_available = None
                 grade = grades[arm]
@@ -394,7 +871,10 @@ class ExperimentRunner:
                     "task_category": getattr(task, "category", "general"),
                     "repetition": pair.repetition,
                     "arm": arm,
-                    "run_order": order.index(arm) + 1,
+                    "run_order": (order.index(arm) + 1) if arm in order else 3,
+                    "seed": self._seed,
+                    "attempt": 1,
+                    "retries": [],
                     "status": res.status,
                     "error": (res.error or "")[:MAX_STORED_ERROR] or None,
                     "prompt": res.prompt,
@@ -417,12 +897,52 @@ class ExperimentRunner:
                     "feedback": grade.feedback,
                     "exit_code": res.exit_code,
                     "artifacts": str(arm_dir.relative_to(run_root)),
+                    "isolation_issues": workspaces[arm].isolation_issues or [],
                 }
                 if self.comparison:
                     records[arm]["source_commit"] = self.comparison[f"{arm}_commit"]
-                if arm == "control" and workspaces[arm].removed_from_control:
+                    records[arm]["pr_mode"] = pr_mode
+                    records[arm]["pr_pair"] = self.comparison.get("pair")
+                if is_ab:
+                    records[arm]["skill_revision"] = (
+                        "A" if arm == "control" else ("B" if arm == "treatment" else "baseline")
+                    )
+                    if arm == "control" and self.config.skill_a:
+                        records[arm]["skill_path"] = str(self.config.skill_a)
+                    if arm == "treatment" and self.config.skill_b:
+                        records[arm]["skill_path"] = str(self.config.skill_b)
+                if arm in ("control", "baseline") and workspaces[arm].removed_from_control:
                     records[arm]["removed_from_fixture"] = workspaces[arm].removed_from_control
+                # Failure policy decided before running: score_zero turns
+                # infrastructure failures into explicit zeros instead of N/A.
+                fp = dict(getattr(self.config, "failure_policy", {}) or {})
+                if (
+                    fp.get("agent_failure") == "zero"
+                    and records[arm].get("status") not in (None, "ok", "correctness")
+                    and records[arm].get("score") is None
+                ):
+                    records[arm]["score"] = 0.0
+                    records[arm]["success"] = False
+                    records[arm]["grade_status"] = "graded"
+                    records[arm]["failure_scored_zero"] = True
                 self._save_run_artifacts(arm_dir, records[arm], res.transcript, diff_text)
+
+            if "baseline" in records:
+                with self._lock:
+                    self._baseline_runs.append(records["baseline"])
+                    # Record retry costs: rerunning a failed baseline must not
+                    # silently drop its earlier cost.
+                    if records["baseline"].get("status") not in (None, "ok"):
+                        self._retry_history.append(
+                            {
+                                "model": model,
+                                "task_id": task.id,
+                                "repetition": pair.repetition,
+                                "arm": "baseline",
+                                "status": records["baseline"].get("status"),
+                                "cost": records["baseline"].get("cost"),
+                            }
+                        )
 
         return records["control"], records["treatment"]
 
@@ -436,6 +956,7 @@ class ExperimentRunner:
         treatment_runs: list[dict[str, Any]],
         warnings: list[str],
         interrupted: bool,
+        provenance_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         def sort_key(r: dict[str, Any]) -> tuple[int, int, int]:
             model_idx = (
@@ -447,6 +968,7 @@ class ExperimentRunner:
 
         control_runs.sort(key=sort_key)
         treatment_runs.sort(key=sort_key)
+        baseline_runs = sorted(list(self._baseline_runs), key=sort_key)
 
         by_model: dict[str, dict[str, Any]] = {}
         for model in self.config.models:
@@ -470,13 +992,16 @@ class ExperimentRunner:
                 "runs": {"control": m_ctrl, "treatment": m_treat},
             }
 
+        treat_label = (
+            "treatment" if (self.comparison or self.config.is_skill_comparison) else "skill"
+        )
         warnings = list(warnings)
         warnings.extend(
             _run_warnings(
                 control_runs,
                 treatment_runs,
                 self.tasks,
-                treatment_label="treatment" if self.comparison else "skill",
+                treatment_label=treat_label,
             )
         )
         if interrupted:
@@ -485,10 +1010,13 @@ class ExperimentRunner:
                 f"{len(self.config.models) * len(self.tasks) * self.config.runs} pairs."
             )
 
-        try:
-            provenance = collect_provenance(self.config, self.tasks)
-        except Exception:
-            provenance = {}
+        # Reuse the pre-execution snapshot so edits during a run cannot change later pairs.
+        provenance = provenance_snapshot if provenance_snapshot else self._provenance_snapshot
+        if not provenance:
+            try:
+                provenance = collect_provenance(self.config, self.tasks)
+            except Exception:
+                provenance = {}
         task_categories = {t.id: getattr(t, "category", "general") for t in self.tasks}
         task_details = [
             {
@@ -518,11 +1046,36 @@ class ExperimentRunner:
                 "tasks": sorted({r.get("task_id", "") for r in c_runs + t_runs}),
             }
 
+        # Control contamination invalidates the experiment (no clean baseline).
+        valid = True
+        contaminated = [
+            r for r in control_runs if r.get("skill_available") or r.get("skill_invoked")
+        ]
+        if contaminated and not self.comparison and not self.config.is_skill_comparison:
+            valid = False
+            warnings.append(
+                f"INVALID: {len(contaminated)} control run(s) had access to the skill. "
+                "There is no clean baseline; do not ship on this result."
+            )
+        # A/B arms both carry skills; baseline contamination still invalidates.
+        baseline_contam = [
+            r for r in baseline_runs if r.get("skill_invoked") or r.get("skill_available")
+        ]
+        if baseline_contam:
+            valid = False
+            warnings.append(
+                f"INVALID: {len(baseline_contam)} baseline run(s) loaded a skill revision. "
+                "The no-skill baseline is contaminated."
+            )
+
         return {
             "name": self.config.name,
             "skilldiff_version": __version__,
             "harness": self.config.harness,
             "skill": str(self.config.skill) if self.config.skill else None,
+            "skill_a": str(self.config.skill_a) if self.config.skill_a else None,
+            "skill_b": str(self.config.skill_b) if self.config.skill_b else None,
+            "skill_comparison": self._skill_comparison_info(),
             "comparison": self.comparison,
             "skill_names": self.config.skill_names,
             "timestamp": timestamp,
@@ -533,6 +1086,9 @@ class ExperimentRunner:
             "task_details": task_details,
             "tasks_count": len(self.tasks),
             "runs_per_arm": self.config.runs,
+            "seed": self._seed,
+            "failure_policy": dict(getattr(self.config, "failure_policy", {}) or {}),
+            "valid": valid,
             "interrupted": interrupted,
             "warnings": warnings,
             "settings": _settings_summary(self.config),
@@ -545,7 +1101,12 @@ class ExperimentRunner:
                 "skill": calculate_metrics(treatment_runs),
                 "paired": paired_comparison(control_runs, treatment_runs),
             },
-            "runs": {"control": control_runs, "treatment": treatment_runs},
+            "runs": {
+                "control": control_runs,
+                "treatment": treatment_runs,
+                **({"baseline": baseline_runs} if baseline_runs else {}),
+            },
+            "retries": list(self._retry_history),
         }
 
     def _save_run_artifacts(
@@ -564,7 +1125,7 @@ class ExperimentRunner:
 
 
 def _run_summary(run: dict[str, Any]) -> str:
-    if run.get("status") not in (None, "ok"):
+    if run.get("status") not in (None, "ok", "correctness"):
         return str(run["status"]).upper()
     if run.get("grade_status") in ("ungraded", "timeout", "error") or run.get("score") is None:
         label = {"ungraded": "ungraded", "timeout": "grader timeout", "error": "grader error"}.get(
@@ -572,7 +1133,8 @@ def _run_summary(run: dict[str, Any]) -> str:
         )
         dur = run.get("duration")
         dur_txt = f" in {float(dur):.0f}s" if dur is not None else ""
-        text = f"{label}{dur_txt}"
+        prefix = "correctness " if run.get("status") == "correctness" else ""
+        text = f"{prefix}{label}{dur_txt}"
     else:
         try:
             pct = round(float(run["score"]) * 100)
@@ -598,6 +1160,18 @@ def _settings_summary(config: ExperimentConfig) -> dict[str, Any]:
     thresholds = dict(getattr(config, "thresholds", {}) or {})
     if thresholds:
         out["thresholds"] = thresholds
+    failure_policy = dict(getattr(config, "failure_policy", {}) or {})
+    if failure_policy:
+        out["failure_policy"] = failure_policy
+    if getattr(config, "seed", None) is not None:
+        out["seed"] = config.seed
+    if getattr(config, "is_skill_comparison", False):
+        out["skill_a"] = str(config.skill_a) if config.skill_a else None
+        out["skill_b"] = str(config.skill_b) if config.skill_b else None
+        out["include_baseline"] = bool(config.include_baseline)
+    if config.pr is not None:
+        out["pr_mode"] = getattr(config.pr, "mode", "agent")
+        out["pr_pair"] = getattr(config.pr, "pair", "merge-base")
     return out
 
 
@@ -609,7 +1183,12 @@ def _run_warnings(
 ) -> list[str]:
     warnings: list[str] = []
     for arm_name, runs in (("control", control_runs), (treatment_label, treatment_runs)):
-        failed = [r for r in runs if r.get("status") not in (None, "ok")]
+        # Correctness mode has no agent sessions; don't flag it as infra failure.
+        failed = [
+            r
+            for r in runs
+            if r.get("status") not in (None, "ok", "correctness")
+        ]
         if failed:
             kinds = sorted({str(r.get("status")) for r in failed})
             sample = next((r.get("error") for r in failed if r.get("error")), None)
