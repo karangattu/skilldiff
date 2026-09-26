@@ -179,9 +179,17 @@ def test_format_checks_passed():
 
     assert _format_checks_passed({"feedback": '{"checks": [true, false, true]}'}) == "2/3"
     assert _format_checks_passed({"feedback": {"checks": [True, True]}}) == "2/2"
+    # Named-dict checks must look inside, not count nonempty dicts as True.
+    assert _format_checks_passed(
+        {"feedback": '{"checks": [{"passed": true}, {"passed": false}]}'}
+    ) == "1/2"
+    assert _format_checks_passed(
+        {"feedback": {"checks": [{"name": "a", "passed": True}, {"name": "b", "passed": False}]}}
+    ) == "1/2"
     assert _format_checks_passed({"success": True}) == "1/1"
     assert _format_checks_passed({"success": False}) == "0/1"
     assert _format_checks_passed({}) == "-"
+    assert _format_checks_passed({"grade_status": "ungraded"}) == "N/A"
 
 
 def test_build_quarto_report_with_runs_table_and_takeaways():
@@ -244,8 +252,9 @@ def test_build_quarto_report_with_runs_table_and_takeaways():
     assert "lower in 1, and tied in 0 of 1" in report
     assert "**Sample size.**" in report
     assert "## Run details" in report
-    assert "| t1 | 1 | Control | ok | 100% | 3/3 | ? | $0.00 | 60s | - | 84k | 0 |" in report
-    assert "| t1 | 1 | Skill | ok | 80% | 2/3 | ? | $0.00 | 50s | - | 74k | 0 |" in report
+    # Missing cost/turns are N/A, not zero/-.
+    assert "| t1 | 1 | Control | ok | 100% | 3/3 | ? | N/A | 60s | N/A | 84k | 0 |" in report
+    assert "| t1 | 1 | Skill | ok | 80% | 2/3 | ? | N/A | 50s | N/A | 74k | 0 |" in report
     assert "One pair can't separate a real effect from noise" in report
 
 
@@ -291,7 +300,10 @@ def test_report_verdict_uses_confidence_interval():
     treatment = _runs("treatment", [1.0] * 6, 0.25, skill_invoked=True)
     md = reporter.build_markdown_report(_results(control, treatment))
     assert "> [!TIP]" in md
-    assert "improved task score by **+100 pp** (95% CI +100 to +100 pp, 6 paired runs)" in md
+    assert "improved task score by **+100 pp**" in md
+    # Collapsed intervals and valid-pair counts flagged in headline/CI.
+    assert "CI collapsed" in md
+    assert "(n=6)" in md
     assert "With the skill, runs cost 50% less, summed over all pairs." in md
     assert "| Skill used | unknown | 6/6 |" in md
     assert "**Adoption.** The agent used the skill in 6 of 6 skill runs" in md
