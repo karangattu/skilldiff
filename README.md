@@ -235,6 +235,7 @@ You can set practical limits in `skilldiff.yaml`:
 thresholds:
   acceptable_score_regression_pp: 5
   required_cost_reduction_pct: 10
+  required_token_reduction_pct: 20  # session-token saving (compression)
   meaningful_score_gain_pp: 5
 failure_policy:
   agent_failure: exclude  # or "zero" (failed sessions score 0)
@@ -343,7 +344,7 @@ Reports label the arms per preset (Original/Minified, Skill A/Skill B, Without/W
 | `skilldiff init --skill-a A --skill-b B [--include-baseline] [--preset revision\|compression] [--dir D]` | Make a skill A/B test with paired results |
 | `skilldiff init --pr N --repo PATH [--base REF] [--pr-mode M] [--pr-pair P]` | Make a PR test from local refs |
 | `skilldiff check [-c CONFIG]` | Check the config, the CLI, the skill, isolation, and the graders |
-| `skilldiff run [-c CONFIG] [--runs N] [-j N] [-m MODEL] [-t TASK] [--resume] [--seed N]` | Run the test |
+| `skilldiff run [-c CONFIG] [--runs N] [-j N] [-m MODEL] [-t TASK] [--resume \| --resume-from DIR] [--seed N]` | Run the test (resume reuses pairs only when hashes match) |
 | `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run |
 | `skilldiff report [RUN_DIR]` | Rebuild reports for a run |
 | `skilldiff compare RUN_A RUN_B [--json] [--strict]` | Compare two runs |
@@ -353,15 +354,15 @@ Reports label the arms per preset (Original/Minified, Skill A/Skill B, Without/W
 <details>
 <summary>Harness setup</summary>
 
-Claude Code. The default uses your subscription. SkillDiff removes `ANTHROPIC_API_KEY` from each run. To bill through the API, set `auth: api_key` and export the key.
+Claude Code. The default uses your subscription. SkillDiff removes `ANTHROPIC_API_KEY` from each run. To bill through the API, set `auth: api_key` and export the key. Sandboxing is `permission_mode` plus `allowed_tools`, and `isolate: true` keeps user-level skills, plugins, and `CLAUDE.md` out of both arms.
 
-Codex. The default uses stored login and removes `OPENAI_API_KEY`.
+Codex. The default uses stored login and removes `OPENAI_API_KEY`. Sandboxing is `sandbox: workspace-write` (or `dangerously_bypass_approvals_and_sandbox`).
 
-OpenCode. The default `service: go` uses your Go subscription. Sign in with `opencode providers login`.
+OpenCode. The default `service: go` uses your Go subscription. Sign in with `opencode providers login`. Permissions are `dangerously_skip_permissions`.
 
-Antigravity. Short names expand to full models. `gemini-3.8` becomes `gemini-3.8-flash-medium`.
+Antigravity. Short names expand to full models. `gemini-3.8` becomes `gemini-3.8-flash-medium`. Permissions are `dangerously_skip_permissions`.
 
-Each harness accepts `bin_path` and `extra_args`. You can also set `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, or `AGY_BIN`.
+Sign in with each CLI's normal login before you run. Each harness accepts `bin_path` and `extra_args`. You can also set `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, or `AGY_BIN`.
 
 </details>
 

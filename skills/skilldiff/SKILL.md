@@ -30,14 +30,32 @@ Understand what the skill claims to improve before you write any task.
 ## 2. Scaffold
 
 Create the experiment outside the skill's own repository, so that the fixtures do not
-already contain the skill:
+already contain the skill. Pick the harness the user actually uses (`claude`
+default, `codex`, `opencode`, `antigravity`) and pass it to every `init`:
 
 ```bash
 skilldiff init --skill /abs/path/to/skill --dir ./skill-eval --harness claude
+skilldiff init --skill /abs/path/to/skill --dir ./skill-eval --harness codex
+skilldiff init --skill /abs/path/to/skill --dir ./skill-eval --harness opencode
+skilldiff init --skill /abs/path/to/skill --dir ./skill-eval --harness antigravity
 ```
 
-Harnesses: `claude` (default), `codex`, `opencode`, and `antigravity`. Ask the user
-which agent CLI they use if it is not obvious.
+Ask the user which agent CLI they use if it is not obvious. The other three
+modes scaffold the same way:
+
+```bash
+# PR: code without the PR vs code with the PR
+skilldiff init --pr 42 --repo /abs/path/to/repo --base origin/main --dir ./pr-42-eval --harness claude
+# Skill A vs skill B (add --include-baseline for a no-skill arm per pair)
+skilldiff init --skill-a /abs/path/to/v1 --skill-b /abs/path/to/v2 --dir ./skill-ab --harness claude
+# Original vs minified (triggers must match; see section 6)
+skilldiff init --skill-a /abs/path/to/original --skill-b /abs/path/to/minified --preset compression --dir ./skill-compression --harness claude
+```
+
+You never install the skill into workspaces yourself. SkillDiff installs the
+right revision into each fresh workspace per harness (`.claude/skills` for
+Claude, `.codex/skills` plus `.agents/skills` for Codex, `.opencode/skills`
+plus `.agents/skills` for OpenCode, `.agents/skills` for Antigravity).
 
 ## 3. Design tasks (the important part)
 
@@ -85,8 +103,12 @@ Graders run with the workspace as the working directory. They also get these
 environment variables: `SKILLDIFF_RESPONSE_FILE` (the agent's final message),
 `SKILLDIFF_DIFF_FILE` (the agent's git diff), and `SKILLDIFF_TASK_DIR`.
 
-If the skill runs CLI commands, allow-list them for Claude, for example
-`claude.allowed_tools: ["Bash(mytool *)"]`. Both arms get the same permissions.
+If the skill runs CLI commands, allow-list them per harness so both arms get the
+same permissions. For Claude use `claude.allowed_tools` (for example
+`["Bash(mytool *)"]`); for Codex use `codex.sandbox` (default
+`workspace-write`); for OpenCode and Antigravity use
+`dangerously_skip_permissions`. Keep agents confined to the workspace so they
+cannot read grader files through parent paths.
 
 ## 4. Validate, then smoke-test
 
@@ -100,16 +122,19 @@ Fix every `FAIL` and read every `warn`. When `check` is clean, run one pair per 
 skilldiff run -c skill-eval/skilldiff.yaml --runs 1
 ```
 
-Open some transcripts under `runs/<timestamp>/<model>/<task>/{control,treatment}/`. Did
-the skill arm load the skill? Did the grader score what you expected?
+Open some transcripts under `runs/<timestamp>/<model>/<task>/{control,treatment}/`
+(plus `{baseline}/` when the baseline arm is enabled). Did the skill arm load
+the skill? Did the grader score what you expected? In PR correctness mode there
+are no agent sessions to inspect; check the graded revision outputs instead.
 
-**Cost:** each run starts `models × tasks × runs × 2` agent sessions. `check` prints
-this count and, for Claude, the maximum spend. **Confirm with the user before you run
-more than a smoke test.**
+**Cost:** each run starts `models × tasks × runs × 2` agent sessions (`×3` with
+`include_baseline`). `check` prints this count and, for Claude, the maximum
+spend. **Confirm with the user before you run more than a smoke test.**
 
 **Running from inside an agent:** skilldiff starts separate, non-interactive agent
-sessions (`claude -p`, `codex exec`, and so on). They need network access and a
-signed-in CLI. Keep these points in mind:
+sessions (`claude -p`, `codex exec`, `opencode run`, `agy -p`). They need network
+access and a signed-in CLI for whichever harness the experiment uses. Keep these
+points in mind:
 
 - A full run usually takes longer than your shell tool's timeout. Start it in the
   background, redirect its output to a log file, and poll the log or
@@ -119,8 +144,10 @@ signed-in CLI. Keep these points in mind:
   in a loop. Give the user the exact `skilldiff run ...` command to run in their own
   terminal, then read the results with `skilldiff results`.
 - If `check` reports that the harness CLI is missing, or a smoke run fails with "Not
-  logged in", ask the user to sign in (for example `claude auth login`). Never ask for
-  or handle their credentials yourself.
+  logged in", ask the user to sign in with that harness's normal login (for example
+  `claude auth login` or `opencode providers login`). Never ask for or handle their
+  credentials yourself. A missing binary can also be set per harness with `bin_path`
+  or `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, `AGY_BIN`.
 
 ## 5. Full run and interpretation
 
@@ -135,8 +162,10 @@ runs: 5
 `runs: 5` is a starting point, not a sufficiency rule. Many repetitions of two
 tasks still describe only those two tasks. Prefer 4+ tasks across categories
 over 10 repetitions of one task. Do not add runs until the interval looks good.
-Use `--parallel N` only if the user's rate limits allow it. Use `--resume` to
-continue an interrupted run; completed pairs reuse only when input hashes match.
+Use `--parallel N` only if the user's rate limits allow it. Use `--resume` (or
+`--resume-from <run-dir>`) to continue an interrupted run; completed pairs are
+reused only when skill, task, PR revision, and execution settings match, and a
+mismatch refuses instead of silently mixing results.
 
 Read `report.md` (for pull requests) or `report.html`. Report these results:
 
