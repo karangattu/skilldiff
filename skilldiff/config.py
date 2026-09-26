@@ -60,6 +60,10 @@ class TaskConfig:
     repo: Optional[str] = None
     grader: Optional[GraderConfig] = None
     source_path: Optional[Path] = None
+    # Task relevance: intended (skill should help), irrelevant (skill should
+    # stay out of the way), ambiguous (unclear trigger), general (default),
+    # or any custom label. Reported separately in By category.
+    category: str = "general"
 
 
 @dataclass
@@ -85,6 +89,11 @@ class ExperimentConfig:
     timeout_seconds: Optional[float] = 1800.0
     parallel: int = 1
     pr: Optional[PRConfig] = None
+    # Practical decision thresholds for verdicts (all optional):
+    #   acceptable_score_regression_pp: tolerated score drop, e.g. 5 = -5pp ok.
+    #   required_cost_reduction_pct: required saving, e.g. 10 = 10% cheaper.
+    #   meaningful_score_gain_pp: gain needed to call an improvement useful.
+    thresholds: dict[str, float] = field(default_factory=dict)
 
     @property
     def skill_dirs(self) -> list[Path]:
@@ -162,6 +171,7 @@ def load_task(task_path: Path) -> TaskConfig:
 
     grader_data = data.get("grader")
     grader = parse_grader_config(grader_data)
+    category = str(data.get("category", "general") or "general").strip().lower() or "general"
 
     return TaskConfig(
         id=str(task_id),
@@ -169,6 +179,7 @@ def load_task(task_path: Path) -> TaskConfig:
         repo=data.get("repo"),
         grader=grader,
         source_path=task_path.resolve(),
+        category=category,
     )
 
 
@@ -305,6 +316,21 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     if parallel < 1:
         raise ValueError("Experiment 'parallel' must be at least 1")
 
+    thresholds: dict[str, float] = {}
+    raw_thresholds = data.get("thresholds") or {}
+    if not isinstance(raw_thresholds, dict):
+        raise ValueError("Experiment 'thresholds' must be a mapping")
+    for key in (
+        "acceptable_score_regression_pp",
+        "required_cost_reduction_pct",
+        "meaningful_score_gain_pp",
+    ):
+        if key in raw_thresholds and raw_thresholds[key] is not None:
+            try:
+                thresholds[key] = float(raw_thresholds[key])
+            except (TypeError, ValueError):
+                raise ValueError(f"Experiment thresholds.{key} must be a number")
+
     exp_config = ExperimentConfig(
         name=name,
         skill=skill_path,
@@ -320,6 +346,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         config_path=experiment_path,
         timeout_seconds=timeout_seconds,
         parallel=parallel,
+        thresholds=thresholds,
     )
 
     loaded_tasks: list[TaskConfig] = []
