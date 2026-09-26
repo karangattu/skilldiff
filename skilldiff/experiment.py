@@ -156,6 +156,8 @@ def collect_provenance(config: ExperimentConfig, tasks: list[TaskConfig]) -> dic
         binary = config.harness
     agent_cli = {config.harness: _cli_version(binary)}
 
+    from skilldiff.pricing import PRICING_DATE, PRICING_VERSION, SOURCES
+
     return {
         "skill_hash": skill_hash,
         "skills": skill_hashes,
@@ -163,6 +165,9 @@ def collect_provenance(config: ExperimentConfig, tasks: list[TaskConfig]) -> dic
         "task_files": task_entries,
         "agent_cli": agent_cli,
         "skilldiff_version": __version__,
+        "pricing_version": PRICING_VERSION,
+        "pricing_date": PRICING_DATE,
+        "pricing_sources": SOURCES,
         "system": {"os": platform.system(), "python": platform.python_version()},
     }
 
@@ -380,6 +385,9 @@ class ExperimentRunner:
             )
             grades = {"control": grade_ctrl, "treatment": grade_treat}
 
+            from skilldiff.pricing import price_run
+
+            overrides = getattr(self.config, "pricing", None) or None
             records: dict[str, dict[str, Any]] = {}
             for arm, arm_dir in (("control", ctrl_dir), ("treatment", treat_dir)):
                 res = results[arm]
@@ -388,6 +396,19 @@ class ExperimentRunner:
                     res.skill_available = None
                 grade = grades[arm]
                 diff_text, files = diffs[arm]
+                harness_cost = res.cost
+                cost, cost_basis = price_run(
+                    model,
+                    self.config.harness,
+                    self.config,
+                    res.input_tokens,
+                    res.cache_read_tokens,
+                    res.cache_creation_tokens,
+                    res.output_tokens,
+                    harness_cost,
+                    res.status,
+                    overrides,
+                )
                 records[arm] = {
                     "model": model,
                     "task_id": task.id,
@@ -400,7 +421,9 @@ class ExperimentRunner:
                     "prompt": res.prompt,
                     "response": res.response,
                     "duration": res.duration,
-                    "cost": res.cost,
+                    "cost": cost,
+                    "harness_cost": harness_cost,
+                    "cost_basis": cost_basis,
                     "input_tokens": res.input_tokens,
                     "cache_read_tokens": res.cache_read_tokens,
                     "cache_creation_tokens": res.cache_creation_tokens,
@@ -598,6 +621,15 @@ def _settings_summary(config: ExperimentConfig) -> dict[str, Any]:
     thresholds = dict(getattr(config, "thresholds", {}) or {})
     if thresholds:
         out["thresholds"] = thresholds
+    pricing = dict(getattr(config, "pricing", {}) or {})
+    if pricing:
+        out["pricing"] = pricing
+    from skilldiff.pricing import PRICING_VERSION, subscription_mode
+
+    if subscription_mode(config.harness, config):
+        out["cost_basis"] = f"token-pricing/{PRICING_VERSION}"
+    else:
+        out["cost_basis"] = "harness"
     return out
 
 
@@ -665,6 +697,16 @@ def _run_warnings(
         warnings.append(
             "A fixture already contained the skill; skilldiff removed it from the control "
             "workspace."
+        )
+    unknown_price = [
+        r for r in control_runs + treatment_runs if r.get("cost_basis") == "harness-unknown-model"
+    ]
+    if unknown_price:
+        models = sorted({str(r.get("model", "")) for r in unknown_price})
+        warnings.append(
+            "No pricing-table entry for " + ", ".join(models) + "; those runs keep "
+            "the harness-reported cost instead of token-based API-equivalent cost. "
+            "Look up the price and add a `pricing:` override, then rerun."
         )
     ungraded = [t.id for t in tasks if not (t.grader and t.grader.command)]
     if ungraded:

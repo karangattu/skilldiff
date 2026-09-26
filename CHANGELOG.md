@@ -4,6 +4,15 @@ All notable changes to this project use this file.
 The format follows Keep a Changelog.
 This project uses semantic versioning.
 
+## [0.4.0] - 2026-09-26
+
+### Added
+
+- Token-based subscription costs. On subscription auth, cost is recomputed from token counts with a versioned rate table (looked up 2026-09-26). The table shows API-equivalent cost only. Each run stores `cost_basis` and the harness cost. Reports name the pricing version.
+- `skilldiff prices` command. Shows the rate table, its date, and its sources in text or JSON.
+- `pricing:` config overrides. The evaluating agent checks current provider pages before a full run and overrides stale rates without code changes.
+- Pricing provenance. Results record the pricing version, date, and sources. Unknown models keep harness cost and raise a warning.
+
 ## [0.3.0] - 2026-09-26
 
 ### Added

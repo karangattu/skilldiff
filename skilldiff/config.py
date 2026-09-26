@@ -94,6 +94,10 @@ class ExperimentConfig:
     #   required_cost_reduction_pct: required saving, e.g. 10 = 10% cheaper.
     #   meaningful_score_gain_pp: gain needed to call an improvement useful.
     thresholds: dict[str, float] = field(default_factory=dict)
+    # Optional per-model pricing overrides, e.g.
+    # pricing: {"claude-sonnet-5": {"input": 2.0, "output": 10.0}}.
+    # The evaluating agent refreshes these from provider pages when stale.
+    pricing: dict[str, Any] = field(default_factory=dict)
 
     @property
     def skill_dirs(self) -> list[Path]:
@@ -283,9 +287,9 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     )
 
     opencode_data = data.get("opencode") or {}
-    service = str(
-        opencode_data.get("service", opencode_data.get("subscription", "go"))
-    ).lower().strip()
+    service = (
+        str(opencode_data.get("service", opencode_data.get("subscription", "go"))).lower().strip()
+    )
     if service not in {"go", "zen"}:
         raise ValueError("opencode.service must be 'go' (subscription) or 'zen' (pay-as-you-go)")
     default_provider = "opencode-go" if service == "go" else "opencode"
@@ -293,9 +297,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     opencode_cfg = OpenCodeConfig(
         service=service,
         provider=provider,
-        dangerously_skip_permissions=bool(
-            opencode_data.get("dangerously_skip_permissions", True)
-        ),
+        dangerously_skip_permissions=bool(opencode_data.get("dangerously_skip_permissions", True)),
         variant=opencode_data.get("variant"),
         bin_path=opencode_data.get("bin_path"),
         extra_args=[str(a) for a in opencode_data.get("extra_args", [])],
@@ -331,6 +333,11 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
             except (TypeError, ValueError):
                 raise ValueError(f"Experiment thresholds.{key} must be a number")
 
+    raw_pricing = data.get("pricing") or {}
+    if not isinstance(raw_pricing, dict):
+        raise ValueError("Experiment 'pricing' must be a mapping")
+    pricing = {str(k): v for k, v in raw_pricing.items() if isinstance(v, dict)}
+
     exp_config = ExperimentConfig(
         name=name,
         skill=skill_path,
@@ -347,6 +354,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         timeout_seconds=timeout_seconds,
         parallel=parallel,
         thresholds=thresholds,
+        pricing=pricing,
     )
 
     loaded_tasks: list[TaskConfig] = []

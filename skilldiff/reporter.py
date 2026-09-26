@@ -255,6 +255,25 @@ def _skill_usage(metrics: dict[str, Any]) -> str:
     return f"{metrics.get('skill_used_count', 0)}/{known}"
 
 
+def _cost_basis_note(results: dict[str, Any]) -> str:
+    prov = results.get("provenance") or {}
+    version = prov.get("pricing_version") or "unversioned"
+    date = prov.get("pricing_date") or "unknown date"
+    settings = results.get("settings") or {}
+    basis = settings.get("cost_basis", "")
+    if "token-pricing" in str(basis):
+        return (
+            "Tokens include cached input where the harness reports it. Cost is the "
+            f"API-equivalent price recomputed from token counts (pricing {version}, "
+            f"{date}); actual subscription spend is $0 at the margin. "
+            "Refresh with `skilldiff prices`."
+        )
+    return (
+        "Tokens include cached input where the harness reports it. Cost is the "
+        "harness-reported price (API billing)."
+    )
+
+
 def render_report_table(
     experiment_name: str,
     control_metrics: dict[str, Any],
@@ -1425,6 +1444,10 @@ def build_report_blocks(
         setup_items.append("**thresholds:** " + ", ".join(f"{k}={v}" for k, v in th.items()))
     prov = results.get("provenance") or {}
     if prov:
+        if prov.get("pricing_version"):
+            setup_items.append(
+                f"**Pricing:** `{prov['pricing_version']}` ({prov.get('pricing_date', '?')})"
+            )
         if prov.get("skill_hash"):
             setup_items.append(f"**Skill hash:** `{prov['skill_hash'][:12]}`")
         if prov.get("agent_cli"):
@@ -1454,8 +1477,7 @@ def build_report_blocks(
                 "the difference could be noise. `n=X/Y` shows valid pairs for that metric.",
                 "Unknown values are **N/A** (ungraded tasks, grader timeouts/errors, or "
                 "missing cost/tokens). Valid-pair counts show how many pairs contributed.",
-                "Tokens include cached input where the harness reports it. Claude's cost "
-                "is the API-equivalent price, even on a subscription.",
+                _cost_basis_note(results),
                 "Checks `N/A` means no named checks; `1/2*` means one check had unknown status.",
                 *(
                     []

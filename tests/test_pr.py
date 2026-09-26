@@ -67,7 +67,9 @@ def test_pr_pipeline_isolates_revisions_and_reports_treatment(pr_experiment, mon
     assert all(r["score"] == 0 for r in results["runs"]["control"])
     assert all(r["score"] == 1 for r in results["runs"]["treatment"])
     assert all(r["skill_invoked"] is None for r in results["runs"]["treatment"])
-    assert not results["warnings"]
+    # The fake "test" model has no pricing-table entry, so only that warning
+    # may appear.
+    assert all("pricing-table" in w for w in results["warnings"])
     root = Path(results["run_dir"])
     for arm, sha in [("control", base), ("treatment", head)]:
         for r in results["runs"][arm]:
