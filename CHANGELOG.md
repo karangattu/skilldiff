@@ -6,6 +6,32 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Closing decision. Reports end with a decision table — score, cost, time, tokens,
+  and adoption, each with paired change, 95% CI, and a plain reading — followed by
+  one bottom line: SHIP, DO NOT SHIP, or NEEDS MORE RUNS with the reason. The
+  same statistics and verdict logic decide it: a CI that includes zero is never
+  SHIP, an established regression is never SHIP, and pre-registered thresholds
+  must clear by bounds. The terminal summary prints the same recommendation.
+- Reproducible API-equivalent costs. `pricing:` in `skilldiff.yaml` records
+  per-1M-token rates for each model with source and date before the run. The run
+  saves them with its token breakdown, reports price it per arm (input, cache
+  read, cache write, output), and regenerating a report reproduces the estimate
+  without re-looking up prices. Models without recorded rates are named and
+  excluded.
+- Evaluation completeness. One row shows planned/completed pairs, usable score
+  pairs, agent failures, and grader errors together, so partial results can be
+  judged before reading effects.
+- Explicit dev/held-out reporting. Tasks carry `split: dev|held-out` or infer it
+  from `dev/`/`heldout/` directories (a contradiction refuses). Reports show a
+  By split table, and when held-out pairs exist the headline and closing decision
+  use them only, so development results cannot stand in for validation.
+- A committed portable example (`examples/csv-totals`): a skill, dev and held-out
+  tasks, fixtures, a deterministic grader, recorded pricing, and a regenerable
+  sample report (`make_sample.py`).
+- LICENSE file (MIT, matching `pyproject.toml`).
+
 ### Fixed
 
 - Resume now accepts both saved task-ID formats and validates execution settings,

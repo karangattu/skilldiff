@@ -33,6 +33,16 @@ Each run writes four files:
 
 Each run also saves the transcript and the diff for each agent run.
 
+Reports end with a **Closing decision** table — score, cost, time, tokens, and
+adoption, each with paired change, 95% CI, and a plain reading — followed by one
+bottom line: SHIP, DO NOT SHIP, or NEEDS MORE RUNS, with the reason. When the
+config records `pricing:` rates (per 1M tokens, with source and date), reports
+also reproduce an **API-equivalent cost** table from the saved token breakdown.
+
+A complete small evaluation lives in [`examples/csv-totals`](examples/csv-totals):
+a skill, dev and held-out tasks, fixtures, a deterministic grader, and a
+committed sample report. Copy it as a starting point.
+
 ## Example result
 
 The numbers below are examples. They are not real results.
@@ -53,14 +63,14 @@ How to read the table:
 - If the interval includes zero, the result can be noise.
 - `N/A` means the value is unknown, not zero.
 - `n=X/Y` shows how many pairs gave a value.
-- Cost is the harness-reported price. On subscription auth the real spend is $0 at the margin. The evaluating agent looks up current provider prices and shows the API-equivalent cost from token counts in its final summary.
+- Cost is the harness-reported price. On subscription auth the real spend is $0 at the margin. Record provider rates in `skilldiff.yaml` (`pricing:` with source, date, and per-model rates per 1M tokens) before the run; the report then prices the saved token breakdown itself, and regenerating the report reproduces the estimate.
 
 <details>
 <summary>Tips for clear results</summary>
 
 - Use 5 or more runs as a starting point, not a rule. Fix the budget before you look at results.
 - Cover four kinds: intended tasks, normal representative tasks, irrelevant tasks, and ambiguous plus regression tasks.
-- Split `tasks/dev/` (iterate) from `tasks/heldout/` (freeze before the full run).
+- Split `tasks/dev/` (iterate) from `tasks/heldout/` (freeze before the full run). The report keeps them separate in By split and decides on held-out only.
 - Write tasks that need what only the skill gives. Good tasks use obscure APIs, recent changes, or house rules.
 - Do not name the skill in prompts. Adoption is part of the test.
 - If control scores 100%, the task is too easy. The report calls this a ceiling effect.
@@ -89,8 +99,8 @@ Then complete these steps:
 <details>
 <summary>What each folder holds</summary>
 
-- `skilldiff.yaml`: name, skill path, harness, models, tasks, run count, seed, and failure policy.
-- `tasks/`: one YAML file per task with an id, a prompt, a category, and optional `validation: {good, broken}`.
+- `skilldiff.yaml`: name, skill path, harness, models, tasks, run count, seed, thresholds, failure policy, and optional `pricing:` rates (source, date, per-1M-token prices) for reproducible API-equivalent costs.
+- `tasks/`: one YAML file per task with an id, a prompt, a category, an optional `split: dev|held-out`, and optional `validation: {good, broken}`.
 - `fixtures/`: small test projects. SkillDiff copies each fixture to a fresh workspace for each run, without `.git` history. Escaping symlinks are rejected.
 - `graders/`: scripts that grade the work in each workspace.
 
@@ -173,11 +183,12 @@ flowchart LR
 <details>
 <summary>Tasks, graders, and categories</summary>
 
-A task file holds an id, a prompt, a category, and a grader:
+A task file holds an id, a prompt, a category, a split, and a grader:
 
 ```yaml
 id: fix-parser
 category: intended
+split: held-out        # dev (iterate) or held-out (frozen validation)
 repo: ../fixtures/parser
 prompt: |
   Fix the parser so that it accepts empty input. Keep all tests green.
@@ -194,6 +205,12 @@ Categories:
 - `general`: default when you set no category.
 
 The report shows adoption and results for each group in By category.
+
+Splits separate development from validation. `split` is `dev` or `held-out`
+(it is inferred from `tasks/dev/` and `tasks/heldout/` directories and may be
+omitted; a contradiction refuses). The report shows a By split table, and when
+held-out pairs exist the headline and closing decision use them only, so
+development results cannot stand in for validation.
 
 A grader runs in the workspace after the agent stops:
 
@@ -244,6 +261,10 @@ failure_policy:
 ```
 
 Shipping needs bounds to clear the limits, not point estimates. The verdict checks the lower confidence bound for score and requires the cost and token intervals to exclude increases. It separates a useful gain from a small but real gain. For compression, equal scores still evaluate thresholds: quality preserved plus proven resource savings is the win.
+
+The report ends with one bottom line applying these rules: **SHIP**, **DO NOT
+SHIP**, or **NEEDS MORE RUNS**, with the reason. A confidence interval that
+includes zero is never SHIP, and an established regression is never SHIP.
 
 The headline also flags weak proof:
 

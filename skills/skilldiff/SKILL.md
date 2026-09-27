@@ -80,6 +80,11 @@ Split tasks before you run:
   tasks, fixtures, or graders after you see results. Report dev and held-out
   separately; the held-out set is the honest estimate.
 
+The split is recorded per task (`split: dev` or `split: held-out`, or inferred
+from the `dev/`/`heldout/` directory) and shown in the report's **By split**
+table. The closing recommendation uses held-out pairs only when they exist, so
+development results cannot stand in for validation.
+
 Other rules:
 
 - **Don't mention the skill in the prompt.** Write the request the way a real user
@@ -157,6 +162,15 @@ Fix the stopping rule before you look at results. Write it in `skilldiff.yaml`:
 runs: 5
 # seed: 1234   # recorded per run; balanced arm order is reproducible
 # failure_policy: {agent_failure: exclude, missing: exclude}
+# API-equivalent cost basis: look the rates up on the provider's own pricing
+# page BEFORE the run and record them here, so the saved run reproduces the
+# estimate and the report shows the API-equivalent cost per arm:
+# pricing:
+#   source: https://www.anthropic.com/pricing
+#   date: "2026-09-27"
+#   currency: USD
+#   rates:
+#     claude-sonnet-5: {input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75}
 ```
 
 `runs: 5` is a starting point, not a sufficiency rule. Many repetitions of two
@@ -176,22 +190,32 @@ Read `report.md` (for pull requests) or `report.html`. Report these results:
 2. **Adoption.** Say how many skill runs actually used the skill. Low adoption usually
    means that the skill's `description` doesn't match how users ask for the task.
 3. **Efficiency.** Give the cost, time, and token changes, and say which ones are
-   inside the noise. Then add a final cost table: look up the current per-token
-   prices for the models in the run on the providers' own pricing pages, multiply
-   them by the token counts in the report, and show the API-equivalent cost per
-   arm. Name the price source and date next to the table. On subscription auth
-   the real spend is $0 at the margin, so this table is the comparison that
-   matters. Use this shape, with one plain verdict per row:
+   inside the noise. On subscription auth the real spend is $0 at the margin, so
+   the API-equivalent cost is the comparison that matters. If the run recorded
+   `pricing:` rates (source, date, and per-model rates per 1M tokens, written to
+   `skilldiff.yaml` before the run), the report already ends with an
+   **API-equivalent cost** table — recorded token breakdown per arm × those
+   rates — and regenerating the report reproduces the estimate exactly. Carry
+   that table into your summary. If the run has no recorded rates, look up the
+   current per-token prices on the providers' own pricing pages yourself,
+   multiply them by the token counts in the report, and show the API-equivalent
+   cost per arm, naming the price source and date next to the table. Use this
+   shape, with one plain verdict per row:
 
    | Metric | Control | Skill | Change | Reading |
    |---|---|---|---|---|
    | Task score | 50% | 83% | +33 pp | No clear difference |
    | Cost | $0.50 | $0.40 | -$0.10 | Costs less |
 
-   End with one bottom line: SHIP, DO NOT SHIP, or NEEDS MORE RUNS, plus one
-   sentence that states why.
+   The report itself ends with a **Closing decision** table — score, cost, time,
+   tokens, and adoption, each with paired change, 95% CI, and one plain reading —
+   followed by the bottom line: SHIP, DO NOT SHIP, or NEEDS MORE RUNS, plus one
+   sentence that states why. End your summary with that same bottom line and
+   reason; do not invent a different verdict from the one the report computed.
 4. **Warnings.** Report agent errors or timeouts, control contamination, tasks without
-   graders, and ceiling effects.
+   graders, and ceiling effects. The report's **Evaluation completeness** row counts
+   planned/completed pairs, usable score pairs, agent failures, and grader errors in
+   one place; quote it when results are partial.
 5. **Next step.** Suggest harder tasks, a sharper skill description, or more
    repetitions, depending on the result.
 
