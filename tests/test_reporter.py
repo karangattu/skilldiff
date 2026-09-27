@@ -304,7 +304,7 @@ def test_report_verdict_uses_confidence_interval():
     # Collapsed intervals and valid-pair counts flagged in headline/CI.
     assert "CI collapsed" in md
     assert "(n=6)" in md
-    assert "With the skill, runs cost 50% less, summed over all pairs." in md
+    assert "With the skill, runs cost 50% less, summed over the compared pairs." in md
     assert "| Skill used | unknown | 6/6 |" in md
     assert "**Adoption.** The agent used the skill in 6 of 6 skill runs" in md
 
@@ -348,3 +348,252 @@ def test_report_handles_summary_only_results():
     }
     md = reporter.build_markdown_report(results)
     assert "Skill reduced task score by **20 percentage points**" in md
+
+
+def test_closing_decision_ships_on_established_gain():
+    control = _runs("control", [0.0, 0.0, 0.5, 0.5, 1.0, 1.0], 0.5)
+    treatment = _runs("treatment", [1.0, 1.0, 1.0, 1.0, 1.0, 1.0], 0.25, skill_invoked=True)
+    md = reporter.build_markdown_report(_results(control, treatment, tasks_count=4))
+
+    # The report ends with the decision, after the reading notes.
+    assert md.index("## Closing decision") > md.index("## How to read this report")
+    closing = md[md.index("## Closing decision") :]
+    assert "| Task score (mean) |" in closing
+    assert "| Cost (median) |" in closing
+    assert "| Time (median) |" in closing
+    assert "| Tokens (median) |" in closing
+    assert "| Adoption (skill used) |" in closing
+    assert "> **Recommendation: SHIP**" in closing
+    # Recommendation is the last thing in the report.
+    assert md.rstrip().endswith("the interval excludes zero.")
+
+
+def test_closing_decision_needs_more_runs_when_ci_includes_zero():
+    control = _runs("control", [1.0, 0.0, 1.0, 0.0], 0.5)
+    treatment = _runs("treatment", [0.0, 1.0, 1.0, 0.0], 0.5, skill_invoked=True)
+    md = reporter.build_markdown_report(_results(control, treatment, tasks_count=3))
+    assert "> **Recommendation: NEEDS MORE RUNS**" in md
+    assert "The interval includes zero" in md
+
+
+def test_closing_decision_rejects_established_regression():
+    control = _runs("control", [1.0] * 6, 0.5)
+    treatment = _runs("treatment", [0.0, 0.0, 0.0, 0.5, 0.5, 1.0], 0.5, skill_invoked=True)
+    md = reporter.build_markdown_report(_results(control, treatment, tasks_count=4))
+    assert "> **Recommendation: DO NOT SHIP**" in md
+    assert "the regression is established" in md
+
+
+def test_closing_decision_rejects_contaminated_control():
+    control = _runs("control", [0.0] * 6, 0.5)
+    treatment = _runs("treatment", [1.0] * 6, 0.5, skill_invoked=True)
+    md = reporter.build_markdown_report(_results(control, treatment, valid=False))
+    assert "> **Recommendation: DO NOT SHIP**" in md
+    assert "Control contamination" in md
+
+
+def test_closing_decision_honors_preregistered_thresholds():
+    # Identical gains in every pair (collapsed CI) still ship when the
+    # pre-registered bounds clear; without thresholds the collapse is caution.
+    control = _runs("control", [0.0] * 6, 0.5)
+    treatment = _runs("treatment", [1.0] * 6, 0.25, skill_invoked=True)
+    without = reporter.build_markdown_report(_results(control, treatment, tasks_count=4))
+    assert "> **Recommendation: NEEDS MORE RUNS**" in without
+    assert "CI collapsed" in without
+
+    with_th = reporter.build_markdown_report(
+        _results(
+            control,
+            treatment,
+            tasks_count=4,
+            thresholds={"acceptable_score_regression_pp": 5},
+        )
+    )
+    assert "> **Recommendation: SHIP**" in with_th
+    assert "meets criteria" in with_th
+
+
+def test_closing_decision_uses_held_out_pairs_only():
+    def runs(arm: str, task: str, split: str, scores: list[float]) -> list[dict]:
+        out = []
+        for i, sc in enumerate(scores):
+            r = _runs(arm, [sc], 0.5, skill_invoked=arm != "control")[0]
+            r["task_id"] = task
+            r["task_split"] = split
+            r["repetition"] = i + 1
+            r["artifacts"] = f"m/{task}/{arm}/{i + 1:03d}"
+            out.append(r)
+        return out
+
+    control = runs("control", "dev-task", "dev", [0.0] * 3) + runs(
+        "control", "held-task", "held-out", [0.5] * 3
+    )
+    treatment = runs("treatment", "dev-task", "dev", [1.0] * 3) + runs(
+        "treatment", "held-task", "held-out", [0.5] * 3
+    )
+    md = reporter.build_markdown_report(
+        _results(control, treatment, tasks=["dev-task", "held-task"], tasks_count=2)
+    )
+    # Dev looks like a huge win, but headline and decision are held-out only.
+    assert "improved task score" not in md
+    assert "No task-score difference" in md
+    assert "Decision uses the 3 held-out pair(s) only" in md
+    assert "> **Recommendation: " in md
+    rec = md[md.index("> **Recommendation:") :]
+    assert "held-out pair(s) only" in rec
+
+
+def test_terminal_table_prints_recommendation():
+    control = _runs("control", [0.0, 0.0, 0.5, 0.5, 1.0, 1.0], 0.5)
+    treatment = _runs("treatment", [1.0] * 6, 0.25, skill_invoked=True)
+    text = reporter.render_report_table(
+        "exp",
+        reporter.calculate_metrics(control),
+        reporter.calculate_metrics(treatment),
+        models_count=1,
+        tasks_count=4,
+        runs_per_arm=6,
+        paired=reporter.paired_comparison(control, treatment),
+    )
+    assert "Recommendation: SHIP" in text
+
+
+_PRICING = {
+    "source": "https://example.com/pricing",
+    "date": "2026-09-27",
+    "currency": "USD",
+    "rates": {
+        "m": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
+    },
+}
+
+
+def _tokened(arm: str, scores: list[float], tokens: dict) -> list[dict]:
+    runs = _runs(arm, scores, 0.5, skill_invoked=arm != "control")
+    for r in runs:
+        r.update(tokens)
+    return runs
+
+
+def test_api_equivalent_cost_section_reproduces_estimate():
+    # Per run: 100k input + 2M cache read + 20k output with the rates above
+    # = $0.30 + $0.60 + $0.30 = $1.20; two runs per arm = $2.40.
+    control = _tokened(
+        "control",
+        [1.0, 1.0],
+        {"input_tokens": 100_000, "cache_read_tokens": 2_000_000, "output_tokens": 20_000},
+    )
+    treatment = _tokened(
+        "treatment",
+        [1.0, 1.0],
+        {"input_tokens": 50_000, "cache_read_tokens": 1_000_000, "output_tokens": 10_000},
+    )
+    md = reporter.build_markdown_report(
+        _results(control, treatment, pricing=_PRICING)
+    )
+
+    assert "## API-equivalent cost" in md
+    assert "https://example.com/pricing" in md
+    assert "checked 2026-09-27" in md
+    assert "| Control | 200k | 4.0M | 0 | 40k | $2.40 |" in md
+    assert "| Skill | 100k | 2.0M | 0 | 20k | $1.20 |" in md
+    assert "| Change (Skill − Control) | -100k | -2.0M | 0 | -20k | -$1.20 |" in md
+    # Rate table is in the note, so the report reproduces standalone.
+    assert "`m`: input $3.00, output $15.00, cache read $0.30, cache write $3.75" in md
+
+
+def test_api_equivalent_cost_flags_unpriced_models():
+    control = _tokened(
+        "control", [1.0, 1.0], {"input_tokens": 1000, "output_tokens": 100}
+    )
+    treatment = _tokened(
+        "treatment", [1.0, 1.0], {"input_tokens": 1000, "output_tokens": 100}
+    )
+    treatment[0]["model"] = "m2"
+    md = reporter.build_markdown_report(_results(control, treatment, pricing=_PRICING))
+    assert "No rates recorded for `m2`" in md
+    assert "excluded from the API-equivalent cost" in md
+
+
+def test_api_equivalent_cost_section_absent_without_rates():
+    control = _runs("control", [1.0, 1.0], 0.5)
+    treatment = _runs("treatment", [1.0, 1.0], 0.5, skill_invoked=True)
+    md = reporter.build_markdown_report(_results(control, treatment))
+    assert "## API-equivalent cost" not in md
+    assert "No pricing rates were recorded with this run" in md
+
+
+def test_evaluation_completeness_row():
+    control = _runs("control", [1.0, 1.0, 1.0, 1.0], 0.5)
+    treatment = _runs("treatment", [1.0, 1.0, 1.0, 1.0], 0.5, skill_invoked=True)
+    treatment[0]["status"] = "error"  # agent infrastructure failure
+    treatment[1]["grade_status"] = "error"  # grader failure -> N/A score
+    treatment[1]["score"] = None
+    md = reporter.build_markdown_report(_results(control, treatment, interrupted=True))
+
+    assert "## Evaluation completeness" in md
+    # Planned (1 model × 1 task × 4 runs) / completed / usable / failures / errors.
+    assert "| 4 | 4 | 3 | 1 | 1 |" in md
+    assert (
+        "Partial — 1 agent failure(s), 1 grader error(s), 1 pair(s) ungraded" in md
+    )
+    assert "The run was interrupted" in md
+
+
+def test_evaluation_completeness_row_complete_run():
+    control = _runs("control", [1.0, 1.0], 0.5)
+    treatment = _runs("treatment", [1.0, 1.0], 0.5, skill_invoked=True)
+    md = reporter.build_markdown_report(_results(control, treatment))
+    assert "| 2 | 2 | 2 | 0 | 0 | Complete |" in md
+
+
+def _split_runs(arm: str, task: str, split: str, scores: list[float]) -> list[dict]:
+    out = []
+    for i, sc in enumerate(scores):
+        r = _runs(arm, [sc], 0.5, skill_invoked=arm != "control")[0]
+        r["task_id"] = task
+        r["task_split"] = split
+        r["repetition"] = i + 1
+        r["artifacts"] = f"m/{task}/{arm}/{i + 1:03d}"
+        out.append(r)
+    return out
+
+
+def test_by_split_section_separates_dev_and_held_out():
+    control = _split_runs("control", "dev-task", "dev", [0.0] * 3) + _split_runs(
+        "control", "held-task", "held-out", [0.5] * 3
+    )
+    treatment = _split_runs("treatment", "dev-task", "dev", [1.0] * 3) + _split_runs(
+        "treatment", "held-task", "held-out", [0.5] * 3
+    )
+    md = reporter.build_markdown_report(
+        _results(control, treatment, tasks=["dev-task", "held-task"], tasks_count=2)
+    )
+
+    assert "## By split" in md
+    assert "The headline and closing decision use the 3 held-out pair(s) only" in md
+    split_table = md[md.index("## By split") :]
+    assert "| dev |" in split_table
+    assert "| held-out |" in split_table
+    # Held-out shows no effect while dev shows a huge one.
+    dev_line = next(ln for ln in split_table.splitlines() if ln.startswith("| dev |"))
+    held_line = next(ln for ln in split_table.splitlines() if ln.startswith("| held-out |"))
+    assert "Skill wins" in dev_line
+    assert "50% | 50%" in held_line
+    assert "No clear difference" in held_line
+
+
+def test_by_split_section_flags_missing_held_out():
+    control = _split_runs("control", "dev-task", "dev", [0.0, 1.0])
+    treatment = _split_runs("treatment", "dev-task", "dev", [1.0, 1.0])
+    md = reporter.build_markdown_report(_results(control, treatment))
+    assert "## By split" in md
+    assert "No held-out pairs in this run" in md
+    assert "development data, not validation" in md
+
+
+def test_by_split_section_absent_without_split_metadata():
+    control = _runs("control", [1.0, 1.0], 0.5)
+    treatment = _runs("treatment", [1.0, 1.0], 0.5, skill_invoked=True)
+    md = reporter.build_markdown_report(_results(control, treatment))
+    assert "## By split" not in md

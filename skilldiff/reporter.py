@@ -381,12 +381,94 @@ def category_reading(
 
 
 def _cost_basis_note(results: dict[str, Any]) -> str:
+    pricing = results.get("pricing") or {}
+    if pricing:
+        return (
+            "Tokens include cached input where the harness reports it. Cost is the "
+            "harness-reported price. On subscription auth the spend is $0 at the "
+            "margin; the API-equivalent cost section converts the recorded token "
+            f"breakdown with rates from {pricing.get('source')} "
+            f"(checked {pricing.get('date')}), so regenerated reports reproduce "
+            "the estimate."
+        )
     return (
         "Tokens include cached input where the harness reports it. Cost is the "
         "harness-reported price. On subscription auth the spend is $0 at the "
-        "margin, so the evaluating agent converts token counts with current "
-        "provider prices and shows the API-equivalent cost in its summary."
+        "margin. No pricing rates were recorded with this run; record them in "
+        "`skilldiff.yaml` (`pricing:` with source, date, and per-model rates per "
+        "1M tokens) to get a reproducible API-equivalent cost table."
     )
+
+
+# Recorded token fields paired with their pricing rate keys (per 1M tokens).
+_API_TOKEN_FIELDS = (
+    ("input_tokens", "input"),
+    ("cache_read_tokens", "cache_read"),
+    ("cache_creation_tokens", "cache_write"),
+    ("output_tokens", "output"),
+)
+
+
+def _fmt_money(val: Any, currency: str = "USD") -> str:
+    if val is None:
+        return "N/A"
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return "N/A"
+    return f"${v:.2f}" if currency == "USD" else f"{v:.2f} {currency}"
+
+
+def _fmt_money_diff(val: Any, currency: str = "USD") -> str:
+    if val is None:
+        return "N/A"
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return "N/A"
+    sign = "+" if v > 0.005 else ("-" if v < -0.005 else "")
+    body = f"${abs(v):.2f}" if currency == "USD" else f"{abs(v):.2f} {currency}"
+    return f"{sign}{body}"
+
+
+def _api_equivalent_summary(
+    runs: list[dict[str, Any]], pricing: dict[str, Any]
+) -> dict[str, Any]:
+    """Token breakdown and API-equivalent cost for one arm.
+
+    Cost converts each run's recorded token counts with the rates saved in the
+    run's pricing block (per 1M tokens), so the estimate reproduces from the
+    saved run alone — no price lookups at report time.
+    """
+    rates = (pricing or {}).get("rates") or {}
+    totals = {field: 0 for field, _ in _API_TOKEN_FIELDS}
+    cost = 0.0
+    priced_runs = 0
+    unpriced: set[str] = set()
+    for run in runs or []:
+        tokens: dict[str, int] = {}
+        for field, _rate_key in _API_TOKEN_FIELDS:
+            try:
+                tokens[field] = int(run.get(field) or 0)
+            except (TypeError, ValueError):
+                tokens[field] = 0
+            totals[field] += tokens[field]
+        model = str(run.get("model", ""))
+        model_rates = rates.get(model)
+        if not model_rates:
+            if any(tokens.values()):
+                unpriced.add(model or "(missing model)")
+            continue
+        priced_runs += 1
+        cost += sum(
+            tokens[field] * model_rates[rate_key] for field, rate_key in _API_TOKEN_FIELDS
+        ) / 1_000_000.0
+    return {
+        "totals": totals,
+        "cost": cost if priced_runs else None,
+        "priced_runs": priced_runs,
+        "unpriced": sorted(unpriced),
+    }
 
 
 def render_report_table(
@@ -616,6 +698,15 @@ def render_report_table(
             preset=preset,
         )
         lines.append(_strip_inline(verdict))
+        _, rec_label, rec_reason = _recommendation(
+            paired,
+            treatment_label.lower(),
+            thresholds=thresholds,
+            tasks_count=tasks_count or None,
+            preset=preset,
+        )
+        lines.append("")
+        lines.append(_strip_inline(f"Recommendation: {rec_label} — {rec_reason}"))
     return "\n".join(lines)
 
 
@@ -921,7 +1012,7 @@ def _efficiency_sentence(paired: dict[str, Any], subject: str = "skill") -> Opti
     if not phrases:
         return None
     joined = phrases[0] if len(phrases) == 1 else ", ".join(phrases[:-1]) + " and " + phrases[-1]
-    return f"With the {subject}, runs {joined}, summed over all pairs."
+    return f"With the {subject}, runs {joined}, summed over the compared pairs."
 
 
 def _paired_diff_text(
@@ -967,43 +1058,71 @@ def _paired_diff_text(
     return txt, tone, _fmt_ci(metric, kind, total_pairs=total)
 
 
+def _summary_fallbacks(
+    control: dict[str, Any], skill: dict[str, Any], total_pairs: int
+) -> dict[str, Optional[float]]:
+    """Difference-of-means fallbacks for summary-only results (no run records)."""
+    out: dict[str, Optional[float]] = {
+        "score": None,
+        "cost": None,
+        "duration": None,
+        "tokens": None,
+        "turns": None,
+    }
+    if total_pairs:
+        return out
+    c_pct, s_pct = _score_percent(control), _score_percent(skill)
+    if c_pct is not None and s_pct is not None:
+        out["score"] = (s_pct - c_pct) / 100.0
+    for key, c_key, s_key in (
+        ("cost", "median_cost", "median_cost"),
+        ("duration", "median_time", "median_time"),
+        ("tokens", "median_tokens", "median_tokens"),
+        ("turns", "median_turns", "median_turns"),
+    ):
+        c_val, s_val = control.get(c_key), skill.get(s_key)
+        if c_val is not None and s_val is not None:
+            try:
+                out[key] = float(s_val) - float(c_val)
+            except (TypeError, ValueError):
+                out[key] = None
+    return out
+
+
+def _reading_for(
+    paired: dict[str, Any],
+    total_pairs: int,
+    key: str,
+    kind: str,
+    fallback: Optional[float],
+    higher_is_better: bool = False,
+) -> str:
+    metric = (paired or {}).get(key) or {}
+    md = metric.get("mean_diff", None)
+    if md is None and fallback is not None and not total_pairs:
+        return row_reading(kind, fallback, None, None, 0, 0, higher_is_better)
+    return row_reading(
+        kind,
+        md,
+        metric.get("ci_low"),
+        metric.get("ci_high"),
+        metric.get("n", 0),
+        total_pairs,
+        higher_is_better,
+    )
+
+
 def _metric_rows(
     control: dict[str, Any], skill: dict[str, Any], paired: dict[str, Any]
 ) -> list[list[Cell]]:
     total_pairs = paired.get("pairs", 0)
     # Fallbacks for summary-only results (no paired data).
-    c_pct, s_pct = _score_percent(control), _score_percent(skill)
-    score_fallback = None
-    if total_pairs == 0 and c_pct is not None and s_pct is not None:
-        score_fallback = (s_pct - c_pct) / 100.0
-    cost_fallback = None
-    if (
-        total_pairs == 0
-        and control.get("median_cost") is not None
-        and skill.get("median_cost") is not None
-    ):
-        cost_fallback = float(skill["median_cost"]) - float(control["median_cost"])
-    time_fallback = None
-    if (
-        total_pairs == 0
-        and control.get("median_time") is not None
-        and skill.get("median_time") is not None
-    ):
-        time_fallback = float(skill["median_time"]) - float(control["median_time"])
-    tok_fallback = None
-    if (
-        total_pairs == 0
-        and control.get("median_tokens") is not None
-        and skill.get("median_tokens") is not None
-    ):
-        tok_fallback = float(skill["median_tokens"]) - float(control["median_tokens"])
-    turn_fallback = None
-    if (
-        total_pairs == 0
-        and control.get("median_turns") is not None
-        and skill.get("median_turns") is not None
-    ):
-        turn_fallback = float(skill["median_turns"]) - float(control["median_turns"])
+    fb = _summary_fallbacks(control, skill, total_pairs)
+    score_fallback = fb["score"]
+    cost_fallback = fb["cost"]
+    time_fallback = fb["duration"]
+    tok_fallback = fb["tokens"]
+    turn_fallback = fb["turns"]
 
     score_txt, score_tone, score_ci = _paired_diff_text(
         paired, "score", "score", fallback=score_fallback, higher_is_better=True
@@ -1017,28 +1136,16 @@ def _metric_rows(
         paired, "turns", "turns", fallback=turn_fallback
     )
 
-    def _reading_for(
+    def _metric_reading(
         key: str, kind: str, fallback: Optional[float], higher_is_better: bool = False
     ) -> str:
-        metric = (paired or {}).get(key) or {}
-        md = metric.get("mean_diff", None)
-        if md is None and fallback is not None and not total_pairs:
-            return row_reading(kind, fallback, None, None, 0, 0, higher_is_better)
-        return row_reading(
-            kind,
-            md,
-            metric.get("ci_low"),
-            metric.get("ci_high"),
-            metric.get("n", 0),
-            total_pairs,
-            higher_is_better,
-        )
+        return _reading_for(paired, total_pairs, key, kind, fallback, higher_is_better)
 
-    score_reading = _reading_for("score", "score", score_fallback, True)
-    cost_reading = _reading_for("cost", "cost", cost_fallback)
-    time_reading = _reading_for("duration", "duration", time_fallback)
-    tok_reading = _reading_for("tokens", "tokens", tok_fallback)
-    turn_reading = _reading_for("turns", "turns", turn_fallback)
+    score_reading = _metric_reading("score", "score", score_fallback, True)
+    cost_reading = _metric_reading("cost", "cost", cost_fallback)
+    time_reading = _metric_reading("duration", "duration", time_fallback)
+    tok_reading = _metric_reading("tokens", "tokens", tok_fallback)
+    turn_reading = _metric_reading("turns", "turns", turn_fallback)
 
     success_diff = skill.get("success_count", 0) - control.get("success_count", 0)
     success_reading = row_reading(
@@ -1154,6 +1261,298 @@ def _metric_rows(
             ]
         )
     return rows
+
+
+def _decision_rows(
+    control: dict[str, Any], skill: dict[str, Any], paired: dict[str, Any]
+) -> list[list[Cell]]:
+    """Closing decision table: score, cost, time, tokens, adoption.
+
+    Every row stays visible even when data is missing (N/A), so the closing
+    decision shows exactly what is unknown instead of hiding it. Paired
+    change, CI, and Reading reuse the same statistics as the Summary table,
+    so the two never disagree.
+    """
+    total_pairs = paired.get("pairs", 0)
+    fb = _summary_fallbacks(control, skill, total_pairs)
+
+    def row(
+        label: str,
+        c_txt: str,
+        s_txt: str,
+        key: str,
+        kind: str,
+        fallback: Optional[float],
+        higher_is_better: bool = False,
+        reading: Optional[str] = None,
+    ) -> list[Cell]:
+        diff_txt, tone, ci = _paired_diff_text(
+            paired, key, kind, fallback=fallback, higher_is_better=higher_is_better
+        )
+        if reading is None:
+            reading = _reading_for(paired, total_pairs, key, kind, fallback, higher_is_better)
+        diff_cell: Cell = (diff_txt, tone) if tone else diff_txt
+        return [label, c_txt, s_txt, diff_cell, ci, reading]
+
+    return [
+        row(
+            "Task score (mean)",
+            _fmt_score_pct(control),
+            _fmt_score_pct(skill),
+            "score",
+            "score",
+            fb["score"],
+            True,
+        ),
+        row(
+            "Cost (median)",
+            _fmt_cost_opt(control.get("median_cost")),
+            _fmt_cost_opt(skill.get("median_cost")),
+            "cost",
+            "cost",
+            fb["cost"],
+        ),
+        row(
+            "Time (median)",
+            _fmt_time_opt(control.get("median_time")),
+            _fmt_time_opt(skill.get("median_time")),
+            "duration",
+            "duration",
+            fb["duration"],
+        ),
+        row(
+            "Tokens (median)",
+            _fmt_tokens_opt(control.get("median_tokens")),
+            _fmt_tokens_opt(skill.get("median_tokens")),
+            "tokens",
+            "tokens",
+            fb["tokens"],
+        ),
+        [
+            "Adoption (skill used)",
+            _skill_usage(control),
+            _skill_usage(skill),
+            "",
+            "",
+            adoption_reading(
+                skill.get("skill_used_count", 0), skill.get("skill_known_count", 0)
+            ),
+        ],
+    ]
+
+
+def _completeness_reading(
+    planned: int, completed: int, usable: int, agent_failures: int, grader_errors: int
+) -> str:
+    """Plain-language verdict for the evaluation-completeness row."""
+    if planned and not completed:
+        return "Nothing completed"
+    if not usable:
+        return "No usable scores"
+    gaps: list[str] = []
+    if planned and completed < planned:
+        gaps.append(f"{planned - completed} pair(s) not completed")
+    if agent_failures:
+        gaps.append(f"{agent_failures} agent failure(s)")
+    if grader_errors:
+        gaps.append(f"{grader_errors} grader error(s)")
+    if usable < completed:
+        gaps.append(f"{completed - usable} pair(s) ungraded")
+    return "Complete" if not gaps else "Partial — " + ", ".join(gaps)
+
+
+_RECOMMENDATION_KIND = {"SHIP": "tip", "DO NOT SHIP": "warning", "NEEDS MORE RUNS": "note"}
+
+_HELD_OUT_ALIASES = {"held-out", "heldout", "held_out", "held out", "holdout"}
+
+
+def _run_split(run: dict[str, Any], task_splits: dict[str, str]) -> str:
+    """Dev or held-out for one run, from the run record or task metadata.
+
+    Unlabeled tasks count as dev: development results must never be mistaken
+    for validation. Only an explicit held-out label (task `split: held-out`
+    or a `heldout/` task directory) marks a run as validation data.
+    """
+    split = str(run.get("task_split") or task_splits.get(str(run.get("task_id", ""))) or "")
+    return "held-out" if split.strip().lower() in _HELD_OUT_ALIASES else "dev"
+
+
+def _held_out_paired(
+    control_runs: list[dict[str, Any]],
+    treatment_runs: list[dict[str, Any]],
+    task_splits: dict[str, str],
+) -> dict[str, Any]:
+    """Paired statistics over held-out runs only; {} when the run has none."""
+    c = [r for r in control_runs if _run_split(r, task_splits) == "held-out"]
+    t = [r for r in treatment_runs if _run_split(r, task_splits) == "held-out"]
+    if not c or not t:
+        return {}
+    return paired_comparison(c, t)
+
+
+def _recommendation(
+    paired: dict[str, Any],
+    subject: str = "skill",
+    thresholds: dict[str, Any] | None = None,
+    tasks_count: int | None = None,
+    preset: str | None = None,
+    valid: bool = True,
+    paired_held_out: dict[str, Any] | None = None,
+) -> tuple[str, str, str]:
+    """Return (callout kind, SHIP/DO NOT SHIP/NEEDS MORE RUNS, reason).
+
+    One bottom line per report, derived from the same paired statistics,
+    intervals, and verdict logic as the tables above it. Shipping needs
+    bounds that clear thresholds, not point estimates: an effect whose 95%
+    CI includes zero is never SHIP, and a regression whose interval excludes
+    zero is never SHIP. When held-out pairs exist they drive the decision,
+    so development results cannot stand in for validation.
+    """
+    if not valid:
+        return (
+            _RECOMMENDATION_KIND["DO NOT SHIP"],
+            "DO NOT SHIP",
+            "Control contamination: there is no clean baseline, so differences "
+            "cannot be attributed to the skill.",
+        )
+
+    basis = ""
+    use = paired or {}
+    if paired_held_out and paired_held_out.get("pairs"):
+        use = paired_held_out
+        basis = (
+            f"Decision uses the {use.get('pairs')} held-out pair(s) only; "
+            "dev results guide iteration, not validation. "
+        )
+
+    total = int(use.get("pairs", 0))
+    score = use.get("score") or {}
+    n = int(score.get("n", use.get("scored_pairs", total)))
+    mean_raw = score.get("mean_diff", None)
+    lo, hi = score.get("ci_low"), score.get("ci_high")
+    if lo is not None and hi is not None:
+        ci = f"{float(lo) * 100:+.0f} to {float(hi) * 100:+.0f} pp"
+    else:
+        ci = "n/a"
+    pairs_txt = f"{n} graded pairs" if n == total else f"{n} graded of {total} pairs"
+
+    def effect_sentence(direction: str) -> str:
+        mean_pp = round(float(mean_raw) * 100)
+        change = (
+            f"improved task score by {format_pp_diff(mean_pp)}"
+            if direction == "up"
+            else f"reduced task score by {abs(mean_pp)} pp"
+        )
+        return f"The {subject} {change} (95% CI {ci}, {pairs_txt})"
+
+    if total == 0:
+        return (
+            _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
+            "NEEDS MORE RUNS",
+            "No paired runs in this result, so there is nothing to decide yet. "
+            "Run the experiment to get paired scores with a confidence interval.",
+        )
+    if mean_raw is None or n == 0:
+        return (
+            _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
+            "NEEDS MORE RUNS",
+            f"{basis}No graded task-score pairs in {total} pair(s); scores are N/A "
+            "(ungraded tasks or grader failures), so the effect cannot be judged. "
+            "Fix grading or add repetitions.",
+        )
+    if n == 1:
+        return (
+            _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
+            "NEEDS MORE RUNS",
+            f"{basis}Only one graded pair; one pair cannot separate a real effect "
+            "from noise. Add repetitions.",
+        )
+
+    effect = classify_effect(score)
+    collapsed = lo is not None and hi is not None and lo == hi
+    mean_pp = round(float(mean_raw) * 100)
+    practical = ""
+    if thresholds and mean_raw is not None:
+        practical = _practical_assessment(use, thresholds, mean_pp, preset=preset)
+
+    # Pre-registered thresholds decide when present.
+    if practical:
+        if practical.startswith("Practical check: meets"):
+            return (
+                _RECOMMENDATION_KIND["SHIP"],
+                "SHIP",
+                f"{basis}{effect_sentence('up' if mean_pp >= 0 else 'down')}, and "
+                f"{practical[0].lower() + practical[1:]}",
+            )
+        if "does not clear the allowed regression" in practical or "below required" in practical:
+            return (
+                _RECOMMENDATION_KIND["DO NOT SHIP"],
+                "DO NOT SHIP",
+                f"{basis}{effect_sentence('up' if mean_pp >= 0 else 'down')}, but "
+                f"{practical[0].lower() + practical[1:]}",
+            )
+        return (
+            _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
+            "NEEDS MORE RUNS",
+            f"{basis}{effect_sentence('up' if mean_pp >= 0 else 'down')}, but "
+            f"{practical[0].lower() + practical[1:]}",
+        )
+
+    if effect == "worse":
+        return (
+            _RECOMMENDATION_KIND["DO NOT SHIP"],
+            "DO NOT SHIP",
+            f"{basis}{effect_sentence('down')}; the regression is established "
+            "because the interval excludes zero.",
+        )
+    if mean_pp == 0 and lo == hi == 0:
+        if n >= 5:
+            return (
+                _RECOMMENDATION_KIND["DO NOT SHIP"],
+                "DO NOT SHIP",
+                f"{basis}Both arms scored identically in all {n} graded pair(s) "
+                "(95% CI 0 to 0 pp) — no measured benefit.",
+            )
+        return (
+            _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
+            "NEEDS MORE RUNS",
+            f"{basis}Both arms scored identically in the {n} graded pair(s) so far, "
+            "but the sample is too small to rule out an effect. Add repetitions.",
+        )
+    if effect == "better":
+        cautions: list[str] = []
+        if n < 5:
+            cautions.append(f"only {n} graded pairs")
+        if collapsed:
+            cautions.append(
+                "the CI collapsed (identical differences), so uncertainty is understated"
+            )
+        if tasks_count is not None and tasks_count < 3:
+            cautions.append(f"only {tasks_count} task(s), which limits generalization")
+        if cautions:
+            joined = (
+                cautions[0]
+                if len(cautions) == 1
+                else ", ".join(cautions[:-1]) + " and " + cautions[-1]
+            )
+            return (
+                _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
+                "NEEDS MORE RUNS",
+                f"{basis}{effect_sentence('up')}, but {joined}. "
+                "Treat the gain as preliminary and add runs before shipping.",
+            )
+        return (
+            _RECOMMENDATION_KIND["SHIP"],
+            "SHIP",
+            f"{basis}{effect_sentence('up')}; the interval excludes zero.",
+        )
+    return (
+        _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
+        "NEEDS MORE RUNS",
+        f"{basis}No clear task-score effect: {format_pp_diff(mean_pp)} "
+        f"(95% CI {ci}, {pairs_txt}). The interval includes zero, "
+        "so the effect is not established. Add repetitions or harder tasks.",
+    )
 
 
 def _parse_feedback_data(fb: Any) -> Optional[dict[str, Any]]:
@@ -1658,24 +2057,57 @@ def build_report_blocks(
         skill = {**calculate_metrics([]), **overall.get("skill", {})}
         paired = overall.get("paired") or {}
 
+    tasks_count = int(results.get("tasks_count") or len(results.get("tasks") or []) or 0)
+
+    # Dev vs held-out: split metadata comes from run records (task_split) or
+    # task_details. Held-out pairs are the honest estimate: they drive the
+    # headline verdict and the closing decision, never a dev-mixed average.
+    task_splits = {
+        str(td.get("id")): str(td.get("split", ""))
+        for td in results.get("task_details") or []
+        if isinstance(td, dict) and td.get("id")
+    }
+    paired_held_out = (
+        _held_out_paired(control_runs, treatment_runs, task_splits)
+        if (control_runs or treatment_runs)
+        else None
+    )
+    rec_tasks_count = tasks_count or None
+    headline_paired = paired
+    headline_control, headline_skill = control, skill
+    split_basis_note = ""
+    if paired_held_out and paired_held_out.get("pairs"):
+        held_c = [r for r in control_runs if _run_split(r, task_splits) == "held-out"]
+        held_t = [r for r in treatment_runs if _run_split(r, task_splits) == "held-out"]
+        headline_paired = paired_held_out
+        headline_control = calculate_metrics(held_c)
+        headline_skill = calculate_metrics(held_t)
+        rec_tasks_count = (
+            len({str(r.get("task_id", "")) for r in held_c + held_t}) or rec_tasks_count
+        )
+        split_basis_note = (
+            f"Headline and closing decision use the {paired_held_out.get('pairs')} "
+            "held-out pair(s) only — the honest estimate. Dev pairs are for "
+            "iteration and shown separately in By split."
+        )
+
     blocks: list[tuple] = []
     thresholds = results.get("thresholds") or (results.get("settings") or {}).get("thresholds")
     failure_policy = results.get("failure_policy") or (results.get("settings") or {}).get(
         "failure_policy"
     )
-    tasks_count = int(results.get("tasks_count") or len(results.get("tasks") or []) or 0)
 
-    if paired.get("pairs"):
+    if headline_paired.get("pairs"):
         verdict, kind = _verdict(
-            paired,
+            headline_paired,
             subject,
             thresholds=thresholds,
-            tasks_count=tasks_count or None,
+            tasks_count=rec_tasks_count,
             failure_policy=failure_policy,
             preset=preset,
         )
     else:
-        diff = _score_difference(control, skill)
+        diff = _score_difference(headline_control, headline_skill)
         if diff is not None and diff > 0:
             verdict, kind = f"{label} improved task score by **{diff} percentage points**.", "tip"
         elif diff is not None and diff < 0:
@@ -1690,9 +2122,15 @@ def build_report_blocks(
         verdict = "INVALID: no clean baseline. " + verdict
         kind = "warning"
     body = [verdict]
-    efficiency = _efficiency_sentence(paired, subject) if paired.get("pairs") else None
+    efficiency = (
+        _efficiency_sentence(headline_paired, subject)
+        if headline_paired.get("pairs")
+        else None
+    )
     if efficiency:
         body.append(efficiency)
+    if split_basis_note:
+        body.append(split_basis_note)
     # Task-level uncertainty: repetitions vs tasks.
     try:
         from skilldiff.stats import task_level_effects as _tle
@@ -1737,6 +2175,137 @@ def build_report_blocks(
         )
     )
 
+    # Evaluation completeness: how much of the planned design produced usable
+    # data. One row, so partial results can be judged before reading effects.
+    if control_runs or treatment_runs:
+        planned = (
+            len(models)
+            * tasks_count
+            * int(results.get("runs_per_arm") or 0)
+        )
+        completed = int(paired.get("pairs", 0))
+        usable = int(
+            (paired.get("score") or {}).get("n", paired.get("scored_pairs", 0)) or 0
+        )
+        agent_failures = sum(
+            1
+            for r in control_runs + treatment_runs
+            if r.get("status") not in (None, "ok", "correctness")
+        )
+        grader_errors = sum(
+            1
+            for r in control_runs + treatment_runs
+            if r.get("grade_status") in ("timeout", "error")
+        )
+        if not planned:
+            planned = completed
+        blocks.append(("h", 2, "Evaluation completeness"))
+        blocks.append(
+            (
+                "table",
+                [
+                    "Planned pairs",
+                    "Completed pairs",
+                    "Usable score pairs",
+                    "Agent failures",
+                    "Grader errors",
+                    "Reading",
+                ],
+                [
+                    [
+                        f"{planned}",
+                        f"{completed}",
+                        f"{usable}",
+                        f"{agent_failures}",
+                        f"{grader_errors}",
+                        _completeness_reading(
+                            planned, completed, usable, agent_failures, grader_errors
+                        ),
+                    ]
+                ],
+                ["r", "r", "r", "r", "r", "l"],
+            )
+        )
+        note = (
+            "Planned pairs = models × tasks × runs per arm. Completed pairs match "
+            "both arms on (model, task, repetition); usable score pairs are those "
+            "with graded scores on both sides. Agent failures and grader errors "
+            "count runs across both arms (agent failures: status other than ok; "
+            "grader errors: grader timeout or error, scored N/A)."
+        )
+        if results.get("interrupted"):
+            note += " The run was interrupted, so planned pairs reflect the full design."
+        blocks.append(("p", note))
+
+    # API-equivalent cost: the recorded token breakdown priced with the rates
+    # saved alongside the run, so regeneration reproduces the estimate exactly.
+    pricing = results.get("pricing") or {}
+    if pricing and (control_runs or treatment_runs):
+        currency = str(pricing.get("currency") or "USD")
+        c_api = _api_equivalent_summary(control_runs, pricing)
+        s_api = _api_equivalent_summary(treatment_runs, pricing)
+        cost_change = None
+        if c_api["cost"] is not None and s_api["cost"] is not None:
+            cost_change = float(s_api["cost"]) - float(c_api["cost"])
+
+        def _api_row(arm: str, api: dict[str, Any]) -> list[Cell]:
+            t = api["totals"]
+            return [
+                arm,
+                _fmt_tokens(t["input_tokens"]),
+                _fmt_tokens(t["cache_read_tokens"]),
+                _fmt_tokens(t["cache_creation_tokens"]),
+                _fmt_tokens(t["output_tokens"]),
+                _fmt_money(api["cost"], currency),
+            ]
+
+        diff_row: list[Cell] = [f"Change ({label} − Control)"]
+        for field, _rate_key in _API_TOKEN_FIELDS:
+            diff_row.append(_signed_tokens(s_api["totals"][field] - c_api["totals"][field]))
+        cost_cell: Cell = _fmt_money_diff(cost_change, currency)
+        if cost_change is not None:
+            cost_cell = (cost_cell, _tone(round(cost_change, 2), False))
+        diff_row.append(cost_cell)
+
+        blocks.append(("h", 2, "API-equivalent cost"))
+        blocks.append(
+            (
+                "table",
+                [
+                    "Arm",
+                    "Input",
+                    "Cache read",
+                    "Cache write",
+                    "Output",
+                    "API-equivalent cost",
+                ],
+                [_api_row("Control", c_api), _api_row(label, s_api), diff_row],
+                ["l", "r", "r", "r", "r", "r"],
+            )
+        )
+        rates = pricing.get("rates") or {}
+        rate_bits = "; ".join(
+            f"`{m}`: input {_fmt_money(r.get('input'), currency)}, "
+            f"output {_fmt_money(r.get('output'), currency)}, "
+            f"cache read {_fmt_money(r.get('cache_read'), currency)}, "
+            f"cache write {_fmt_money(r.get('cache_write'), currency)}"
+            for m, r in sorted(rates.items())
+        )
+        note = (
+            f"Rates in {currency} per 1M tokens from {pricing.get('source')} "
+            f"(checked {pricing.get('date')}). {rate_bits}. "
+            "Each run's recorded token counts × its model's rates, summed over runs; "
+            "the run saves rates, source, date, and the token breakdown, so this "
+            "estimate reproduces from the saved run alone."
+        )
+        unpriced = sorted(set(c_api["unpriced"]) | set(s_api["unpriced"]))
+        if unpriced:
+            note += (
+                f" No rates recorded for {', '.join(f'`{m}`' for m in unpriced)}: "
+                "those runs are excluded from the API-equivalent cost."
+            )
+        blocks.append(("p", note))
+
     if control_runs:
         takeaways = _key_takeaways(results, control_runs, treatment_runs)
         if takeaways:
@@ -1746,6 +2315,49 @@ def build_report_blocks(
     by_model = results.get("by_model", {})
     # Headers end with [Skill used?, Reading]; align the trailing Reading left.
     group_align = _GROUP_ALIGN if not comparison else [*_GROUP_ALIGN[:7], "l"]
+
+    # By split: development vs held-out shown separately, so development
+    # results are never mistaken for validation.
+    if (control_runs or treatment_runs) and (
+        task_splits or any(r.get("task_split") for r in control_runs + treatment_runs)
+    ):
+        blocks.append(("h", 2, "By split"))
+        split_rows: list[list[Cell]] = []
+        for split in ("dev", "held-out"):
+            sc = [r for r in control_runs if _run_split(r, task_splits) == split]
+            st = [r for r in treatment_runs if _run_split(r, task_splits) == split]
+            if not sc and not st:
+                continue
+            split_rows.append(
+                _group_row(
+                    split,
+                    calculate_metrics(sc),
+                    calculate_metrics(st),
+                    paired_comparison(sc, st),
+                    show_usage=not comparison,
+                )
+            )
+        blocks.append(("table", _group_headers("Split", label), split_rows, group_align))
+        held_out_pairs = int((paired_held_out or {}).get("pairs", 0))
+        if held_out_pairs:
+            blocks.append(
+                (
+                    "p",
+                    f"Dev pairs are for iteration; the held-out set is the honest "
+                    f"estimate. The headline and closing decision use the "
+                    f"{held_out_pairs} held-out pair(s) only.",
+                )
+            )
+        else:
+            blocks.append(
+                (
+                    "p",
+                    "No held-out pairs in this run: everything reported here is "
+                    "development data, not validation. Freeze tasks under "
+                    "`tasks/heldout/` (or set `split: held-out`) before the full run.",
+                )
+            )
+
     if len(models) > 1:
         blocks.append(("h", 2, "By model"))
         rows: list[list[Cell]] = []
@@ -2123,6 +2735,38 @@ def build_report_blocks(
             ],
         )
     )
+
+    # Closing decision: the same statistics as the headline (held-out pairs
+    # when they exist), then one bottom line. Reports must end with the
+    # decision, not with reading notes.
+    rec_kind, rec_label, rec_reason = _recommendation(
+        paired,
+        subject,
+        thresholds=thresholds,
+        tasks_count=rec_tasks_count,
+        preset=preset,
+        valid=results.get("valid") is not False,
+        paired_held_out=paired_held_out,
+    )
+    blocks.append(("h", 2, "Closing decision"))
+    if split_basis_note:
+        blocks.append(
+            (
+                "p",
+                f"Held-out pairs only ({paired_held_out.get('pairs')}); all-pairs "
+                "figures are in the Summary table above, and dev results are in "
+                "By split.",
+            )
+        )
+    blocks.append(
+        (
+            "table",
+            ["Metric", "Control", label, "Paired change", "95% CI", "Reading"],
+            _decision_rows(headline_control, headline_skill, headline_paired),
+            ["l", "r", "r", "r", "r", "l"],
+        )
+    )
+    blocks.append(("callout", rec_kind, f"Recommendation: {rec_label}", [rec_reason]))
     return f"skilldiff: {name}", blocks
 
 
