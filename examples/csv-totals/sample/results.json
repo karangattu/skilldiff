@@ -1,0 +1,952 @@
+{
+  "name": "csv-totals",
+  "skilldiff_version": "0.8.0",
+  "preset": "skill",
+  "arm_labels": {},
+  "harness": "claude",
+  "skill": "./skills/csv-totals",
+  "skill_names": [
+    "csv-totals"
+  ],
+  "timestamp": "2026-09-27T120000Z",
+  "run_dir": null,
+  "models": [
+    "claude-sonnet-5"
+  ],
+  "tasks": [
+    "fix-total",
+    "write-total"
+  ],
+  "task_categories": {
+    "fix-total": "intended",
+    "write-total": "intended"
+  },
+  "task_details": [
+    {
+      "id": "fix-total",
+      "category": "intended",
+      "split": "dev",
+      "repo": "../../fixtures/dev-fix",
+      "grader": "python3 ../../graders/grade_csv_totals.py"
+    },
+    {
+      "id": "write-total",
+      "category": "intended",
+      "split": "held-out",
+      "repo": "../../fixtures/heldout-write",
+      "grader": "python3 ../../graders/grade_csv_totals.py"
+    }
+  ],
+  "tasks_count": 2,
+  "runs_per_arm": 4,
+  "seed": 1234,
+  "failure_policy": {
+    "agent_failure": "exclude",
+    "missing": "exclude"
+  },
+  "valid": true,
+  "interrupted": false,
+  "warnings": [
+    "1 of 8 control runs ended with timeout (agent infrastructure failure, not a low score); 1 have N/A scores (grading unavailable).",
+    "1 of 8 skill runs have grader error; their scores are N/A and excluded from means. These are evaluation-infra failures, shown with valid-pair counts."
+  ],
+  "settings": {
+    "harness": "claude",
+    "timeout_seconds": 600,
+    "parallel": 1
+  },
+  "thresholds": {},
+  "pricing": {
+    "source": "https://www.anthropic.com/pricing",
+    "date": "2026-09-27",
+    "currency": "USD",
+    "rates": {
+      "claude-sonnet-5": {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_read": 0.3,
+        "cache_write": 3.75
+      }
+    }
+  },
+  "runs": {
+    "control": [
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "fix-total",
+        "task_category": "intended",
+        "task_split": "dev",
+        "repetition": 1,
+        "arm": "control",
+        "run_order": 1,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 92.0,
+        "cost": 0.41000000000000003,
+        "input_tokens": 45000,
+        "cache_read_tokens": 380000,
+        "cache_creation_tokens": 12000,
+        "output_tokens": 6400,
+        "num_turns": 13,
+        "skill_invoked": false,
+        "skill_available": false,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 0.3333333333333333,
+        "success": false,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": false
+            },
+            {
+              "name": "plain decimal output",
+              "passed": false
+            },
+            {
+              "name": "uses csv module",
+              "passed": false
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": false
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/fix-total/control/001"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "fix-total",
+        "task_category": "intended",
+        "task_split": "dev",
+        "repetition": 2,
+        "arm": "control",
+        "run_order": 1,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 96.0,
+        "cost": 0.44,
+        "input_tokens": 45000,
+        "cache_read_tokens": 380000,
+        "cache_creation_tokens": 12000,
+        "output_tokens": 6400,
+        "num_turns": 14,
+        "skill_invoked": false,
+        "skill_available": false,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 0.3333333333333333,
+        "success": false,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": false
+            },
+            {
+              "name": "plain decimal output",
+              "passed": false
+            },
+            {
+              "name": "uses csv module",
+              "passed": false
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": false
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/fix-total/control/002"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "fix-total",
+        "task_category": "intended",
+        "task_split": "dev",
+        "repetition": 3,
+        "arm": "control",
+        "run_order": 1,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "timeout",
+        "error": "timeout after 600s",
+        "duration": 100.0,
+        "cost": 0.47,
+        "input_tokens": 45000,
+        "cache_read_tokens": 380000,
+        "cache_creation_tokens": 12000,
+        "output_tokens": 6400,
+        "num_turns": 15,
+        "skill_invoked": false,
+        "skill_available": false,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": null,
+        "success": false,
+        "grade_status": "ungraded",
+        "feedback": null,
+        "artifacts": "claude-sonnet-5/fix-total/control/003"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "fix-total",
+        "task_category": "intended",
+        "task_split": "dev",
+        "repetition": 4,
+        "arm": "control",
+        "run_order": 1,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 104.0,
+        "cost": 0.5,
+        "input_tokens": 45000,
+        "cache_read_tokens": 380000,
+        "cache_creation_tokens": 12000,
+        "output_tokens": 6400,
+        "num_turns": 16,
+        "skill_invoked": false,
+        "skill_available": false,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 0.5,
+        "success": false,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": true
+            },
+            {
+              "name": "plain decimal output",
+              "passed": false
+            },
+            {
+              "name": "uses csv module",
+              "passed": false
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": false
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/fix-total/control/004"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "write-total",
+        "task_category": "intended",
+        "task_split": "held-out",
+        "repetition": 1,
+        "arm": "control",
+        "run_order": 1,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 95.0,
+        "cost": 0.46,
+        "input_tokens": 45000,
+        "cache_read_tokens": 380000,
+        "cache_creation_tokens": 12000,
+        "output_tokens": 6400,
+        "num_turns": 14,
+        "skill_invoked": false,
+        "skill_available": false,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 0.5,
+        "success": false,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": true
+            },
+            {
+              "name": "plain decimal output",
+              "passed": false
+            },
+            {
+              "name": "uses csv module",
+              "passed": false
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": false
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/write-total/control/001"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "write-total",
+        "task_category": "intended",
+        "task_split": "held-out",
+        "repetition": 2,
+        "arm": "control",
+        "run_order": 1,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 98.0,
+        "cost": 0.48,
+        "input_tokens": 45000,
+        "cache_read_tokens": 380000,
+        "cache_creation_tokens": 12000,
+        "output_tokens": 6400,
+        "num_turns": 15,
+        "skill_invoked": false,
+        "skill_available": false,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 0.5,
+        "success": false,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": true
+            },
+            {
+              "name": "plain decimal output",
+              "passed": false
+            },
+            {
+              "name": "uses csv module",
+              "passed": false
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": false
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/write-total/control/002"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "write-total",
+        "task_category": "intended",
+        "task_split": "held-out",
+        "repetition": 3,
+        "arm": "control",
+        "run_order": 1,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 101.0,
+        "cost": 0.5,
+        "input_tokens": 45000,
+        "cache_read_tokens": 380000,
+        "cache_creation_tokens": 12000,
+        "output_tokens": 6400,
+        "num_turns": 16,
+        "skill_invoked": false,
+        "skill_available": false,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 0.3333333333333333,
+        "success": false,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": false
+            },
+            {
+              "name": "plain decimal output",
+              "passed": false
+            },
+            {
+              "name": "uses csv module",
+              "passed": false
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": false
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/write-total/control/003"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "write-total",
+        "task_category": "intended",
+        "task_split": "held-out",
+        "repetition": 4,
+        "arm": "control",
+        "run_order": 1,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 104.0,
+        "cost": 0.52,
+        "input_tokens": 45000,
+        "cache_read_tokens": 380000,
+        "cache_creation_tokens": 12000,
+        "output_tokens": 6400,
+        "num_turns": 17,
+        "skill_invoked": false,
+        "skill_available": false,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 0.5,
+        "success": false,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": true
+            },
+            {
+              "name": "plain decimal output",
+              "passed": false
+            },
+            {
+              "name": "uses csv module",
+              "passed": false
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": false
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/write-total/control/004"
+      }
+    ],
+    "treatment": [
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "fix-total",
+        "task_category": "intended",
+        "task_split": "dev",
+        "repetition": 1,
+        "arm": "treatment",
+        "run_order": 2,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 73.0,
+        "cost": 0.33,
+        "input_tokens": 38000,
+        "cache_read_tokens": 320000,
+        "cache_creation_tokens": 9000,
+        "output_tokens": 5200,
+        "num_turns": 11,
+        "skill_invoked": true,
+        "skill_available": true,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 1.0,
+        "success": true,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": true
+            },
+            {
+              "name": "plain decimal output",
+              "passed": true
+            },
+            {
+              "name": "uses csv module",
+              "passed": true
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": true
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/fix-total/treatment/001"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "fix-total",
+        "task_category": "intended",
+        "task_split": "dev",
+        "repetition": 2,
+        "arm": "treatment",
+        "run_order": 2,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 76.0,
+        "cost": 0.35,
+        "input_tokens": 38000,
+        "cache_read_tokens": 320000,
+        "cache_creation_tokens": 9000,
+        "output_tokens": 5200,
+        "num_turns": 12,
+        "skill_invoked": false,
+        "skill_available": true,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 1.0,
+        "success": true,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": true
+            },
+            {
+              "name": "plain decimal output",
+              "passed": true
+            },
+            {
+              "name": "uses csv module",
+              "passed": true
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": true
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/fix-total/treatment/002"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "fix-total",
+        "task_category": "intended",
+        "task_split": "dev",
+        "repetition": 3,
+        "arm": "treatment",
+        "run_order": 2,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 79.0,
+        "cost": 0.37,
+        "input_tokens": 38000,
+        "cache_read_tokens": 320000,
+        "cache_creation_tokens": 9000,
+        "output_tokens": 5200,
+        "num_turns": 13,
+        "skill_invoked": true,
+        "skill_available": true,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 0.8333333333333334,
+        "success": false,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": true
+            },
+            {
+              "name": "plain decimal output",
+              "passed": true
+            },
+            {
+              "name": "uses csv module",
+              "passed": true
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": false
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/fix-total/treatment/003"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "fix-total",
+        "task_category": "intended",
+        "task_split": "dev",
+        "repetition": 4,
+        "arm": "treatment",
+        "run_order": 2,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 82.0,
+        "cost": 0.39,
+        "input_tokens": 38000,
+        "cache_read_tokens": 320000,
+        "cache_creation_tokens": 9000,
+        "output_tokens": 5200,
+        "num_turns": 14,
+        "skill_invoked": true,
+        "skill_available": true,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 1.0,
+        "success": true,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": true
+            },
+            {
+              "name": "plain decimal output",
+              "passed": true
+            },
+            {
+              "name": "uses csv module",
+              "passed": true
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": true
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/fix-total/treatment/004"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "write-total",
+        "task_category": "intended",
+        "task_split": "held-out",
+        "repetition": 1,
+        "arm": "treatment",
+        "run_order": 2,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 80.0,
+        "cost": 0.38,
+        "input_tokens": 40000,
+        "cache_read_tokens": 340000,
+        "cache_creation_tokens": 10000,
+        "output_tokens": 5600,
+        "num_turns": 12,
+        "skill_invoked": true,
+        "skill_available": true,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 0.8333333333333334,
+        "success": false,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": true
+            },
+            {
+              "name": "plain decimal output",
+              "passed": true
+            },
+            {
+              "name": "uses csv module",
+              "passed": true
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": false
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/write-total/treatment/001"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "write-total",
+        "task_category": "intended",
+        "task_split": "held-out",
+        "repetition": 2,
+        "arm": "treatment",
+        "run_order": 2,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 82.0,
+        "cost": 0.39999999999999997,
+        "input_tokens": 40000,
+        "cache_read_tokens": 340000,
+        "cache_creation_tokens": 10000,
+        "output_tokens": 5600,
+        "num_turns": 13,
+        "skill_invoked": true,
+        "skill_available": true,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": null,
+        "success": false,
+        "grade_status": "error",
+        "feedback": null,
+        "artifacts": "claude-sonnet-5/write-total/treatment/002"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "write-total",
+        "task_category": "intended",
+        "task_split": "held-out",
+        "repetition": 3,
+        "arm": "treatment",
+        "run_order": 2,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 84.0,
+        "cost": 0.42,
+        "input_tokens": 40000,
+        "cache_read_tokens": 340000,
+        "cache_creation_tokens": 10000,
+        "output_tokens": 5600,
+        "num_turns": 14,
+        "skill_invoked": true,
+        "skill_available": true,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 0.5,
+        "success": false,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": true
+            },
+            {
+              "name": "plain decimal output",
+              "passed": false
+            },
+            {
+              "name": "uses csv module",
+              "passed": false
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": false
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/write-total/treatment/003"
+      },
+      {
+        "complete": true,
+        "model": "claude-sonnet-5",
+        "task_id": "write-total",
+        "task_category": "intended",
+        "task_split": "held-out",
+        "repetition": 4,
+        "arm": "treatment",
+        "run_order": 2,
+        "seed": 1234,
+        "attempt": 1,
+        "status": "ok",
+        "error": null,
+        "duration": 86.0,
+        "cost": 0.44,
+        "input_tokens": 40000,
+        "cache_read_tokens": 340000,
+        "cache_creation_tokens": 10000,
+        "output_tokens": 5600,
+        "num_turns": 15,
+        "skill_invoked": true,
+        "skill_available": true,
+        "files_changed": [
+          "sum_csv.py"
+        ],
+        "score": 0.5,
+        "success": false,
+        "grade_status": "graded",
+        "feedback": {
+          "checks": [
+            {
+              "name": "script exists",
+              "passed": true
+            },
+            {
+              "name": "runs without error",
+              "passed": true
+            },
+            {
+              "name": "correct total",
+              "passed": true
+            },
+            {
+              "name": "plain decimal output",
+              "passed": false
+            },
+            {
+              "name": "uses csv module",
+              "passed": false
+            },
+            {
+              "name": "uses decimal.Decimal",
+              "passed": false
+            }
+          ]
+        },
+        "artifacts": "claude-sonnet-5/write-total/treatment/004"
+      }
+    ]
+  }
+}

@@ -1,0 +1,34 @@
+name: csv-totals
+preset: skill
+skill: ./skills/csv-totals
+
+harness: claude
+
+models:
+  - claude-sonnet-5
+
+tasks:
+  - ./tasks/dev/*.yaml
+  - ./tasks/heldout/*.yaml
+
+runs: 2                     # sample budget; use 5+ as a starting point for real claims
+timeout_seconds: 600
+parallel: 1
+
+# Reproducible API-equivalent costs: look the rates up on the provider's own
+# pricing page BEFORE the run and record them here with source and date. The
+# saved run then reproduces the estimate and the report shows the API-equivalent
+# cost table. Rates below are illustrative (checked 2026-09-27) — refresh them.
+pricing:
+  source: https://www.anthropic.com/pricing
+  date: "2026-09-27"
+  currency: USD
+  rates:
+    claude-sonnet-5:
+      input: 3.00
+      output: 15.00
+      cache_read: 0.30
+      cache_write: 3.75
+
+# Dev tasks are for iteration; held-out tasks are frozen validation. The report
+# shows them in separate By split rows and recommends on held-out pairs only.

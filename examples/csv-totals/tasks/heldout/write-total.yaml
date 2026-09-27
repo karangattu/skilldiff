@@ -1,0 +1,16 @@
+id: write-total
+category: intended
+# Held-out: frozen before the full run. Do not edit this task, its fixture, or
+# its grader after you see results — this set is the honest estimate.
+split: held-out
+
+repo: ../../fixtures/heldout-write
+
+prompt: |
+  We need a small utility in this project. Write `sum_csv.py` so that
+  `python sum_csv.py <file> <column>` prints the total of that column.
+  `data.csv` has an `amount` column that should total correctly.
+
+grader:
+  type: command
+  command: python3 "$SKILLDIFF_TASK_DIR/../../graders/grade_csv_totals.py"

@@ -1,0 +1,17 @@
+id: fix-total
+# intended: the skill should help here.
+category: intended
+# Split is inferred from the dev/ directory (it may also be set explicitly).
+
+# The fixture is copied into a fresh workspace for every run.
+repo: ../../fixtures/dev-fix
+
+prompt: |
+  `python sum_csv.py data.csv amount` prints the wrong total for data.csv.
+  Fix `sum_csv.py` so the total is correct. Keep the command line the same.
+
+grader:
+  type: command
+  # Graders run inside the workspace. Keep them outside the fixture so the
+  # agent cannot see or edit them; $SKILLDIFF_TASK_DIR is this task's folder.
+  command: python3 "$SKILLDIFF_TASK_DIR/../../graders/grade_csv_totals.py"
