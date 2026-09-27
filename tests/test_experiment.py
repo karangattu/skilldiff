@@ -58,6 +58,8 @@ def test_experiment_runner_end_to_end(tmp_path: Path, monkeypatch):
         run_data = json.load(f)
         assert run_data["score"] == 1.0
         assert run_data["cost"] == 0.25
+        assert run_data["task_split"] == "dev"
+    assert results["task_details"][0]["split"] == "dev"
 
 
 def _setup(tmp_path: Path, runs: int = 2, **cfg_kwargs):
@@ -131,3 +133,60 @@ def test_experiment_parallel_and_skill_pack(tmp_path: Path, monkeypatch):
     assert [r["repetition"] for r in results["runs"]["treatment"]] == [1, 2, 3, 4]
     assert all(r["success"] for r in results["runs"]["treatment"])
     assert not any(r["success"] for r in results["runs"]["control"])
+
+
+def test_experiment_saves_pricing_basis_and_report_reproduces_it(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    skill_dir = tmp_path / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# My Skill")
+    task_file = tmp_path / "task.yaml"
+    task_file.write_text("id: t1\n")
+    task = TaskConfig(
+        id="t1",
+        prompt="Do it",
+        grader=GraderConfig(type="command", command="exit 0"),
+        source_path=task_file,
+    )
+    pricing = {
+        "source": "https://example.com/pricing",
+        "date": "2026-09-27",
+        "currency": "USD",
+        # Per 1M tokens; sized so 2 mock runs (100 input + 50 output) = $4.00 per arm.
+        "rates": {
+            "haiku": {
+                "input": 10000.0,
+                "output": 20000.0,
+                "cache_read": 0.0,
+                "cache_write": 0.0,
+            }
+        },
+    }
+    exp_cfg = ExperimentConfig(
+        name="priced",
+        skill=skill_dir,
+        models=["haiku"],
+        tasks_patterns=["task.yaml"],
+        runs=2,
+        claude=ClaudeConfig(),
+        pricing=pricing,
+    )
+    results = ExperimentRunner(
+        exp_cfg, [task], output_dir=tmp_path / "runs", agent_runner=AgentRunner()
+    ).run()
+
+    assert results["pricing"] == pricing
+    run_dir = Path(results["run_dir"])
+    md = (run_dir / "report.md").read_text()
+    assert "## API-equivalent cost" in md
+    assert "https://example.com/pricing" in md
+    assert "checked 2026-09-27" in md
+    assert "| Control | 200 | 0 | 0 | 100 | $4.00 |" in md
+
+    # Regenerating the report from the saved run alone reproduces the estimate.
+    saved = json.loads((run_dir / "results.json").read_text())
+    assert saved["pricing"] == pricing
+    from skilldiff.reporter import build_markdown_report
+
+    rebuilt = build_markdown_report(saved, run_root=run_dir)
+    assert "| Control | 200 | 0 | 0 | 100 | $4.00 |" in rebuilt

@@ -453,6 +453,7 @@ class ExperimentRunner:
             "parallel": self.config.parallel,
             "thresholds": dict(getattr(self.config, "thresholds", {}) or {}),
             "failure_policy": dict(getattr(self.config, "failure_policy", {}) or {}),
+            "pricing": dict(getattr(self.config, "pricing", {}) or {}),
             "seed": self._seed,
             "claude": asdict(self.config.claude),
             "codex": asdict(self.config.codex),
@@ -464,6 +465,7 @@ class ExperimentRunner:
                     "repo": t.repo,
                     "grader": t.grader.command if t.grader else None,
                     "category": getattr(t, "category", "general"),
+                    "split": getattr(t, "split", "dev"),
                 }
                 for t in self.tasks
             ],
@@ -1048,6 +1050,7 @@ class ExperimentRunner:
                     "model": model,
                     "task_id": task.id,
                     "task_category": getattr(task, "category", "general"),
+                    "task_split": getattr(task, "split", "dev"),
                     "repetition": pair.repetition,
                     "arm": arm,
                     "run_order": (order.index(arm) + 1) if arm in order else 3,
@@ -1208,6 +1211,7 @@ class ExperimentRunner:
             {
                 "id": t.id,
                 "category": getattr(t, "category", "general"),
+                "split": getattr(t, "split", "dev"),
                 "repo": t.repo,
                 "grader": t.grader.command if t.grader else None,
             }
@@ -1328,6 +1332,9 @@ class ExperimentRunner:
             "warnings": warnings,
             "settings": _settings_summary(self.config),
             "thresholds": dict(getattr(self.config, "thresholds", {}) or {}),
+            # Cost basis recorded with the run: regenerated reports reproduce
+            # the API-equivalent estimate from these rates and the token counts.
+            "pricing": dict(getattr(self.config, "pricing", {}) or {}),
             "provenance": provenance,
             "by_model": by_model,
             "by_category": by_category,
