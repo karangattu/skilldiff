@@ -86,6 +86,22 @@ parallel: 1                 # pairs to run at once
 #   required_token_reduction_pct: 20    # session-token saving (compression)
 #   meaningful_score_gain_pp: 5         # gain needed to call an improvement useful
 
+# API-equivalent cost basis (optional but recommended on subscription auth).
+# Look the rates up on the provider's own pricing page BEFORE the run and
+# record them here with source and date; the saved run then reproduces the
+# estimate and the report shows the API-equivalent cost per arm. Rates are
+# per 1M tokens for each model listed under `models`:
+# pricing:
+#   source: https://www.anthropic.com/pricing
+#   date: "2026-09-27"
+#   currency: USD
+#   rates:
+#     {model}:
+#       input: 3.00
+#       output: 15.00
+#       cache_read: 0.30
+#       cache_write: 3.75
+
 {harness_block}"""
 
 SKILL_AB_YAML = """name: {name}
@@ -117,6 +133,18 @@ parallel: 1
 #   acceptable_score_regression_pp: 2   # minified may lose at most 2pp
 #   required_token_reduction_pct: 20    # with at least 20% fewer session tokens
 #   required_cost_reduction_pct: 10
+
+# API-equivalent cost basis: record provider rates before the run (per 1M
+# tokens, with source and date) so regenerated reports reproduce the estimate:
+# pricing:
+#   source: https://www.anthropic.com/pricing
+#   date: "2026-09-27"
+#   rates:
+#     {model}:
+#       input: 3.00
+#       output: 15.00
+#       cache_read: 0.30
+#       cache_write: 3.75
 
 {harness_block}"""
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from skilldiff.config import load_experiment, load_task
+from skilldiff.config import load_experiment, load_task, parse_pricing
 
 
 def test_load_task_valid(tmp_path: Path):
@@ -130,3 +130,120 @@ def test_load_experiment_rejects_unknown_claude_auth(tmp_path: Path):
 
     with pytest.raises(ValueError, match="claude.auth"):
         load_experiment(exp_file)
+
+
+def _pricing_yaml() -> str:
+    return (
+        "pricing:\n"
+        "  source: https://example.com/pricing\n"
+        '  date: "2026-09-27"\n'
+        "  currency: USD\n"
+        "  rates:\n"
+        "    sonnet:\n"
+        "      input: 3.0\n"
+        "      output: 15.0\n"
+        "      cache_read: 0.3\n"
+        "      cache_write: 3.75\n"
+    )
+
+
+def test_load_experiment_pricing_block(tmp_path: Path):
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Test")
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    (tasks_dir / "task.yaml").write_text("id: one\nprompt: Do it\n")
+    exp_file = tmp_path / "skilldiff.yaml"
+    exp_file.write_text(
+        "name: test\n"
+        "skill: ./skill\n"
+        "models:\n  - sonnet\n"
+        "tasks:\n  - ./tasks/*.yaml\n" + _pricing_yaml()
+    )
+
+    exp_cfg, _ = load_experiment(exp_file)
+    assert exp_cfg.pricing["source"] == "https://example.com/pricing"
+    assert exp_cfg.pricing["date"] == "2026-09-27"
+    assert exp_cfg.pricing["currency"] == "USD"
+    assert exp_cfg.pricing["rates"]["sonnet"]["input"] == 3.0
+    assert exp_cfg.pricing["rates"]["sonnet"]["cache_write"] == 3.75
+
+
+def test_parse_pricing_requires_provenance_and_complete_rates():
+    assert parse_pricing(None) == {}
+    assert parse_pricing({}) == {}
+
+    with pytest.raises(ValueError, match="pricing.source"):
+        parse_pricing({"date": "2026-09-27", "rates": {"m": _rates()}})
+    with pytest.raises(ValueError, match="pricing.date"):
+        parse_pricing({"source": "s", "rates": {"m": _rates()}})
+    with pytest.raises(ValueError, match="pricing.rates"):
+        parse_pricing({"source": "s", "date": "2026-09-27", "rates": {}})
+    with pytest.raises(ValueError, match="cache_read"):
+        parse_pricing(
+            {
+                "source": "s",
+                "date": "2026-09-27",
+                "rates": {"m": {"input": 1.0, "output": 2.0, "cache_write": 1.0}},
+            }
+        )
+    with pytest.raises(ValueError, match="per 1M tokens"):
+        parse_pricing(
+            {
+                "source": "s",
+                "date": "2026-09-27",
+                "rates": {"m": {**_rates(), "input": "three"}},
+            }
+        )
+    with pytest.raises(ValueError, match=">= 0"):
+        parse_pricing(
+            {
+                "source": "s",
+                "date": "2026-09-27",
+                "rates": {"m": {**_rates(), "output": -1.0}},
+            }
+        )
+
+
+def _rates() -> dict:
+    return {"input": 1.0, "output": 2.0, "cache_read": 0.1, "cache_write": 1.25}
+
+
+def test_load_task_split_explicit_and_inferred(tmp_path: Path):
+    dev_dir = tmp_path / "tasks" / "dev"
+    held_dir = tmp_path / "tasks" / "heldout"
+    dev_dir.mkdir(parents=True)
+    held_dir.mkdir(parents=True)
+
+    explicit = held_dir / "explicit.yaml"
+    explicit.write_text("id: e\nprompt: Do it\nsplit: held-out\n")
+    assert load_task(explicit).split == "held-out"
+
+    inferred_held = held_dir / "inferred.yaml"
+    inferred_held.write_text("id: h\nprompt: Do it\n")
+    assert load_task(inferred_held).split == "held-out"
+
+    inferred_dev = dev_dir / "inferred.yaml"
+    inferred_dev.write_text("id: d\nprompt: Do it\n")
+    assert load_task(inferred_dev).split == "dev"
+
+    plain = tmp_path / "tasks" / "plain.yaml"
+    plain.write_text("id: p\nprompt: Do it\n")
+    assert load_task(plain).split == "dev"
+
+
+def test_load_task_split_rejects_contradictions_and_bad_values(tmp_path: Path):
+    held_dir = tmp_path / "tasks" / "heldout"
+    held_dir.mkdir(parents=True)
+
+    contradict = held_dir / "bad.yaml"
+    contradict.write_text("id: b\nprompt: Do it\nsplit: dev\n")
+    with pytest.raises(ValueError, match="contradicts its directory"):
+        load_task(contradict)
+
+    bad = tmp_path / "tasks" / "bad-value.yaml"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text("id: v\nprompt: Do it\nsplit: validation\n")
+    with pytest.raises(ValueError, match="split must be 'dev' or 'held-out'"):
+        load_task(bad)

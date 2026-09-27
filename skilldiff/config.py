@@ -64,6 +64,12 @@ class TaskConfig:
     # stay out of the way), ambiguous (unclear trigger), general (default),
     # or any custom label. Reported separately in By category.
     category: str = "general"
+    # Development vs validation split: "dev" (iterate here) or "held-out"
+    # (frozen before the full run; the honest estimate). Declared explicitly
+    # with `split:` or inferred from a `dev/`/`heldout/` task directory.
+    # Reports show the split separately so dev results are never mistaken
+    # for validation; held-out pairs drive the shipping recommendation.
+    split: str = "dev"
     # Optional grader validation fixtures (relative to the task file):
     #   validation: {good: ../validation/<id>-good, broken: [../validation/<id>-bad1]}
     # `good` is a workspace that must score ~100%; `broken` entries must score <100%.
@@ -128,6 +134,11 @@ class ExperimentConfig:
     #     (failed sessions score 0). Grader timeouts/errors are always N/A.
     #   missing: currently always "exclude".
     failure_policy: dict[str, str] = field(default_factory=dict)
+    # Optional API-equivalent cost basis (all optional but validated):
+    #   {source, date, currency, rates: {model: {input, output, cache_read,
+    #   cache_write}}} with rates per 1M tokens. Saved with the run so
+    #   regenerated reports reproduce the estimate without re-looking-up prices.
+    pricing: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_skill_comparison(self) -> bool:
@@ -233,6 +244,115 @@ def parse_grader_config(data: Optional[dict[str, Any]]) -> Optional[GraderConfig
     )
 
 
+_SPLIT_ALIASES = {
+    "dev": "dev",
+    "development": "dev",
+    "held-out": "held-out",
+    "heldout": "held-out",
+    "held_out": "held-out",
+    "holdout": "held-out",
+}
+_HELD_OUT_DIRS = {"heldout", "held-out", "held_out", "holdout"}
+_DEV_DIRS = {"dev", "development"}
+
+
+def infer_task_split(task_path: Optional[Path]) -> str:
+    """Split implied by the task's directory (`heldout/` or `dev/`); "" if none."""
+    parts = task_path.resolve().parent.parts if task_path else ()
+    for part in reversed(parts):
+        name = part.strip().lower()
+        if name in _HELD_OUT_DIRS:
+            return "held-out"
+        if name in _DEV_DIRS:
+            return "dev"
+    return ""
+
+
+def parse_task_split(value: Any, task_path: Optional[Path], task_id: str) -> str:
+    """Resolve the dev/held-out split for one task.
+
+    An explicit `split:` must agree with the task's directory (a `heldout/`
+    task cannot claim to be dev). Unlabeled tasks count as dev: development
+    results must never be mistaken for validation.
+    """
+    inferred = infer_task_split(task_path)
+    explicit = ""
+    if value is not None and str(value).strip():
+        key = str(value).strip().lower()
+        if key not in _SPLIT_ALIASES:
+            raise ValueError(
+                f"Task {task_id}: split must be 'dev' or 'held-out' (got {value!r})"
+            )
+        explicit = _SPLIT_ALIASES[key]
+    if explicit and inferred and explicit != inferred:
+        raise ValueError(
+            f"Task {task_id}: split '{explicit}' contradicts its directory "
+            f"({inferred}); move the task file or drop the split field"
+        )
+    return explicit or inferred or "dev"
+
+
+PRICING_RATE_KEYS = ("input", "output", "cache_read", "cache_write")
+
+
+def parse_pricing(data: Any) -> dict[str, Any]:
+    """Validate the optional `pricing` block (API-equivalent cost basis).
+
+    Rates are per 1M tokens, keyed by the model names in the experiment, and
+    are saved with the run so regenerated reports reproduce the estimate
+    instead of asking anyone to look prices up again:
+
+        pricing:
+          source: https://www.anthropic.com/pricing
+          date: "2026-09-27"
+          currency: USD
+          rates:
+            claude-sonnet-5:
+              input: 3.00
+              output: 15.00
+              cache_read: 0.30
+              cache_write: 3.75
+    """
+    if not data:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("Experiment 'pricing' must be a mapping")
+    source = str(data.get("source", "") or "").strip()
+    if not source:
+        raise ValueError("pricing.source must name where the rates came from")
+    date = str(data.get("date", "") or "").strip()
+    if not date:
+        raise ValueError("pricing.date must record when the rates were checked")
+    currency = str(data.get("currency", "USD") or "USD").strip().upper() or "USD"
+    rates_raw = data.get("rates")
+    if not isinstance(rates_raw, dict) or not rates_raw:
+        raise ValueError(
+            "pricing.rates must map model names to per-1M-token rates "
+            "(input, output, cache_read, cache_write)"
+        )
+    rates: dict[str, dict[str, float]] = {}
+    for model, entry in rates_raw.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"pricing.rates.{model} must be a mapping of token rates")
+        out: dict[str, float] = {}
+        for key in PRICING_RATE_KEYS:
+            if key not in entry or entry[key] is None:
+                raise ValueError(
+                    f"pricing.rates.{model} must include '{key}' (rate per 1M tokens)"
+                )
+            try:
+                val = float(entry[key])
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"pricing.rates.{model}.{key} must be a number per 1M tokens"
+                )
+            if val < 0:
+                raise ValueError(f"pricing.rates.{model}.{key} must be >= 0")
+            out[key] = val
+        rates[str(model)] = out
+    return {"source": source, "date": date, "currency": currency, "rates": rates}
+
+
 def load_task(task_path: Path) -> TaskConfig:
     if not task_path.exists():
         raise FileNotFoundError(f"Task file not found: {task_path}")
@@ -251,6 +371,7 @@ def load_task(task_path: Path) -> TaskConfig:
     grader_data = data.get("grader")
     grader = parse_grader_config(grader_data)
     category = str(data.get("category", "general") or "general").strip().lower() or "general"
+    split = parse_task_split(data.get("split"), task_path, task_id)
     validation = data.get("validation") or {}
     if validation is not None and not isinstance(validation, dict):
         raise ValueError(f"Task {task_id}: 'validation' must be a mapping")
@@ -262,6 +383,7 @@ def load_task(task_path: Path) -> TaskConfig:
         grader=grader,
         source_path=task_path.resolve(),
         category=category,
+        split=split,
         validation=dict(validation or {}),
     )
 
@@ -487,6 +609,8 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     failure_policy.setdefault("agent_failure", "exclude")
     failure_policy.setdefault("missing", "exclude")
 
+    pricing = parse_pricing(data.get("pricing"))
+
     exp_config = ExperimentConfig(
         name=name,
         skill=skill_path,
@@ -509,6 +633,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         timeout_seconds=timeout_seconds,
         parallel=parallel,
         thresholds=thresholds,
+        pricing=pricing,
     )
 
     # Preset consistency: each preset configures the shared runner with clear
