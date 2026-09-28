@@ -386,6 +386,8 @@ Reports label the arms per preset (Original/Minified, Skill A/Skill B, Without/W
 | `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run |
 | `skilldiff report [RUN_DIR]` | Rebuild reports for a run |
 | `skilldiff compare RUN_A RUN_B [--json] [--strict]` | Compare two runs |
+| `skilldiff lint [SKILL_DIR] [--json]` | Lint SKILL.md frontmatter, trigger keywords, and length |
+| `skilldiff diagnose [RUN_DIR] [--json]` | Diagnose failure modes, regressions, and adoption gaps |
 
 </details>
 

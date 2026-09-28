@@ -32,3 +32,4 @@ runs/
 /skilldiff.yaml
 .DS_Store
 /evaluations
+uv.lock

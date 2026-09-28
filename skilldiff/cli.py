@@ -704,7 +704,7 @@ def cmd_check(args: argparse.Namespace) -> int:
                     )
             except Exception:
                 pass
-        if not (task.grader and task.grader.command):
+        if not (task.grader and (task.grader.command or task.grader.type in {"llm", "rubric"})):
             warn(f"task {task.id}: no grader, so every run scores N/A (only cost/time compared)")
             continue
         if getattr(args, "no_grade", False):
@@ -731,7 +731,15 @@ def cmd_check(args: argparse.Namespace) -> int:
                 continue
             if ws.isolation_issues:
                 warn(f"task {task.id}: workspace isolation notes: {'; '.join(ws.isolation_issues)}")
-            grader = Grader(task.grader, cfg.skill_names, cfg.models[0], task_dir=task_dir)
+            grader = Grader(
+                task.grader,
+                cfg.skill_names,
+                cfg.models[0],
+                task_dir=task_dir,
+                allowed_paths=getattr(task, "allowed_paths", None),
+                forbidden_paths=getattr(task, "forbidden_paths", None),
+                task_prompt=task.prompt,
+            )
             grade = grader.grade_workspace(ws.root)
             # Validation fixtures: untouched must fail, known-good must pass,
             # deliberately broken must fail. A grader that fails everything is broken.
@@ -985,6 +993,92 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_lint(args: argparse.Namespace) -> int:
+    from skilldiff.linter import lint_skill
+
+    target = Path(args.skill_dir or ".").resolve()
+    res = lint_skill(target)
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                {
+                    "valid": res.valid,
+                    "errors": res.errors,
+                    "warnings": res.warnings,
+                    "stats": res.stats,
+                },
+                indent=2,
+            )
+        )
+        return 0 if res.valid else 1
+
+    print(f"Linting skill at {target}...")
+    stats = res.stats
+    if stats:
+        print(
+            f"  {stats.get('words', 0)} words · "
+            f"~{stats.get('estimated_tokens', 0)} tokens · "
+            f"{stats.get('characters', 0)} chars"
+        )
+
+    if res.errors:
+        print("\nErrors:")
+        for err in res.errors:
+            print(f"  ❌ {err}")
+
+    if res.warnings:
+        print("\nWarnings:")
+        for w in res.warnings:
+            print(f"  ⚠️  {w}")
+
+    if res.valid and not res.warnings:
+        print("\n✅ Skill passes all lint checks.")
+    elif res.valid:
+        print("\n✅ Skill valid (with warnings).")
+    else:
+        print("\n❌ Skill lint failed.")
+
+    return 0 if res.valid else 1
+
+
+def cmd_diagnose(args: argparse.Namespace) -> int:
+    from skilldiff.diagnose import diagnose_run
+
+    run_dir = _resolve_run_dir(args)
+    if not run_dir:
+        print("No experiment run found to diagnose.", file=sys.stderr)
+        return 1
+
+    try:
+        report = diagnose_run(run_dir)
+    except Exception as exc:
+        print(f"Diagnosis failed: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2))
+        return 0
+
+    print(f"Diagnosis for {report.get('run_dir')} ({report.get('total_pairs')} pairs):")
+    under = report.get("under_triggered", [])
+    over = report.get("over_triggered", [])
+    regs = report.get("regressions", [])
+    blast = report.get("blast_violations", [])
+    bloat = report.get("token_bloat_tasks", [])
+
+    print(f"  Under-triggering: {len(under)} run(s)")
+    print(f"  Over-triggering:  {len(over)} run(s)")
+    print(f"  Regressions:      {len(regs)} run(s)")
+    print(f"  Blast violations: {len(blast)} run(s)")
+    print(f"  Token bloat:      {len(bloat)} run(s)")
+
+    print("\nActionable Recommendations:")
+    for rec in report.get("recommendations", []):
+        print(f"  • {rec}")
+
+    return 0
+
+
 def _print_report_paths(results: dict) -> None:
     report = results.get("report", {}) or {}
     if report.get("html"):
@@ -1211,6 +1305,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reject incompatible experiments (different models/tasks/hashes) instead of warning",
     )
     compare_parser.set_defaults(func=cmd_compare)
+
+    lint_parser = subparsers.add_parser(
+        "lint", help="Static linter for SKILL.md: frontmatter, triggers, links, and length"
+    )
+    lint_parser.add_argument("skill_dir", nargs="?", default=".", help="Path to skill directory")
+    lint_parser.add_argument("--json", action="store_true", help="Output lint report as JSON")
+    lint_parser.set_defaults(func=cmd_lint)
+
+    diagnose_parser = subparsers.add_parser(
+        "diagnose", help="Diagnose failure modes, regressions, and adoption gaps in a run"
+    )
+    diagnose_parser.add_argument("run_dir", nargs="?", help="Path to run directory or results.json")
+    diagnose_parser.add_argument("--config", "-c", help="Look for runs next to this config")
+    diagnose_parser.add_argument("--json", action="store_true", help="Output diagnosis as JSON")
+    diagnose_parser.set_defaults(func=cmd_diagnose)
 
     return parser
 
