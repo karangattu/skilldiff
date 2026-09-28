@@ -111,6 +111,33 @@ Then complete these steps:
 The sections below hold all reference material. Beginners can stop here and run the demo first.
 
 <details>
+<summary id="why-not-run-it-by-hand">Why not just ask an agent to run both arms by hand?</summary>
+
+You can. Ask an agent to do the task once with the skill and once without, and you will get two results and a story about them. What you will not get is a measurement you can act on, because most of the work that makes the comparison trustworthy is bookkeeping that is easy to skip and hard to notice you skipped.
+
+Here is what a hand-rolled comparison usually does, and what skilldiff does instead:
+
+| By hand | SkillDiff |
+|---|---|
+| Runs both arms in your working repo | A fresh copy of the fixture per arm, with no `.git` history; escaping symlinks are rejected |
+| Lets the agent see which run is which, and sometimes grade its own work | Graders see `candidate-A` and `candidate-B`, with names and arm labels removed |
+| Runs one arm, then the other | Seeded, balanced order, so neither arm keeps the warm cache every time |
+| Compares two numbers by eye | Paired differences with a bootstrap 95% confidence interval |
+| Edits the skill while testing | Each run freezes skills, tasks, fixtures, and graders under a sha256 manifest |
+| Judges whether the output looked good | Also records adoption, cost, time, and tokens for both arms |
+
+A few of these matter more than the rest:
+
+- **Isolation.** If the control arm can reach the skill, the experiment has no clean baseline. SkillDiff checks for this and marks the run INVALID rather than printing a number you would misread.
+- **Adoption.** The most common way a skill "fails" is that it never loaded. A by-hand run rarely catches this, because nobody checks whether the agent read the skill or just happened to solve the task. The report counts it.
+- **Uncertainty.** Two runs that differ by 20 points mean little on their own. The report gives an interval, says when it includes zero, and flags a ceiling effect when control already scores 100%.
+- **Reproducibility.** The seed, hashes, and frozen inputs are recorded, so you can say later what was tested, and resume without silently mixing in a changed skill.
+
+When by hand is fine: you want a quick sanity check, a single anecdote, or a feel for whether a skill does anything at all. Reach for SkillDiff when the result will decide whether the skill ships, or when someone will ask you to defend the number.
+
+</details>
+
+<details>
 <summary>Use it from your agent</summary>
 
 SkillDiff ships as an agent skill. Your agent designs tasks, writes graders, runs the test, and explains the report.
