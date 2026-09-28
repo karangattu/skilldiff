@@ -81,10 +81,17 @@ PARENT_SESSION_VARS = (
 
 def _kill_group(proc: subprocess.Popen) -> None:
     if os.name != "posix":
-        proc.kill()
+        if hasattr(proc, "kill"):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return
+    pid = getattr(proc, "pid", None)
+    if type(pid) is not int or pid <= 1:
         return
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
+        os.killpg(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         pass
 

@@ -236,3 +236,37 @@ def test_claude_sessions_do_not_inherit_parent_claude_code_session(
     )
     AgentRunner(claude_bin=str(fake)).run("x", tmp_path, "sonnet", ClaudeConfig())
     assert capture.read_text() == "unset unset keep-me"
+
+
+def test_kill_group_safe_pid_handling():
+    import signal
+    from unittest.mock import MagicMock, patch
+
+    from skilldiff.runner import _kill_group
+
+    with patch("os.name", "posix"), patch("os.killpg") as mock_killpg:
+        _kill_group(MagicMock())
+        mock_killpg.assert_not_called()
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 1
+        _kill_group(mock_proc)
+        mock_killpg.assert_not_called()
+
+        mock_proc.pid = 0
+        _kill_group(mock_proc)
+        mock_killpg.assert_not_called()
+
+        mock_proc.pid = -5
+        _kill_group(mock_proc)
+        mock_killpg.assert_not_called()
+
+        mock_proc.pid = 4321
+        _kill_group(mock_proc)
+        mock_killpg.assert_called_once_with(4321, signal.SIGKILL)
+
+    with patch("os.name", "nt"):
+        mock_proc = MagicMock()
+        _kill_group(mock_proc)
+        mock_proc.kill.assert_called_once()
+

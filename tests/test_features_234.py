@@ -230,7 +230,7 @@ def test_runner_container_isolation(tmp_path: Path):
 
     with patch("shutil.which", return_value="/usr/local/bin/docker"), patch(
         "subprocess.Popen"
-    ) as mock_popen:
+    ) as mock_popen, patch("skilldiff.runner._kill_group"):
         mock_proc = MagicMock()
         mock_proc.wait.return_value = 0
         mock_popen.return_value = mock_proc
