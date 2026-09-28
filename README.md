@@ -207,7 +207,7 @@ Antigravity's own docs have moved its global location between releases (`~/.gemi
 </details>
 
 <details>
-<summary>How the comparison stays fair</summary>
+<summary id="how-the-comparison-stays-fair">How the comparison stays fair</summary>
 
 ```mermaid
 flowchart LR
