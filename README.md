@@ -133,10 +133,11 @@ What keeps it fair:
 - **Frozen inputs.** Each run keeps copies of its skills, tasks, fixtures, and graders under a versioned sha256 manifest, so editing the originals cannot change later pairs. Keep the evaluation output outside the skill and fixture directories.
 - **Safe stops and resume.** Every agent run has a timeout. Press Ctrl-C to stop and keep a report for the pairs that finished; resume refuses to mix in changed inputs.
 
-When by hand is fine: you want a quick sanity check, a single anecdote, or a
-feel for whether a skill does anything at all. Reach for SkillDiff when the
-result will decide whether the skill ships, or when someone will ask you to
-defend the number.
+| Do it by hand when… | Reach for SkillDiff when… |
+|---|---|
+| You want a quick sanity check. | The result will decide whether the skill ships. |
+| A single anecdote is enough. | Someone will ask you to defend the number. |
+| You want a feel for whether the skill does anything at all. | |
 
 </details>
 
