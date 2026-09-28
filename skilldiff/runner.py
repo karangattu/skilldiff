@@ -815,21 +815,48 @@ class AgentRunner:
                 usage = data.get("usage") or {}
                 input_tokens = int(usage.get("input_tokens", 0))
                 output_tokens = int(usage.get("output_tokens", 0))
+                cache_read_tokens = int(usage.get("cache_read_tokens", 0))
                 num_turns = int(data.get("num_turns") or 0)
                 tool_calls = int(data.get("tool_calls_count") or num_turns)
                 if data.get("status") and data.get("status") != "SUCCESS" and exit_code == 0:
                     exit_code = 1
         except (json.JSONDecodeError, ValueError, TypeError):
-            pass
+            cache_read_tokens = 0
+
+        transcript = f"STDOUT:\n{stdout}\n\nSTDERR:\n{execution.stderr}"
+        if isinstance(data, dict):
+            conv_id = data.get("conversation_id")
+            if conv_id:
+                cli_dir = Path.home() / ".gemini" / "antigravity-cli" / "brain" / conv_id
+                ide_dir = Path.home() / ".gemini" / "antigravity" / "brain" / conv_id
+                bases = [
+                    cli_dir / ".system_generated" / "logs",
+                    ide_dir / ".system_generated" / "logs",
+                ]
+                for base in bases:
+                    target = None
+                    for name in ("transcript_full.jsonl", "transcript.jsonl"):
+                        candidate = base / name
+                        if candidate.exists():
+                            target = candidate
+                            break
+                    if target:
+                        try:
+                            log_text = target.read_text(encoding="utf-8")
+                            transcript += f"\n\n--- AGY SESSION LOG ({conv_id}) ---\n{log_text}"
+                            break
+                        except Exception:
+                            pass
 
         result = RunResult(
             prompt=prompt,
             response=response,
-            transcript=f"STDOUT:\n{stdout}\n\nSTDERR:\n{execution.stderr}",
+            transcript=transcript,
             duration=duration,
             cost=cost,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
             tool_calls=tool_calls,
             exit_code=exit_code,
             error=execution.stderr if exit_code != 0 else None,

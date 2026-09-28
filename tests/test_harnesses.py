@@ -435,3 +435,62 @@ opencode:
     )
     with pytest.raises(ValueError, match="opencode.service must be 'go'"):
         load_experiment(exp_file_invalid)
+
+
+def test_antigravity_runner_cache_tokens_and_transcript(tmp_path: Path):
+    runner = AgentRunner(antigravity_bin="agy-mock")
+    cfg_agy = AntigravityConfig()
+
+    conv_id = "test-conv-1234"
+    brain_log_dir = (
+        Path.home()
+        / ".gemini"
+        / "antigravity-cli"
+        / "brain"
+        / conv_id
+        / ".system_generated"
+        / "logs"
+    )
+    brain_log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = brain_log_dir / "transcript_full.jsonl"
+    entry = '{"event": "tool_call", "tool": "view_file", "path": "skills/shiny-doctor/SKILL.md"}\n'
+    log_file.write_text(entry, encoding="utf-8")
+
+    try:
+        sample_stdout = json.dumps({
+            "conversation_id": conv_id,
+            "status": "SUCCESS",
+            "response": "Done",
+            "duration_seconds": 4.5,
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cache_read_tokens": 500,
+            },
+        })
+
+        with patch.object(AgentRunner, "_exec") as mock_subproc:
+            mock_subproc.return_value = ExecResult(
+                stdout=sample_stdout,
+                stderr="",
+                exit_code=0,
+                duration=4.5,
+            )
+
+            res = runner.run(
+                prompt="Fix",
+                cwd=tmp_path,
+                model="gemini-3.8-flash-high",
+                config=cfg_agy,
+                skill_names=["shiny-doctor"],
+            )
+
+            assert res.input_tokens == 1000
+            assert res.output_tokens == 200
+            assert res.cache_read_tokens == 500
+            assert "skills/shiny-doctor/SKILL.md" in res.transcript
+            assert res.skill_invoked is True
+    finally:
+        if log_file.exists():
+            log_file.unlink()
+
