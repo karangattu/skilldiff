@@ -115,14 +115,39 @@ The sections below hold all reference material. Beginners can stop here and run 
 
 SkillDiff ships as an agent skill. Your agent designs tasks, writes graders, runs the test, and explains the report.
 
-Install the skill once:
+There are two separate installs. Only the first one is yours:
 
-| Agent | Install | Invoke |
+- **The skilldiff skill** goes into your own agent once, so the agent can drive skilldiff. Use the command below.
+- **The skill under test** is copied into each fresh workspace by skilldiff itself, once per run. You never do this by hand. See [Where skilldiff installs the skill under test](#where-skilldiff-installs-the-skill-under-test).
+
+Install the skilldiff skill once. One command covers every supported agent (needs Node):
+
+```bash
+npx skills add karangattu/skilldiff -g -y -a claude-code
+```
+
+This is the [`skills` CLI](https://github.com/vercel-labs/skills). `-g` installs at user level so the skill is available in every project; without it the skill lands in the current folder, which is usually not what you want. `-a` names the agent to install into, so set it to the one you actually use. Run `npx skills update` later to refresh.
+
+Always pass `-a`. With no `-a` the CLI auto-detects your agents, and when it detects none it installs the skill into every agent it knows about, about sixty directories at once. Passing `-a` keeps the install to a single location.
+
+| Agent | `--agent` | Installs to |
 |---|---|---|
-| Claude Code | `/plugin marketplace add karangattu/skilldiff`, then `/plugin install skilldiff@skilldiff` | `/skilldiff:skilldiff <path>` |
-| Codex | Copy to `~/.agents/skills/skilldiff` | `$skilldiff <path>` |
-| OpenCode | Copy to `~/.config/opencode/skills/skilldiff` | Ask for it by name |
-| Gemini CLI | Copy to `~/.gemini/skills/skilldiff` | Ask for it by name |
+| Claude Code | `claude-code` | `~/.claude/skills/skilldiff` |
+| Codex | `codex` | `~/.agents/skills/skilldiff` |
+| OpenCode | `opencode` | `~/.agents/skills/skilldiff` |
+| Antigravity | `antigravity` | `~/.agents/skills/skilldiff` |
+
+The `--agent` names are not quite skilldiff's `--harness` names. SkillDiff's `--harness` flag takes `claude`, `codex`, `opencode`, and `antigravity`; note the Gemini CLI is `antigravity` there, because that is the harness name skilldiff accepts.
+
+These user-level paths are exactly the ones `skilldiff check` watches, so an existing install shows up as contamination in `check` output instead of silently skewing a run.
+
+If you cannot use `npx`, install the skill by hand instead: copy the `skills/skilldiff` folder into your agent's user-level skills directory (same locations as the workspace ones in [Where skilldiff installs the skill under test](#where-skilldiff-installs-the-skill-under-test), but under your home directory). Claude Code users can also install the plugin, which adds the `/skilldiff:skilldiff <path>` slash command:
+
+```bash
+# Inside Claude Code
+/plugin marketplace add karangattu/skilldiff
+/plugin install skilldiff@skilldiff
+```
 
 Ask in plain words:
 
@@ -130,6 +155,8 @@ Ask in plain words:
 /skilldiff:skilldiff ~/code/py-shiny/.claude/skills/shiny-docs
 Test if this skill helps sonnet and opus write current Shiny APIs.
 ```
+
+Only Claude Code gets the `/skilldiff:skilldiff` command. On Codex, OpenCode, and Antigravity, describe the same work in plain words and the agent picks up the skill.
 
 The agent then does the work:
 
@@ -139,6 +166,33 @@ The agent then does the work:
 4. Runs `skilldiff check` until the output is clean.
 5. Runs a smoke test with `--runs 1`.
 6. Asks you before the full run and shows run count and max cost.
+
+</details>
+
+<details>
+<summary id="where-skilldiff-installs-the-skill-under-test">Where skilldiff installs the skill under test</summary>
+
+Before each treatment run, skilldiff copies the skill under test into the fresh workspace. You never do this yourself. Some harnesses read more than one location, so skilldiff writes all of them:
+
+| Harness (`--harness`) | Workspace location for the skill under test |
+|---|---|
+| `claude` | `.claude/skills/<name>` |
+| `codex` | `.codex/skills/<name>`, `.agents/skills/<name>` |
+| `opencode` | `.opencode/skills/<name>`, `.agents/skills/<name>` |
+| `antigravity` | `.agents/skills/<name>` |
+
+The control arm gets none of these. In A/B mode both arms carry a skill and the other revision is stripped from the fixture. See [How the comparison stays fair](#how-the-comparison-stays-fair).
+
+SkillDiff also scans these user-level paths for contamination, and `check` reports anything it finds there as a contamination warning:
+
+| Harness | User-level paths watched |
+|---|---|
+| `claude` | `~/.claude/skills`, `~/.claude/plugins`, `~/.claude/CLAUDE.md`, `~/.claude/memory`, `~/.claude/settings.json` |
+| `codex` | `~/.codex/skills`, `~/.agents/skills`, `~/.codex/AGENTS.md`, `~/.codex/memory` |
+| `opencode` | `~/.config/opencode/skills`, `~/.config/opencode/plugins`, `~/.claude/skills`, `~/.agents/skills`, `~/.config/opencode/AGENTS.md`, `~/.config/opencode/memory` |
+| `antigravity` | `~/.gemini/skills`, `~/.agents/skills`, `~/.gemini/GEMINI.md`, `~/.gemini/memory` |
+
+Antigravity's own docs have moved its global location between releases (`~/.gemini/config/skills/` now, `~/.gemini/antigravity/skills/` and `~/.gemini/skills/` earlier), and the `skills` CLI writes `~/.agents/skills`, which every current Antigravity surface reads. SkillDiff watches `~/.gemini/skills` and `~/.agents/skills`, and `isolate: true` keeps user-level skills out of both arms regardless.
 
 </details>
 
