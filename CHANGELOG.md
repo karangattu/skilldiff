@@ -4,10 +4,36 @@ All notable changes to this project use this file.
 The format follows Keep a Changelog.
 This project uses semantic versioning.
 
-## [Unreleased]
+## [0.9.0] - 2026-09-28
 
 ### Added
 
+- Static skill linter. `skilldiff lint [SKILL_DIR] [--json]` checks `SKILL.md`
+  frontmatter (required `name` and `description`, naming rules, description
+  length and overly broad trigger phrasing), unclosed code fences, broken
+  relative links, and length, with an estimated token count.
+- Failure diagnosis. `skilldiff diagnose [RUN_DIR] [--json]` reads a run and
+  reports under-triggering on intended tasks, over-triggering on irrelevant
+  tasks, score regressions, blast-radius violations, agent failures, and token
+  bloat (over 50% more tokens with no score gain), each with a recommendation.
+- LLM rubric graders. `grader.type: llm` (alias `rubric`) sends the task prompt,
+  rubric, response, and diff to a judge and expects JSON with `score`, `success`,
+  and `feedback`. `command:` runs your own judge instead of the built-in path.
+- Blast-radius integrity assertions. Tasks can set `allowed_paths` and
+  `forbidden_paths`. A run that modifies an out-of-scope file is reported as an
+  error (`N/A`) naming the path, never as `0%`, so an out-of-scope edit cannot
+  masquerade as a failed solution.
+- Multi-turn scripted tasks. `prompts:` lists several turns run in order in the
+  same workspace. Tokens, cost, time, and turns are summed across turns, and the
+  transcript keeps each turn separate.
+- Container isolation. `isolation: docker|podman` (with optional
+  `container_image`) runs the agent and graders inside a container with the
+  workspace mounted, instead of on the host.
+- Skill context tax. Reports show the installed skill's size, its static
+  per-turn prompt injection, the cumulative session tax, and the total across
+  all runs, estimated from the skill's text and the run's median turns.
+- Antigravity token and log capture. `cache_read_tokens` is parsed from the Agy
+  usage payload, and the session log is appended to the transcript.
 - Closing decision. Reports end with a decision table — score, cost, time, tokens,
   and adoption, each with paired change, 95% CI, and a plain reading — followed by
   one bottom line: SHIP, DO NOT SHIP, or NEEDS MORE RUNS with the reason. The
@@ -47,6 +73,9 @@ This project uses semantic versioning.
   stop recovery without automatically repeating paid sessions.
 - Changes to tracked graders or dependency locks stop a pair before completion.
   Python import and pytest caches are excluded from grader checks.
+- The process group is killed only for a validated PID. A missing, non-integer,
+  or out-of-range PID no longer raises, so a timeout cannot fail while cleaning
+  up its own subprocess.
 
 ### Compatibility
 

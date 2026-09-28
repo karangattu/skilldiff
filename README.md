@@ -38,6 +38,9 @@ adoption, each with paired change, 95% CI, and a plain reading — followed by o
 bottom line: SHIP, DO NOT SHIP, or NEEDS MORE RUNS, with the reason. When the
 config records `pricing:` rates (per 1M tokens, with source and date), reports
 also reproduce an **API-equivalent cost** table from the saved token breakdown.
+A **Skill context tax** table shows the cost of carrying the skill itself: its
+installed size, the static tokens it injects on every turn, and the cumulative
+overhead across the run.
 
 A complete small evaluation lives in [`examples/csv-totals`](examples/csv-totals):
 a skill, dev and held-out tasks, fixtures, a deterministic grader, and a
@@ -96,7 +99,7 @@ Then complete these steps:
 4. Run `skilldiff check`.
 5. Run `skilldiff run`.
 
-**What each folder holds:** `skilldiff.yaml` holds name, skill path, harness, models, tasks, run count, seed, thresholds, failure policy, and optional `pricing:` rates (source, date, per-1M-token prices) for reproducible API-equivalent costs. `tasks/` holds one YAML file per task with an id, a prompt, a category, an optional `split: dev|held-out`, and optional `validation: {good, broken}`. `fixtures/` holds the small test projects, copied fresh for each run without `.git` history and with escaping symlinks rejected. `graders/` holds the scripts that score the work.
+**What each folder holds:** `skilldiff.yaml` holds name, skill path, harness, models, tasks, run count, seed, thresholds, failure policy, and optional `pricing:` rates (source, date, per-1M-token prices) for reproducible API-equivalent costs. `tasks/` holds one YAML file per task with an id, a prompt (or `prompts:` for a multi-turn script), a category, an optional `split: dev|held-out`, optional path assertions (`allowed_paths`, `forbidden_paths`), and optional `validation: {good, broken}`. `fixtures/` holds the small test projects, copied fresh for each run without `.git` history and with escaping symlinks rejected. `graders/` holds the scripts that score the work.
 
 ## Details
 
@@ -239,10 +242,20 @@ split: held-out        # dev (iterate) or held-out (frozen validation)
 repo: ../fixtures/parser
 prompt: |
   Fix the parser so that it accepts empty input. Keep all tests green.
+allowed_paths: [parser.py, "tests/**"]   # edits outside these are reported as errors
+forbidden_paths: ["**/*.lock"]
 grader:
   type: command
   command: python3 "$SKILLDIFF_TASK_DIR/../graders/fix_parser.py"
 ```
+
+A task can also be scripted across several turns. Set `prompts:` to a list and
+each prompt runs in order in the same workspace, with tokens, cost, time, and
+turns summed across the turns.
+
+`allowed_paths` and `forbidden_paths` are integrity assertions. When a run
+modifies an out-of-scope file it is reported as an error, `N/A` with the path
+named, never as `0%`, so a stray edit cannot look like a wrong answer.
 
 Categories:
 
@@ -268,6 +281,7 @@ A grader runs in the workspace after the agent stops:
 - A crashing grader (traceback, missing file, bad exit) shows `N/A`, not `0%`. Test failure shows `0%`.
 - Keep graders outside the fixture. Outside is not isolation by itself: confine agents so they cannot read parent paths.
 - Accept all valid solutions, not only the skill solution.
+- For output a script cannot score, set `type: llm` (alias `rubric`) with a `rubric:` describing what counts as correct. A judge model scores the response and diff, and must return JSON with `score`, `success`, and `feedback`. Add `command:` to run your own judge instead of the built-in one.
 
 Example grader output:
 
@@ -407,6 +421,8 @@ Keep the entire run directory, including `inputs/`, for recovery. A small siblin
 | `skilldiff lint [SKILL_DIR] [--json]` | Lint SKILL.md frontmatter, trigger keywords, and length |
 | `skilldiff diagnose [RUN_DIR] [--json]` | Diagnose failure modes, regressions, and adoption gaps |
 
+`lint` checks a `SKILL.md` before you spend anything: required frontmatter, naming rules, description length and broad phrasing, unclosed code fences, and broken relative links, with an estimated token count. `diagnose` reads a finished run and names what went wrong: a skill that never triggered on intended tasks, one that triggered on irrelevant tasks, regressions, blast-radius violations, agent failures, and token bloat without score gains, each with a suggested fix.
+
 Claude Code. The default uses your subscription. SkillDiff removes `ANTHROPIC_API_KEY` from each run. To bill through the API, set `auth: api_key` and export the key. Sandboxing is `permission_mode` plus `allowed_tools`, and `isolate: true` keeps user-level skills, plugins, and `CLAUDE.md` out of both arms.
 
 Codex. The default uses stored login and removes `OPENAI_API_KEY`. Sandboxing is `sandbox: workspace-write` (or `dangerously_bypass_approvals_and_sandbox`).
@@ -416,6 +432,8 @@ OpenCode. The default `service: go` uses your Go subscription. Sign in with `ope
 Antigravity. Short names expand to full models. `gemini-3.8` becomes `gemini-3.8-flash-medium`. Permissions are `dangerously_skip_permissions`.
 
 Sign in with each CLI's normal login before you run. Each harness accepts `bin_path` and `extra_args`. You can also set `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, or `AGY_BIN`.
+
+By default runs are on the host. Set `isolation: docker` (or `podman`) in `skilldiff.yaml`, with an optional `container_image` (default `python:3.11`), to run the agent and graders inside a container with the workspace mounted. The runtime must be on `PATH`.
 
 Running these from inside an agent needs a few things too:
 
@@ -435,4 +453,4 @@ pip install -e ".[dev]"
 pytest && ruff check skilldiff tests
 ```
 
-See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.8.0.
+See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.9.0.
