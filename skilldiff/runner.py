@@ -187,6 +187,8 @@ class AgentRunner:
         cwd: Path,
         env: dict[str, str],
         timeout: Optional[float],
+        isolation: str = "local",
+        container_image: Optional[str] = None,
     ) -> ExecResult:
         """Run an agent CLI without a stdin pipe, with a timeout, and clean up its children.
 
@@ -195,10 +197,28 @@ class AgentRunner:
         """
         if self._cancelled:
             raise RuntimeError("Cancelled before the agent started")
+
+        exec_cmd = list(cmd)
+        if isolation in {"docker", "podman"}:
+            if not shutil.which(isolation):
+                raise RuntimeError(f"Container runtime '{isolation}' not found on PATH")
+            img = container_image or "python:3.11"
+            exec_cmd = [
+                isolation,
+                "run",
+                "--rm",
+                "-v",
+                f"{cwd.resolve()}:/workspace",
+                "-w",
+                "/workspace",
+                img,
+                *cmd,
+            ]
+
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             start = time.perf_counter()
             proc = subprocess.Popen(
-                cmd,
+                exec_cmd,
                 cwd=cwd,
                 env=env,
                 stdin=subprocess.DEVNULL,
@@ -230,9 +250,85 @@ class AgentRunner:
                 timed_out=timed_out,
             )
 
+    def _run_multi_turn(
+        self,
+        prompts: list[str],
+        cwd: Path,
+        model: str,
+        config: Any,
+        harness: Optional[str] = None,
+        skill_names: Optional[list[str]] = None,
+        timeout: Optional[float] = None,
+    ) -> RunResult:
+        total_duration = 0.0
+        total_cost = 0.0
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_cache_read = 0
+        total_cache_creation = 0
+        total_tool_calls = 0
+        total_turns = 0
+        skill_invoked = False
+        skill_available = None
+        transcripts: list[str] = []
+        last_res: Optional[RunResult] = None
+
+        for idx, turn_prompt in enumerate(prompts):
+            turn_timeout = timeout
+            if timeout is not None:
+                turn_timeout = max(5.0, timeout - total_duration)
+            res = self.run(turn_prompt, cwd, model, config, harness, skill_names, turn_timeout)
+            last_res = res
+            total_duration += res.duration or 0.0
+            if res.cost is not None:
+                total_cost += res.cost
+            if res.input_tokens is not None:
+                total_input_tokens += res.input_tokens
+            if res.output_tokens is not None:
+                total_output_tokens += res.output_tokens
+            if res.cache_read_tokens is not None:
+                total_cache_read += res.cache_read_tokens
+            if res.cache_creation_tokens is not None:
+                total_cache_creation += res.cache_creation_tokens
+            total_tool_calls += res.tool_calls or 0
+            total_turns += (res.num_turns or 1)
+            if res.skill_invoked:
+                skill_invoked = True
+            if res.skill_available is not None:
+                skill_available = res.skill_available
+            turn_header = (
+                f"--- TURN {idx + 1} ---\nPROMPT: {turn_prompt}\nRESPONSE:\n{res.response}"
+            )
+            transcripts.append(f"{turn_header}\n\nTRANSCRIPT:\n{res.transcript}")
+
+            if res.status != "ok" or res.exit_code != 0:
+                break
+
+        if last_res is None:
+            return _failed_result("", ValueError("No turns executed"), 0.0)
+
+        return RunResult(
+            prompt="\n---\n".join(prompts),
+            response=last_res.response,
+            transcript="\n\n".join(transcripts),
+            duration=round(total_duration, 2),
+            cost=round(total_cost, 6),
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            tool_calls=total_tool_calls,
+            exit_code=last_res.exit_code,
+            error=last_res.error,
+            cache_read_tokens=total_cache_read,
+            cache_creation_tokens=total_cache_creation,
+            num_turns=total_turns,
+            skill_invoked=skill_invoked,
+            skill_available=skill_available,
+            status=last_res.status,
+        )
+
     def run(
         self,
-        prompt: str,
+        prompt: str | list[str],
         cwd: Path,
         model: str,
         config: ExperimentConfig | ClaudeConfig | Any,
@@ -240,8 +336,21 @@ class AgentRunner:
         skill_names: Optional[list[str]] = None,
         timeout: Optional[float] = None,
     ) -> RunResult:
+        if isinstance(prompt, list):
+            if not prompt:
+                return _failed_result("", ValueError("Empty prompt list"), 0.0)
+            if len(prompt) == 1:
+                prompt = prompt[0]
+            else:
+                return self._run_multi_turn(
+                    prompt, cwd, model, config, harness, skill_names, timeout
+                )
+
         if os.environ.get("SKILLDIFF_MOCK_RUNNER"):
             return self._run_mock(prompt, cwd, model)
+
+        isolation = getattr(config, "isolation", "local")
+        container_image = getattr(config, "container_image", None)
 
         if isinstance(config, ExperimentConfig):
             active_harness = (harness or config.harness).lower().strip()
@@ -284,13 +393,46 @@ class AgentRunner:
 
         names = skill_names or []
         if active_harness == "codex":
-            result = self._run_codex(prompt, cwd, model, codex_cfg, timeout)
+            result = self._run_codex(
+                prompt,
+                cwd,
+                model,
+                codex_cfg,
+                timeout,
+                isolation=isolation,
+                container_image=container_image,
+            )
         elif active_harness == "opencode":
-            result = self._run_opencode(prompt, cwd, model, opencode_cfg, timeout)
+            result = self._run_opencode(
+                prompt,
+                cwd,
+                model,
+                opencode_cfg,
+                timeout,
+                isolation=isolation,
+                container_image=container_image,
+            )
         elif active_harness in {"antigravity", "agy"}:
-            result = self._run_antigravity(prompt, cwd, model, antigravity_cfg, timeout)
+            result = self._run_antigravity(
+                prompt,
+                cwd,
+                model,
+                antigravity_cfg,
+                timeout,
+                isolation=isolation,
+                container_image=container_image,
+            )
         else:
-            result = self._run_claude(prompt, cwd, model, claude_cfg, timeout, names)
+            result = self._run_claude(
+                prompt,
+                cwd,
+                model,
+                claude_cfg,
+                timeout,
+                names,
+                isolation=isolation,
+                container_image=container_image,
+            )
 
         if result.skill_invoked is None and names and result.transcript:
             result.skill_invoked = detect_skill_reference(result.transcript, names)
@@ -331,6 +473,8 @@ class AgentRunner:
         claude_cfg: ClaudeConfig,
         timeout: Optional[float] = None,
         skill_names: Optional[list[str]] = None,
+        isolation: str = "local",
+        container_image: Optional[str] = None,
     ) -> RunResult:
         cmd = self.claude_command(prompt, model, claude_cfg)
         env = os.environ.copy()
@@ -342,7 +486,9 @@ class AgentRunner:
 
         start_time = time.perf_counter()
         try:
-            execution = self._exec(cmd, cwd, env, timeout)
+            execution = self._exec(
+                cmd, cwd, env, timeout, isolation=isolation, container_image=container_image
+            )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
 
@@ -381,6 +527,8 @@ class AgentRunner:
         model: str,
         codex_cfg: CodexConfig,
         timeout: Optional[float] = None,
+        isolation: str = "local",
+        container_image: Optional[str] = None,
     ) -> RunResult:
         bin_path = codex_cfg.bin_path or self.codex_bin
         cmd = [bin_path, "exec", prompt, "-m", model, "--json"]
@@ -398,7 +546,9 @@ class AgentRunner:
 
         start_time = time.perf_counter()
         try:
-            execution = self._exec(cmd, cwd, env, timeout)
+            execution = self._exec(
+                cmd, cwd, env, timeout, isolation=isolation, container_image=container_image
+            )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
 
@@ -495,6 +645,8 @@ class AgentRunner:
         model: str,
         opencode_cfg: OpenCodeConfig,
         timeout: Optional[float] = None,
+        isolation: str = "local",
+        container_image: Optional[str] = None,
     ) -> RunResult:
         bin_path = opencode_cfg.bin_path or self.opencode_bin
         target_model = model
@@ -517,7 +669,14 @@ class AgentRunner:
 
         start_time = time.perf_counter()
         try:
-            execution = self._exec(cmd, cwd, os.environ.copy(), timeout)
+            execution = self._exec(
+                cmd,
+                cwd,
+                os.environ.copy(),
+                timeout,
+                isolation=isolation,
+                container_image=container_image,
+            )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
 
@@ -595,6 +754,8 @@ class AgentRunner:
         model: str,
         antigravity_cfg: AntigravityConfig,
         timeout: Optional[float] = None,
+        isolation: str = "local",
+        container_image: Optional[str] = None,
     ) -> RunResult:
         bin_path = antigravity_cfg.bin_path or self.antigravity_bin
         cmd = [bin_path, "-p", prompt, "--output-format", "json", "--add-dir", str(cwd)]
@@ -613,7 +774,14 @@ class AgentRunner:
 
         start_time = time.perf_counter()
         try:
-            execution = self._exec(cmd, cwd, os.environ.copy(), timeout)
+            execution = self._exec(
+                cmd,
+                cwd,
+                os.environ.copy(),
+                timeout,
+                isolation=isolation,
+                container_image=container_image,
+            )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
 

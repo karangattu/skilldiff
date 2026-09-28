@@ -2482,6 +2482,59 @@ def build_report_blocks(
                 )
             )
 
+    by_harness = results.get("by_harness") or {}
+    if by_harness and len(by_harness) > 1:
+        blocks.append(("h", 2, "By harness"))
+        blocks.append(
+            (
+                "p",
+                "Comparison across evaluated agent harnesses on identical tasks and fixtures.",
+            )
+        )
+        h_rows = []
+        for h_name, h_data in sorted(by_harness.items()):
+            h_ctrl = h_data.get("control", {})
+            h_skill = h_data.get("skill", {})
+            h_paired = h_data.get("paired", {})
+            h_rows.append(_group_row(h_name, h_ctrl, h_skill, h_paired, show_usage=not comparison))
+        blocks.append(("table", _group_headers("Harness", label), h_rows, group_align))
+
+    context_tax = results.get("context_tax") or {}
+    if context_tax and context_tax.get("static_tokens", 0) > 0:
+        blocks.append(("h", 2, "Skill context tax"))
+        blocks.append(
+            (
+                "p",
+                "Static token footprint injected into agent system prompt and tools on every turn, "
+                "plus cumulative session overhead.",
+            )
+        )
+        t_bytes = context_tax.get("total_bytes", 0)
+        f_count = context_tax.get("file_count", 0)
+        s_tokens = context_tax.get("static_tokens", 0)
+        sess_tokens = context_tax.get("session_tax_tokens", 0)
+        med_turns = context_tax.get("median_turns", 1.0)
+        exp_tokens = context_tax.get("total_experiment_tokens", 0)
+        tax_rows = [
+            ["Installed skill size", f"{t_bytes:,} bytes", f"{f_count} file(s)", ""],
+            ["Static prompt injection", f"~{s_tokens:,} tokens", "Per turn", "Context footprint"],
+            [
+                "Cumulative session tax",
+                f"~{sess_tokens:,} tokens",
+                f"Across {med_turns:.0f} median turn(s)",
+                "Session overhead",
+            ],
+            ["Total experiment tax", f"~{exp_tokens:,} tokens", "All runs", "Spend overhead"],
+        ]
+        blocks.append(
+            (
+                "table",
+                ["Metric", "Value", "Scope", "Reading"],
+                tax_rows,
+                ["l", "r", "l", "l"],
+            )
+        )
+
     # Baseline comparisons: baseline-vs-A and baseline-vs-B so the optional
     # baseline answers whether either revision helps at all.
     baseline_comps = results.get("baseline_comparisons") or {}

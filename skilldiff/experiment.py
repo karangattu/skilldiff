@@ -805,10 +805,13 @@ class ExperimentRunner:
                 control_runs.append(ctrl)
                 treatment_runs.append(treat)
                 done += 1
+                spent = sum(
+                    float(r.get("cost") or 0.0) for r in control_runs + treatment_runs
+                )
                 self.progress(
                     f"[{done}/{total}] {ctrl['model']} · {ctrl['task_id']} · "
                     f"run {ctrl['repetition']}: control {_run_summary(ctrl)} | "
-                    f"treatment {_run_summary(treat)}"
+                    f"treatment {_run_summary(treat)} [spent: ${spent:.2f}]"
                 )
 
         try:
@@ -816,6 +819,9 @@ class ExperimentRunner:
                 for pair in pairs:
                     record(self._run_pair(pair, run_root))
             else:
+                self.progress(
+                    f"Running {len(pairs)} pair(s) across {self.config.parallel} worker(s)..."
+                )
                 pool = ThreadPoolExecutor(max_workers=self.config.parallel)
                 futures = [pool.submit(self._run_pair, p, run_root) for p in pairs]
                 try:
@@ -847,6 +853,9 @@ class ExperimentRunner:
 
     def _run_pair(self, pair: _Pair, run_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         self._ensure_running()
+        self.progress(
+            f"  -> Started {pair.model} · {pair.task.id} (rep {pair.repetition})"
+        )
         task = pair.task
         model = pair.model
         execution = self._execution_config
@@ -861,7 +870,15 @@ class ExperimentRunner:
             )
         else:
             grader_names = execution.skill_names
-        grader = Grader(task.grader, grader_names, model, task_dir=task_dir)
+        grader = Grader(
+            task.grader,
+            grader_names,
+            model,
+            task_dir=task_dir,
+            allowed_paths=getattr(task, "allowed_paths", None),
+            forbidden_paths=getattr(task, "forbidden_paths", None),
+            task_prompt=task.prompt,
+        )
 
         rep_str = f"{pair.repetition:03d}"
         model_dir = safe_path_component(model)
@@ -992,8 +1009,11 @@ class ExperimentRunner:
                     if arm not in workspaces:
                         continue
                     self._ensure_running()
+                    task_prompt_val = (
+                        task.prompts if getattr(task, "prompts", None) else task.prompt
+                    )
                     results[arm] = self.agent_runner.run(
-                        task.prompt, workspaces[arm].root, model, execution
+                        task_prompt_val, workspaces[arm].root, model, execution
                     )
                     # Persist each arm immediately so rerunning failures cannot
                     # silently improve the reported result; retries are logged.
@@ -1023,6 +1043,8 @@ class ExperimentRunner:
                 treatment_diff=diffs["treatment"][0],
                 control_transcript=results["control"].transcript,
                 treatment_transcript=results["treatment"].transcript,
+                control_changed_files=diffs["control"][1] if "control" in diffs else [],
+                treatment_changed_files=diffs["treatment"][1] if "treatment" in diffs else [],
             )
             grades = {"control": grade_ctrl, "treatment": grade_treat}
             if "baseline" in results:
@@ -1236,6 +1258,34 @@ class ExperimentRunner:
                 "tasks": sorted({r.get("task_id", "") for r in c_runs + t_runs}),
             }
 
+        by_harness: dict[str, Any] = {}
+        all_harnesses = sorted(
+            {str(r.get("harness") or self.config.harness) for r in control_runs + treatment_runs}
+        )
+        if len(all_harnesses) > 1:
+            for h in all_harnesses:
+                c_runs = [
+                    r for r in control_runs if str(r.get("harness") or self.config.harness) == h
+                ]
+                t_runs = [
+                    r for r in treatment_runs if str(r.get("harness") or self.config.harness) == h
+                ]
+                by_harness[h] = {
+                    "control": calculate_metrics(c_runs),
+                    "skill": calculate_metrics(t_runs),
+                    "paired": paired_comparison(c_runs, t_runs),
+                }
+
+        from skilldiff.profiler import compute_context_tax, measure_skill_footprint
+        skill_target = self.config.skill or self.config.skill_b
+        footprint = measure_skill_footprint(skill_target)
+        overall_skill_metrics = calculate_metrics(treatment_runs)
+        context_tax = compute_context_tax(
+            footprint,
+            median_turns=overall_skill_metrics.get("median_turns", 1.0),
+            run_count=len(treatment_runs),
+        )
+
         # Control contamination invalidates the experiment (no clean baseline).
         valid = True
         contaminated = [
@@ -1338,6 +1388,8 @@ class ExperimentRunner:
             "provenance": provenance,
             "by_model": by_model,
             "by_category": by_category,
+            "by_harness": by_harness,
+            "context_tax": context_tax,
             "overall": {
                 "control": calculate_metrics(control_runs),
                 "skill": calculate_metrics(treatment_runs),
