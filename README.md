@@ -119,19 +119,9 @@ trustworthy are bookkeeping that is easy to skip and hard to notice you skipped.
 | Edits the skill while testing | Each run freezes skills, tasks, fixtures, and graders under a sha256 manifest |
 | Judges whether the output looked good | Also records adoption, cost, time, and tokens for both arms |
 
-```mermaid
-flowchart LR
-    T[Task and fixture] --> C[Fresh control workspace]
-    T --> S[Fresh skill workspace]
-    C --> CA[Agent without skill]
-    S --> SA[Agent with skill]
-    CA --> G[Blind grader]
-    SA --> G
-    G --> P[Paired score, cost, time, tokens]
-    SA --> A[Skill adoption]
-    P --> R[Report]
-    A --> R
-```
+<p align="center">
+  <img src="assets/evaluation-flow.png" width="640" alt="How SkillDiff evaluates a skill, from top to bottom: prepare the same task and starting files; run the same agent and model in two fresh workspaces, one without the skill and one with it, alternating run order; grade anonymous work; repeat and compare score, cost, time, and tokens, checking skill use and uncertainty; report SHIP, DO NOT SHIP, or NEEDS MORE RUNS with the evidence and reason.">
+</p>
 
 What keeps it fair:
 
