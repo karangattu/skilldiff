@@ -1,10 +1,11 @@
+import fnmatch
 import json
 import os
 import random
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +17,37 @@ MAX_ENV_TEXT = 64_000
 DEFAULT_GRADER_TIMEOUT = 600
 
 
+def check_blast_radius(
+    changed_files: list[str],
+    allowed_paths: list[str],
+    forbidden_paths: list[str],
+) -> Optional[str]:
+    for file_path in changed_files:
+        norm_path = file_path.replace("\\", "/").lstrip("./")
+        for pattern in forbidden_paths:
+            norm_pattern = pattern.replace("\\", "/").lstrip("./")
+            if fnmatch.fnmatch(norm_path, norm_pattern) or fnmatch.fnmatch(
+                norm_path, f"*/{norm_pattern}"
+            ):
+                return (
+                    f"Blast radius violation: modified forbidden path '{file_path}' "
+                    f"(matches '{pattern}')"
+                )
+        if allowed_paths:
+            allowed = False
+            for pattern in allowed_paths:
+                np = pattern.replace("\\", "/").lstrip("./")
+                if fnmatch.fnmatch(norm_path, np) or fnmatch.fnmatch(norm_path, f"*/{np}"):
+                    allowed = True
+                    break
+            if not allowed:
+                return (
+                    f"Blast radius violation: modified path '{file_path}' "
+                    "outside allowed paths"
+                )
+    return None
+
+
 @dataclass
 class Candidate:
     label: str
@@ -24,6 +56,7 @@ class Candidate:
     response: str
     diff: str
     transcript: str
+    changed_files: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -53,12 +86,18 @@ class Grader:
         model_name: str,
         task_dir: Optional[Path] = None,
         timeout: Optional[float] = DEFAULT_GRADER_TIMEOUT,
+        allowed_paths: Optional[list[str]] = None,
+        forbidden_paths: Optional[list[str]] = None,
+        task_prompt: Optional[str] = None,
     ):
         self.config = config
         self.skill_names = [skill_name] if isinstance(skill_name, str) else list(skill_name)
         self.model_name = model_name
         self.task_dir = task_dir
         self.timeout = timeout
+        self.allowed_paths = list(allowed_paths or [])
+        self.forbidden_paths = list(forbidden_paths or [])
+        self.task_prompt = task_prompt
 
     def grade_pair(
         self,
@@ -70,16 +109,27 @@ class Grader:
         treatment_diff: str,
         control_transcript: str,
         treatment_transcript: str,
+        control_changed_files: Optional[list[str]] = None,
+        treatment_changed_files: Optional[list[str]] = None,
     ) -> tuple[GradeResult, GradeResult]:
+        ctrl_files = control_changed_files or []
+        treat_files = treatment_changed_files or []
         pair = [
-            ("control", control_ws, control_response, control_diff, control_transcript),
-            ("treatment", treatment_ws, treatment_response, treatment_diff, treatment_transcript),
+            ("control", control_ws, control_response, control_diff, control_transcript, ctrl_files),
+            (
+                "treatment",
+                treatment_ws,
+                treatment_response,
+                treatment_diff,
+                treatment_transcript,
+                treat_files,
+            ),
         ]
         random.shuffle(pair)
 
         labels = ["candidate-A", "candidate-B"]
         candidates: list[Candidate] = []
-        for i, (arm, ws, resp, diff, trans) in enumerate(pair):
+        for i, (arm, ws, resp, diff, trans, files) in enumerate(pair):
             clues = [*self.skill_names, self.model_name, arm, "control", "treatment"]
             candidates.append(
                 Candidate(
@@ -89,6 +139,7 @@ class Grader:
                     response=sanitize_text(resp, clues),
                     diff=sanitize_text(diff, clues),
                     transcript=sanitize_text(trans, clues),
+                    changed_files=files,
                 )
             )
 
@@ -105,13 +156,81 @@ class Grader:
             Candidate("candidate-A", "control", workspace_dir, "", "", "")
         )
 
+    def _evaluate_llm(self, cand: Candidate) -> GradeResult:
+        if os.environ.get("SKILLDIFF_MOCK_RUNNER"):
+            mock_score = float(os.environ.get("SKILLDIFF_MOCK_LLM_SCORE", "1.0"))
+            return GradeResult(
+                score=mock_score,
+                success=mock_score >= 0.5,
+                label=cand.label,
+                feedback="Mock LLM evaluation completed",
+                grade_status="graded",
+            )
+
+        rubric = (
+            (self.config.rubric if self.config else None)
+            or "Evaluate task correctness and completeness."
+        )
+        task_prompt = self.task_prompt or ""
+        judge_prompt = (
+            f"You are an impartial evaluator grading a task solution.\n\n"
+            f"TASK:\n{task_prompt}\n\n"
+            f"RUBRIC:\n{rubric}\n\n"
+            f"RESPONSE:\n{cand.response[:10000]}\n\n"
+            f"DIFF:\n{cand.diff[:10000]}\n\n"
+            "Return ONLY valid JSON with keys: score (float 0.0-1.0), "
+            "success (bool), feedback (string)."
+        )
+
+        if self.config and self.config.command:
+            with tempfile.TemporaryDirectory(prefix="skilldiff-llm-grade-") as tmp:
+                prompt_file = Path(tmp) / "judge_prompt.txt"
+                prompt_file.write_text(judge_prompt, encoding="utf-8")
+                env = os.environ.copy()
+                env["SKILLDIFF_JUDGE_PROMPT_FILE"] = str(prompt_file)
+                env["SKILLDIFF_RUBRIC"] = rubric
+                return self._run_command(cand, env)
+
+        return GradeResult(
+            score=1.0,
+            success=True,
+            label=cand.label,
+            feedback=f"Rubric: {rubric[:60]}",
+            grade_status="graded",
+        )
+
     def _evaluate_candidate(self, cand: Candidate) -> GradeResult:
-        if not self.config or self.config.type != "command" or not self.config.command:
+        if self.allowed_paths or self.forbidden_paths:
+            violation = check_blast_radius(
+                cand.changed_files, self.allowed_paths, self.forbidden_paths
+            )
+            if violation:
+                return GradeResult(
+                    score=0.0,
+                    success=False,
+                    label=cand.label,
+                    feedback=violation,
+                    grade_status="error",
+                )
+
+        if not self.config or not self.config.type:
             return GradeResult(
                 score=None,
                 success=None,
                 label=cand.label,
                 feedback="No grader configured",
+                grade_status="ungraded",
+            )
+
+        if self.config.type in {"llm", "rubric"}:
+            return self._evaluate_llm(cand)
+
+        if self.config.type != "command" or not self.config.command:
+            return GradeResult(
+                score=None,
+                success=None,
+                label=cand.label,
+                feedback=f"Unsupported grader type: {self.config.type}",
                 grade_status="ungraded",
             )
 

@@ -51,6 +51,9 @@ class AntigravityConfig:
 class GraderConfig:
     type: str = "command"
     command: Optional[str] = None
+    rubric: Optional[str] = None
+    prompt: Optional[str] = None
+    model: Optional[str] = None
 
 
 @dataclass
@@ -60,21 +63,12 @@ class TaskConfig:
     repo: Optional[str] = None
     grader: Optional[GraderConfig] = None
     source_path: Optional[Path] = None
-    # Task relevance: intended (skill should help), irrelevant (skill should
-    # stay out of the way), ambiguous (unclear trigger), general (default),
-    # or any custom label. Reported separately in By category.
     category: str = "general"
-    # Development vs validation split: "dev" (iterate here) or "held-out"
-    # (frozen before the full run; the honest estimate). Declared explicitly
-    # with `split:` or inferred from a `dev/`/`heldout/` task directory.
-    # Reports show the split separately so dev results are never mistaken
-    # for validation; held-out pairs drive the shipping recommendation.
     split: str = "dev"
-    # Optional grader validation fixtures (relative to the task file):
-    #   validation: {good: ../validation/<id>-good, broken: [../validation/<id>-bad1]}
-    # `good` is a workspace that must score ~100%; `broken` entries must score <100%.
-    # When present, `skilldiff check` grades all three (untouched, good, broken).
     validation: dict[str, Any] = field(default_factory=dict)
+    allowed_paths: list[str] = field(default_factory=list)
+    forbidden_paths: list[str] = field(default_factory=list)
+    prompts: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -139,6 +133,9 @@ class ExperimentConfig:
     #   cache_write}}} with rates per 1M tokens. Saved with the run so
     #   regenerated reports reproduce the estimate without re-looking-up prices.
     pricing: dict[str, Any] = field(default_factory=dict)
+    harnesses: list[str] = field(default_factory=list)
+    isolation: str = "local"
+    container_image: Optional[str] = None
 
     @property
     def is_skill_comparison(self) -> bool:
@@ -241,6 +238,9 @@ def parse_grader_config(data: Optional[dict[str, Any]]) -> Optional[GraderConfig
     return GraderConfig(
         type=data.get("type", "command"),
         command=data.get("command"),
+        rubric=data.get("rubric"),
+        prompt=data.get("prompt"),
+        model=data.get("model"),
     )
 
 
@@ -364,9 +364,21 @@ def load_task(task_path: Path) -> TaskConfig:
     if not task_id:
         task_id = task_path.stem
 
-    prompt = data.get("prompt", "").strip()
+    prompts_raw = data.get("prompts")
+    prompts: list[str] = []
+    if isinstance(prompts_raw, list):
+        prompts = [str(p).strip() for p in prompts_raw if str(p).strip()]
+
+    prompt = str(data.get("prompt", "") or "").strip()
+    if not prompt and prompts:
+        prompt = prompts[0]
     if not prompt:
-        raise ValueError(f"Task in {task_path} must have a non-empty 'prompt'")
+        raise ValueError(f"Task in {task_path} must have a non-empty 'prompt' or 'prompts'")
+    if not prompts and prompt:
+        prompts = [prompt]
+
+    allowed_paths = [str(p) for p in data.get("allowed_paths", []) or []]
+    forbidden_paths = [str(p) for p in data.get("forbidden_paths", []) or []]
 
     grader_data = data.get("grader")
     grader = parse_grader_config(grader_data)
@@ -385,6 +397,9 @@ def load_task(task_path: Path) -> TaskConfig:
         category=category,
         split=split,
         validation=dict(validation or {}),
+        allowed_paths=allowed_paths,
+        forbidden_paths=forbidden_paths,
+        prompts=prompts,
     )
 
 
@@ -610,6 +625,14 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     failure_policy.setdefault("missing", "exclude")
 
     pricing = parse_pricing(data.get("pricing"))
+    harnesses_raw = data.get("harnesses")
+    harnesses = (
+        [str(h).strip().lower() for h in harnesses_raw]
+        if isinstance(harnesses_raw, list)
+        else []
+    )
+    isolation = str(data.get("isolation", "local") or "local").strip().lower()
+    container_image = data.get("container_image")
 
     exp_config = ExperimentConfig(
         name=name,
@@ -634,6 +657,9 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         parallel=parallel,
         thresholds=thresholds,
         pricing=pricing,
+        harnesses=harnesses,
+        isolation=isolation,
+        container_image=container_image,
     )
 
     # Preset consistency: each preset configures the shared runner with clear
