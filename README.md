@@ -96,26 +96,19 @@ Then complete these steps:
 4. Run `skilldiff check`.
 5. Run `skilldiff run`.
 
-<details>
-<summary>What each folder holds</summary>
-
-- `skilldiff.yaml`: name, skill path, harness, models, tasks, run count, seed, thresholds, failure policy, and optional `pricing:` rates (source, date, per-1M-token prices) for reproducible API-equivalent costs.
-- `tasks/`: one YAML file per task with an id, a prompt, a category, an optional `split: dev|held-out`, and optional `validation: {good, broken}`.
-- `fixtures/`: small test projects. SkillDiff copies each fixture to a fresh workspace for each run, without `.git` history. Escaping symlinks are rejected.
-- `graders/`: scripts that grade the work in each workspace.
-
-</details>
+**What each folder holds:** `skilldiff.yaml` holds name, skill path, harness, models, tasks, run count, seed, thresholds, failure policy, and optional `pricing:` rates (source, date, per-1M-token prices) for reproducible API-equivalent costs. `tasks/` holds one YAML file per task with an id, a prompt, a category, an optional `split: dev|held-out`, and optional `validation: {good, broken}`. `fixtures/` holds the small test projects, copied fresh for each run without `.git` history and with escaping symlinks rejected. `graders/` holds the scripts that score the work.
 
 ## Details
 
 The sections below hold all reference material. Beginners can stop here and run the demo first.
 
 <details>
-<summary id="why-not-run-it-by-hand">Why not just ask an agent to run both arms by hand?</summary>
+<summary id="why-skilldiff">Why SkillDiff, and how it stays fair</summary>
 
-You can. Ask an agent to do the task once with the skill and once without, and you will get two results and a story about them. What you will not get is a measurement you can act on, because most of the work that makes the comparison trustworthy is bookkeeping that is easy to skip and hard to notice you skipped.
-
-Here is what a hand-rolled comparison usually does, and what skilldiff does instead:
+You can compare a skill by hand: ask an agent to do a task once with the skill
+and once without, then read both results. That is fine for a quick sanity check.
+It falls apart as a measurement, because the parts that make the comparison
+trustworthy are bookkeeping that is easy to skip and hard to notice you skipped.
 
 | By hand | SkillDiff |
 |---|---|
@@ -126,14 +119,34 @@ Here is what a hand-rolled comparison usually does, and what skilldiff does inst
 | Edits the skill while testing | Each run freezes skills, tasks, fixtures, and graders under a sha256 manifest |
 | Judges whether the output looked good | Also records adoption, cost, time, and tokens for both arms |
 
-A few of these matter more than the rest:
+```mermaid
+flowchart LR
+    T[Task and fixture] --> C[Fresh control workspace]
+    T --> S[Fresh skill workspace]
+    C --> CA[Agent without skill]
+    S --> SA[Agent with skill]
+    CA --> G[Blind grader]
+    SA --> G
+    G --> P[Paired score, cost, time, tokens]
+    SA --> A[Skill adoption]
+    P --> R[Report]
+    A --> R
+```
 
-- **Isolation.** If the control arm can reach the skill, the experiment has no clean baseline. SkillDiff checks for this and marks the run INVALID rather than printing a number you would misread.
-- **Adoption.** The most common way a skill "fails" is that it never loaded. A by-hand run rarely catches this, because nobody checks whether the agent read the skill or just happened to solve the task. The report counts it.
-- **Uncertainty.** Two runs that differ by 20 points mean little on their own. The report gives an interval, says when it includes zero, and flags a ceiling effect when control already scores 100%.
-- **Reproducibility.** The seed, hashes, and frozen inputs are recorded, so you can say later what was tested, and resume without silently mixing in a changed skill.
+What keeps it fair:
 
-When by hand is fine: you want a quick sanity check, a single anecdote, or a feel for whether a skill does anything at all. Reach for SkillDiff when the result will decide whether the skill ships, or when someone will ask you to defend the number.
+- **Isolation.** If the control arm can reach the skill, there is no clean baseline. SkillDiff checks for this and marks the run INVALID rather than printing a number you would misread. For Claude the default blocks user skills and plugins from both arms.
+- **Blind grading.** Graders see anonymous work, with names and arm labels removed.
+- **Balanced order.** Each task and model alternates which arm runs first, from a recorded seed, so no arm keeps the warm cache every time.
+- **Adoption.** The usual way a skill "fails" is that it never loaded. The report counts how many skill runs actually used the skill.
+- **Uncertainty.** Each difference has a bootstrap 95% interval, and the report flags a ceiling effect when control already scores 100%.
+- **Frozen inputs.** Each run keeps copies of its skills, tasks, fixtures, and graders under a versioned sha256 manifest, so editing the originals cannot change later pairs. Keep the evaluation output outside the skill and fixture directories.
+- **Safe stops and resume.** Every agent run has a timeout. Press Ctrl-C to stop and keep a report for the pairs that finished; resume refuses to mix in changed inputs.
+
+When by hand is fine: you want a quick sanity check, a single anecdote, or a
+feel for whether a skill does anything at all. Reach for SkillDiff when the
+result will decide whether the skill ships, or when someone will ask you to
+defend the number.
 
 </details>
 
@@ -208,7 +221,7 @@ Before each treatment run, skilldiff copies the skill under test into the fresh 
 | `opencode` | `.opencode/skills/<name>`, `.agents/skills/<name>` |
 | `antigravity` | `.agents/skills/<name>` |
 
-The control arm gets none of these. In A/B mode both arms carry a skill and the other revision is stripped from the fixture. See [How the comparison stays fair](#how-the-comparison-stays-fair).
+The control arm gets none of these. In A/B mode both arms carry a skill and the other revision is stripped from the fixture. See [Why SkillDiff, and how it stays fair](#why-skilldiff).
 
 SkillDiff also scans these user-level paths for contamination, and `check` reports anything it finds there as a contamination warning:
 
@@ -224,45 +237,7 @@ Antigravity's own docs have moved its global location between releases (`~/.gemi
 </details>
 
 <details>
-<summary>Shell, login, network, and time needs</summary>
-
-- Shell access. The agent must run `skilldiff`. In Claude Code allow `Bash(skilldiff *)`.
-- Signed-in CLI. SkillDiff starts separate agent runs with your normal login. Sign in once in a terminal with `claude auth login`.
-- Network access. If the sandbox blocks new CLIs, runs fail. The report lists them as errors. Then run `skilldiff run` in your own terminal.
-- Time. A full test can exceed the agent timeout. Then run it in the background and check it with `skilldiff results`.
-
-</details>
-
-<details>
-<summary id="how-the-comparison-stays-fair">How the comparison stays fair</summary>
-
-```mermaid
-flowchart LR
-    T[Task and fixture] --> C[Fresh control workspace]
-    T --> S[Fresh skill workspace]
-    C --> CA[Agent without skill]
-    S --> SA[Agent with skill]
-    CA --> G[Blind grader]
-    SA --> G
-    G --> P[Paired score, cost, time, tokens]
-    SA --> A[Skill adoption]
-    P --> R[Report]
-    A --> R
-```
-
-- Fresh workspaces. Each pair gets clean copies of the fixture, without `.git` history. Escaping symlinks are rejected.
-- Isolation. For Claude the default blocks user skills and plugins from both arms. `check` also notes instructions, plugins, and memory that can leak. Control contamination marks the run INVALID.
-- Balanced order. Each task and model alternates which arm runs first, from a recorded seed. No arm gets the warm cache every time.
-- Blind grading. Graders see anonymous work with names and arm labels removed.
-- Adoption check. The report shows how many skill runs used the skill.
-- Paired statistics. Each difference has a bootstrap 95% interval.
-- Frozen inputs. Each run keeps copies of its skills and fixtures in `inputs/`, with a versioned manifest. Every pair uses these copies, so editing the originals cannot change later pairs. Keep the evaluation output outside the skill and fixture directories. Snapshot storage adds roughly one copy of each distinct input directory.
-- Safe stops and resume. Each agent run has a timeout. Press Ctrl-C to stop and keep a report for done pairs. Each arm saves its transcript and diff before publishing its record. Metadata, records, and checkpoints are replaced atomically; write failures stop the experiment. One writer can own a run directory at a time.
-
-</details>
-
-<details>
-<summary>Tasks, graders, and categories</summary>
+<summary id="tasks-graders-and-categories">Tasks, graders, and categories</summary>
 
 A task file holds an id, a prompt, a category, a split, and a grader:
 
@@ -358,7 +333,7 @@ Define `failure_policy` before you run. Grader timeouts and errors are always `N
 </details>
 
 <details>
-<summary>Presets: pr, skill, revision, compression</summary>
+<summary id="presets-revisions-and-pr-tests">Presets, revisions, and PR tests</summary>
 
 Four named presets configure the same runner with clear arms and decision rules:
 
@@ -370,52 +345,42 @@ Four named presets configure the same runner with clear arms and decision rules:
 | `compression` | Original skill | Minified skill | Is quality preserved with fewer resources? |
 
 ```bash
-# 1. PR correctness; fetch the PR ref first
-git -C /path/to/repo fetch origin refs/pull/42/head:refs/pull/42/head
-skilldiff init --pr 42 --repo /path/to/repo --base origin/main \
-  --pr-mode correctness --dir evaluations/pr-42
+# 1. No skill versus skill
+skilldiff init --skill /path/to/my-skill --dir evaluations/skill-effectiveness
 
-# 2. No skill versus skill
-skilldiff init --skill /path/to/my-skill \
-  --dir evaluations/skill-effectiveness
-
-# 3. Skill A versus skill B
+# 2. Skill A versus skill B (add --include-baseline for a no-skill arm per pair)
 skilldiff init --skill-a /path/to/v1/my-skill \
   --skill-b /path/to/v2/my-skill --dir evaluations/skill-revisions
 
-# 4. Original versus an already-created minified skill
+# 3. Original versus an already-created minified skill
 skilldiff init --skill-a /path/to/original/my-skill \
   --skill-b /path/to/minified/my-skill --preset compression \
   --dir evaluations/skill-compression
+
+# 4. PR; fetch the ref first
+git -C /path/to/repo fetch origin refs/pull/42/head:refs/pull/42/head
+skilldiff init --pr 42 --repo /path/to/repo --base origin/main --dir evaluations/pr-42
+# --pr-mode agent (agents work on each revision) or correctness (graders run on untouched revisions)
+# --pr-pair merge-base (merge-base vs head) or base-merge (base tip vs synthetic merge)
+cd evaluations/pr-42
+skilldiff check
+skilldiff run --runs 1
 ```
 
-Each template still needs representative tasks, fixtures, and graders. Tune the minified version on dev tasks, then compare frozen versions on held-out tasks. Compression keeps the skill name and trigger description identical so adoption changes do not confound the body comparison, records source-size reduction separately from session tokens, cost, and time, and requires bounds to support the decision (for example: at most 2pp loss with at least 20% fewer tokens).
+Each template still needs representative tasks, fixtures, and graders. Tune on dev tasks, then compare frozen versions on held-out tasks.
 
-</details>
+For revision and compression, control is skill A and treatment is skill B on identical fixtures with paired results. The baseline arm rotates through all three positions, and the report shows baseline-vs-A and baseline-vs-B alongside A-vs-B, plus source-size reduction for compression. Compression keeps the skill name and trigger description identical so adoption changes do not confound the body comparison, records source-size reduction separately from session tokens, cost, and time, and requires bounds to support the decision (for example: at most 2pp loss with at least 20% fewer tokens).
 
-<details>
-<summary>Compare skill revisions</summary>
+Reports label the arms per preset (Original/Minified, Skill A/Skill B, Without/With PR). Use one of `skill`, `skill_a` plus `skill_b`, or `pr`, not more than one, with `preset` set to `skill`, `revision`, `compression`, or `pr`. Tasks omit `repo` in PR mode, and correctness mode runs no agents.
 
-Each run records skill hashes, prompt hashes, fixture hashes, grader hashes, locks, and CLI versions. The task hash includes grader contents and locks. All files are hashed with no silent caps.
-
-For a first-class test, run skill A versus skill B in one experiment:
-
-```bash
-skilldiff init --skill-a ./skills/v1 --skill-b ./skills/v2 --dir ab-eval
-# add --include-baseline for a no-skill arm per pair (balanced rotation)
-# add --preset compression for original vs minified with trigger checks
-```
-
-Control is skill A and treatment is skill B, on identical fixtures with paired results. The baseline arm rotates through all three positions and the report shows baseline-vs-A and baseline-vs-B alongside A-vs-B, plus source-size reduction for compression.
-
-To compare two old runs:
+Each run records skill hashes, prompt hashes, fixture hashes, grader hashes, locks, and CLI versions; the task hash includes grader contents and locks, and all files are hashed with no silent caps. To compare two old runs:
 
 ```bash
 skilldiff compare runs/2026-09-22T120000Z runs/2026-09-23T120000Z
 # add --strict to reject mismatched models, tasks, or hashes
 ```
 
-The output shows score changes, adoption changes, efficiency changes, and newly failing or passing checks. Efficiency uses per-run means over matched tasks and repetitions, not totals. It warns if models, tasks, or versions differ.
+The output shows score changes, adoption changes, efficiency changes, and newly failing or passing checks. Efficiency uses per-run means over matched tasks and repetitions, not totals. It warns if models, tasks, or versions differ. Prefer a single-run A/B over `compare`, which must match tasks and repetitions to normalize efficiency.
 
 </details>
 
@@ -436,26 +401,7 @@ Keep the entire run directory, including `inputs/`, for recovery. A small siblin
 </details>
 
 <details>
-<summary>Evaluate a PR</summary>
-
-Pick what the PR test measures and which revisions to use:
-
-```bash
-git -C ~/code/my-package fetch origin refs/pull/42/head:refs/pull/42/head
-skilldiff init --pr 42 --repo ~/code/my-package --base origin/main --dir pr-42-eval
-# --pr-mode agent (agents work on each revision) or correctness (graders run on untouched revisions)
-# --pr-pair merge-base (merge-base vs head) or base-merge (base tip vs synthetic merge)
-cd pr-42-eval
-skilldiff check
-skilldiff run --runs 1
-```
-
-Reports label the arms per preset (Original/Minified, Skill A/Skill B, Without/With PR). Use one of `skill`, `skill_a` plus `skill_b`, or `pr`, not more than one, with `preset` set to `skill`, `revision`, `compression`, or `pr`. Tasks omit `repo` in PR mode. Correctness mode runs no agents. Resume validates previous metadata before writing anything and refuses on changed skills, PR commits, or execution settings.
-
-</details>
-
-<details>
-<summary>Commands</summary>
+<summary id="harness-setup-and-commands">Harness setup and commands</summary>
 
 | Command | What it does |
 |---|---|
@@ -470,11 +416,6 @@ Reports label the arms per preset (Original/Minified, Skill A/Skill B, Without/W
 | `skilldiff lint [SKILL_DIR] [--json]` | Lint SKILL.md frontmatter, trigger keywords, and length |
 | `skilldiff diagnose [RUN_DIR] [--json]` | Diagnose failure modes, regressions, and adoption gaps |
 
-</details>
-
-<details>
-<summary>Harness setup</summary>
-
 Claude Code. The default uses your subscription. SkillDiff removes `ANTHROPIC_API_KEY` from each run. To bill through the API, set `auth: api_key` and export the key. Sandboxing is `permission_mode` plus `allowed_tools`, and `isolate: true` keeps user-level skills, plugins, and `CLAUDE.md` out of both arms.
 
 Codex. The default uses stored login and removes `OPENAI_API_KEY`. Sandboxing is `sandbox: workspace-write` (or `dangerously_bypass_approvals_and_sandbox`).
@@ -485,12 +426,16 @@ Antigravity. Short names expand to full models. `gemini-3.8` becomes `gemini-3.8
 
 Sign in with each CLI's normal login before you run. Each harness accepts `bin_path` and `extra_args`. You can also set `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, or `AGY_BIN`.
 
+Running these from inside an agent needs a few things too:
+
+- Shell access. The agent must run `skilldiff`. In Claude Code allow `Bash(skilldiff *)`.
+- A signed-in CLI. SkillDiff starts separate agent runs with your normal login. Sign in once in a terminal with `claude auth login`.
+- Network access. If the sandbox blocks new CLIs, runs fail. The report lists them as errors. Then run `skilldiff run` in your own terminal.
+- Time. A full test can exceed the agent timeout. Then run it in the background and check it with `skilldiff results`.
+
 </details>
 
-<details>
-<summary>Development and changelog</summary>
-
-Run the test suite with these commands:
+## Development
 
 ```bash
 git clone https://github.com/karangattu/skilldiff && cd skilldiff
@@ -500,5 +445,3 @@ pytest && ruff check skilldiff tests
 ```
 
 See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.8.0.
-
-</details>
