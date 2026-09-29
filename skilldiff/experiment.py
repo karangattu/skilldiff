@@ -1258,24 +1258,6 @@ class ExperimentRunner:
                 "tasks": sorted({r.get("task_id", "") for r in c_runs + t_runs}),
             }
 
-        by_harness: dict[str, Any] = {}
-        all_harnesses = sorted(
-            {str(r.get("harness") or self.config.harness) for r in control_runs + treatment_runs}
-        )
-        if len(all_harnesses) > 1:
-            for h in all_harnesses:
-                c_runs = [
-                    r for r in control_runs if str(r.get("harness") or self.config.harness) == h
-                ]
-                t_runs = [
-                    r for r in treatment_runs if str(r.get("harness") or self.config.harness) == h
-                ]
-                by_harness[h] = {
-                    "control": calculate_metrics(c_runs),
-                    "skill": calculate_metrics(t_runs),
-                    "paired": paired_comparison(c_runs, t_runs),
-                }
-
         from skilldiff.profiler import compute_context_tax, measure_skill_footprint
         skill_target = self.config.skill or self.config.skill_b
         footprint = measure_skill_footprint(skill_target)
@@ -1388,7 +1370,6 @@ class ExperimentRunner:
             "provenance": provenance,
             "by_model": by_model,
             "by_category": by_category,
-            "by_harness": by_harness,
             "context_tax": context_tax,
             "overall": {
                 "control": calculate_metrics(control_runs),

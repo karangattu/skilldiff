@@ -2482,23 +2482,6 @@ def build_report_blocks(
                 )
             )
 
-    by_harness = results.get("by_harness") or {}
-    if by_harness and len(by_harness) > 1:
-        blocks.append(("h", 2, "By harness"))
-        blocks.append(
-            (
-                "p",
-                "Comparison across evaluated agent harnesses on identical tasks and fixtures.",
-            )
-        )
-        h_rows = []
-        for h_name, h_data in sorted(by_harness.items()):
-            h_ctrl = h_data.get("control", {})
-            h_skill = h_data.get("skill", {})
-            h_paired = h_data.get("paired", {})
-            h_rows.append(_group_row(h_name, h_ctrl, h_skill, h_paired, show_usage=not comparison))
-        blocks.append(("table", _group_headers("Harness", label), h_rows, group_align))
-
     context_tax = results.get("context_tax") or {}
     if context_tax and context_tax.get("static_tokens", 0) > 0:
         blocks.append(("h", 2, "Skill context tax"))

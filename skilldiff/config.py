@@ -133,7 +133,6 @@ class ExperimentConfig:
     #   cache_write}}} with rates per 1M tokens. Saved with the run so
     #   regenerated reports reproduce the estimate without re-looking-up prices.
     pricing: dict[str, Any] = field(default_factory=dict)
-    harnesses: list[str] = field(default_factory=list)
     isolation: str = "local"
     container_image: Optional[str] = None
 
@@ -625,12 +624,10 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     failure_policy.setdefault("missing", "exclude")
 
     pricing = parse_pricing(data.get("pricing"))
-    harnesses_raw = data.get("harnesses")
-    harnesses = (
-        [str(h).strip().lower() for h in harnesses_raw]
-        if isinstance(harnesses_raw, list)
-        else []
-    )
+    if "harnesses" in data:
+        raise ValueError(
+            "harnesses is not supported; set a single 'harness: <name>' instead"
+        )
     isolation = str(data.get("isolation", "local") or "local").strip().lower()
     container_image = data.get("container_image")
 
@@ -657,7 +654,6 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         parallel=parallel,
         thresholds=thresholds,
         pricing=pricing,
-        harnesses=harnesses,
         isolation=isolation,
         container_image=container_image,
     )

@@ -4,6 +4,16 @@ All notable changes to this project use this file.
 The format follows Keep a Changelog.
 This project uses semantic versioning.
 
+## [Unreleased]
+
+### Removed
+
+- The `harnesses:` config key. It was accepted from 0.9.0 but never read by the
+  runner, so listing harnesses changed nothing; it now raises instead of being
+  silently ignored. Use `harness: <name>` for the single harness a run uses.
+  The dormant "By harness" report block, which could never populate because run
+  records carry no per-run harness, is removed with it.
+
 ## [0.9.0] - 2026-09-28
 
 ### Added

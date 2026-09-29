@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from skilldiff.config import (
     ExperimentConfig,
     GraderConfig,
@@ -149,9 +151,6 @@ def test_experiment_config_extensions(tmp_path: Path):
         "  - sonnet\n"
         "tasks:\n"
         "  - tasks/*.yaml\n"
-        "harnesses:\n"
-        "  - claude\n"
-        "  - codex\n"
         "isolation: docker\n"
         "container_image: python:3.11-slim\n"
     )
@@ -162,10 +161,37 @@ def test_experiment_config_extensions(tmp_path: Path):
     )
 
     exp, tasks = load_experiment(exp_file)
-    assert exp.harnesses == ["claude", "codex"]
     assert exp.isolation == "docker"
     assert exp.container_image == "python:3.11-slim"
     assert len(tasks) == 1
+
+
+def test_harnesses_key_is_rejected(tmp_path: Path):
+    """`harnesses:` never drove the runner; refuse it instead of ignoring it."""
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    (tasks_dir / "t1.yaml").write_text("prompt: hello\n")
+
+    exp_file = tmp_path / "experiment.yaml"
+    exp_file.write_text(
+        "name: test-exp\n"
+        "skill: ./skill\n"
+        "models:\n"
+        "  - sonnet\n"
+        "tasks:\n"
+        "  - tasks/*.yaml\n"
+        "harnesses:\n"
+        "  - claude\n"
+        "  - codex\n"
+    )
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: skill\ndescription: demo skill here for test\n---\n"
+    )
+
+    with pytest.raises(ValueError, match="harnesses is not supported"):
+        load_experiment(exp_file)
 
 
 def test_runner_multi_turn(tmp_path: Path):
