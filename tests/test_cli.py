@@ -115,3 +115,23 @@ def test_cli_check_flags_grader_that_always_passes(tmp_path: Path, monkeypatch, 
     monkeypatch.setenv("CLAUDE_BIN", "/bin/echo")
     cmd_check(Args(config="skilldiff.yaml", no_grade=False))
     assert "already scores 100%" in capsys.readouterr().out
+
+
+def test_cli_check_and_run_reject_unknown_config_key(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    cmd_init(Args(force=False))
+    cfg_file = tmp_path / "skilldiff.yaml"
+    cfg_file.write_text(
+        cfg_file.read_text() + "timeouts_seconds: 60\n"
+    )
+
+    code = cmd_check(Args(config="skilldiff.yaml", no_grade=False))
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "Unknown key" in out and "did you mean 'timeout_seconds'" in out
+
+    monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    code = cmd_run(Args(config="skilldiff.yaml", runs=1))
+    err = capsys.readouterr().err
+    assert code == 1, err
+    assert "Configuration error: Unknown key" in err

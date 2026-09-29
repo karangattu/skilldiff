@@ -1,9 +1,141 @@
+import difflib
 import glob
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
+
+# Keys skilldiff actually reads from each block. Anything else is a typo or a
+# key borrowed from another tool; reject it at load time instead of silently
+# running with defaults the author never chose.
+EXPERIMENT_KEYS = frozenset(
+    {
+        "name",
+        "skill",
+        "skill_a",
+        "skill_b",
+        "include_baseline",
+        "pr",
+        "models",
+        "tasks",
+        "runs",
+        "harness",
+        "claude",
+        "codex",
+        "opencode",
+        "antigravity",
+        "agy",
+        "timeout_seconds",
+        "parallel",
+        "thresholds",
+        "preset",
+        "seed",
+        "failure_policy",
+        "on_failure",  # alias of failure_policy
+        "pricing",
+        "isolation",
+        "container_image",
+    }
+)
+CLAUDE_KEYS = frozenset(
+    {
+        "auth",
+        "effort",
+        "max_turns",
+        "max_budget_usd",
+        "permission_mode",
+        "allowed_tools",
+        "isolate",
+        "bin_path",
+        "extra_args",
+    }
+)
+CODEX_KEYS = frozenset(
+    {
+        "auth",
+        "sandbox",
+        "dangerously_bypass_approvals_and_sandbox",
+        "bin_path",
+        "extra_args",
+    }
+)
+OPENCODE_KEYS = frozenset(
+    {
+        "service",
+        "subscription",  # older name for service
+        "provider",
+        "dangerously_skip_permissions",
+        "variant",
+        "bin_path",
+        "extra_args",
+    }
+)
+ANTIGRAVITY_KEYS = frozenset({"dangerously_skip_permissions", "bin_path", "extra_args"})
+PR_KEYS = frozenset({"repo", "base", "head", "mode", "pair"})
+THRESHOLD_KEYS = frozenset(
+    {
+        "acceptable_score_regression_pp",
+        "required_cost_reduction_pct",
+        "required_token_reduction_pct",
+        "meaningful_score_gain_pp",
+    }
+)
+FAILURE_POLICY_KEYS = frozenset({"agent_failure", "missing"})
+PRICING_KEYS = frozenset({"source", "date", "currency", "rates"})
+TASK_KEYS = frozenset(
+    {
+        "id",
+        "prompt",
+        "prompts",
+        "repo",
+        "grader",
+        "category",
+        "split",
+        "validation",
+        "allowed_paths",
+        "forbidden_paths",
+    }
+)
+GRADER_KEYS = frozenset({"type", "command", "rubric", "prompt", "model"})
+VALIDATION_KEYS = frozenset({"good", "broken", "bad"})
+
+
+def reject_unknown_keys(data: dict[str, Any], allowed: frozenset[str], context: str) -> None:
+    """Fail fast on keys skilldiff does not read, naming the closest match."""
+    unknown = [key for key in data if key not in allowed]
+    if not unknown:
+        return
+    named: list[str] = []
+    for key in sorted(unknown, key=str):
+        close = difflib.get_close_matches(str(key), sorted(allowed), n=1)
+        named.append(f"{key!r}" + (f" (did you mean {close[0]!r}?)" if close else ""))
+    raise ValueError(
+        f"Unknown key(s) in {context}: {', '.join(named)}. "
+        f"Allowed keys: {', '.join(sorted(allowed))}"
+    )
+
+
+def reject_unknown_block_keys(data: dict[str, Any]) -> None:
+    """Check blocks once, including aliases that another block may override."""
+    blocks = (
+        ("claude", CLAUDE_KEYS),
+        ("codex", CODEX_KEYS),
+        ("opencode", OPENCODE_KEYS),
+        ("antigravity", ANTIGRAVITY_KEYS),
+        ("agy", ANTIGRAVITY_KEYS),
+        ("pr", PR_KEYS),
+        ("thresholds", THRESHOLD_KEYS),
+        ("failure_policy", FAILURE_POLICY_KEYS),
+        ("on_failure", FAILURE_POLICY_KEYS),
+    )
+    for name, allowed in blocks:
+        value = data.get(name)
+        if value is None:
+            continue
+        if not isinstance(value, dict):
+            raise ValueError(f"Experiment '{name}' must be a mapping")
+        reject_unknown_keys(value, allowed, f"'{name}' block")
 
 
 @dataclass
@@ -232,8 +364,13 @@ def read_skill_name(skill_dir: Path) -> Optional[str]:
 
 
 def parse_grader_config(data: Optional[dict[str, Any]]) -> Optional[GraderConfig]:
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise ValueError("'grader' must be a mapping")
     if not data:
         return None
+    reject_unknown_keys(data, GRADER_KEYS, "'grader' block")
     return GraderConfig(
         type=data.get("type", "command"),
         command=data.get("command"),
@@ -312,10 +449,13 @@ def parse_pricing(data: Any) -> dict[str, Any]:
               cache_read: 0.30
               cache_write: 3.75
     """
-    if not data:
+    if data is None:
         return {}
     if not isinstance(data, dict):
         raise ValueError("Experiment 'pricing' must be a mapping")
+    if not data:
+        return {}
+    reject_unknown_keys(data, PRICING_KEYS, "'pricing' block")
     source = str(data.get("source", "") or "").strip()
     if not source:
         raise ValueError("pricing.source must name where the rates came from")
@@ -333,6 +473,9 @@ def parse_pricing(data: Any) -> dict[str, Any]:
     for model, entry in rates_raw.items():
         if not isinstance(entry, dict):
             raise ValueError(f"pricing.rates.{model} must be a mapping of token rates")
+        reject_unknown_keys(
+            entry, frozenset(PRICING_RATE_KEYS), f"pricing.rates.{model} block"
+        )
         out: dict[str, float] = {}
         for key in PRICING_RATE_KEYS:
             if key not in entry or entry[key] is None:
@@ -357,7 +500,13 @@ def load_task(task_path: Path) -> TaskConfig:
         raise FileNotFoundError(f"Task file not found: {task_path}")
 
     with open(task_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+        data = yaml.safe_load(f)
+
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Task file {task_path} must be a mapping")
+    reject_unknown_keys(data, TASK_KEYS, f"task file {task_path}")
 
     task_id = data.get("id")
     if not task_id:
@@ -383,9 +532,12 @@ def load_task(task_path: Path) -> TaskConfig:
     grader = parse_grader_config(grader_data)
     category = str(data.get("category", "general") or "general").strip().lower() or "general"
     split = parse_task_split(data.get("split"), task_path, task_id)
-    validation = data.get("validation") or {}
-    if validation is not None and not isinstance(validation, dict):
+    validation = data.get("validation")
+    if validation is None:
+        validation = {}
+    if not isinstance(validation, dict):
         raise ValueError(f"Task {task_id}: 'validation' must be a mapping")
+    reject_unknown_keys(validation, VALIDATION_KEYS, f"task {task_id} 'validation' block")
 
     return TaskConfig(
         id=str(task_id),
@@ -407,7 +559,22 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         raise FileNotFoundError(f"Experiment file not found: {experiment_path}")
 
     with open(experiment_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+        data = yaml.safe_load(f)
+
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Experiment config {experiment_path} must be a mapping")
+
+    # `harnesses:` never drove the runner; keep its specific message ahead of
+    # the generic unknown-key check.
+    if "harnesses" in data:
+        raise ValueError(
+            "harnesses is not supported; set a single 'harness: <name>' instead"
+        )
+    reject_unknown_keys(data, EXPERIMENT_KEYS, f"experiment config {experiment_path}")
+    reject_unknown_block_keys(data)
+    pricing = parse_pricing(data.get("pricing"))
 
     name = data.get("name")
     if not name:
@@ -431,7 +598,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     skill_b_path = None
     pr = None
     if pr_data is not None:
-        if not isinstance(pr_data, dict) or any(
+        if any(
             not isinstance(pr_data.get(k), str) or not pr_data[k].strip()
             for k in ("repo", "base", "head")
         ):
@@ -571,14 +738,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
 
     thresholds: dict[str, float] = {}
     raw_thresholds = data.get("thresholds") or {}
-    if not isinstance(raw_thresholds, dict):
-        raise ValueError("Experiment 'thresholds' must be a mapping")
-    for key in (
-        "acceptable_score_regression_pp",
-        "required_cost_reduction_pct",
-        "required_token_reduction_pct",
-        "meaningful_score_gain_pp",
-    ):
+    for key in sorted(THRESHOLD_KEYS):
         if key in raw_thresholds and raw_thresholds[key] is not None:
             try:
                 thresholds[key] = float(raw_thresholds[key])
@@ -609,10 +769,8 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
 
     failure_policy: dict[str, str] = {}
     raw_failure = data.get("failure_policy") or data.get("on_failure") or {}
-    if raw_failure is not None and not isinstance(raw_failure, dict):
-        raise ValueError("Experiment 'failure_policy' must be a mapping")
     for key in ("agent_failure", "missing"):
-        if isinstance(raw_failure, dict) and key in raw_failure and raw_failure[key] is not None:
+        if key in raw_failure and raw_failure[key] is not None:
             val = str(raw_failure[key]).strip().lower()
             if key == "agent_failure" and val not in {"exclude", "zero"}:
                 raise ValueError("failure_policy.agent_failure must be 'exclude' or 'zero'")
@@ -623,11 +781,6 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     failure_policy.setdefault("agent_failure", "exclude")
     failure_policy.setdefault("missing", "exclude")
 
-    pricing = parse_pricing(data.get("pricing"))
-    if "harnesses" in data:
-        raise ValueError(
-            "harnesses is not supported; set a single 'harness: <name>' instead"
-        )
     isolation = str(data.get("isolation", "local") or "local").strip().lower()
     container_image = data.get("container_image")
 

@@ -4,6 +4,22 @@ All notable changes to this project use this file.
 The format follows Keep a Changelog.
 This project uses semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- Unknown config keys are rejected when the config loads. The experiment file,
+  each nested block (`claude`, `codex`, `opencode`, `antigravity`, `pr`,
+  `thresholds`, `failure_policy`, `pricing`, and each per-model rate), task
+  files, and `grader:` and `validation:` blocks are checked against the keys
+  skilldiff reads. A typo fails `skilldiff check` and `skilldiff run` before
+  anything starts, naming the closest matching key and the keys that are
+  allowed, instead of being silently ignored while the run uses defaults. A
+  block that is not a mapping reports that directly instead of crashing or
+  silently treating an empty list, false, zero, or empty string as defaults.
+  Alias blocks (`agy` and `on_failure`) are checked even when their canonical
+  blocks are also present. Optional null and empty mapping blocks remain valid.
+
 ## [0.9.1] - 2026-09-28
 
 ### Removed
