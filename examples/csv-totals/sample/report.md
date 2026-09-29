@@ -131,7 +131,7 @@ Each pair ran in identical fresh workspaces, in balanced arm order (seed `1234`)
 - **Failure policy:** agent_failure=exclude, missing=exclude
 - **Seed:** `1234` (balanced arm order)
 - **Categories:** `fix-total`=intended, `write-total`=intended
-- **skilldiff:** 0.9.0
+- **skilldiff:** 0.9.1
 
 ## How to read this report
 

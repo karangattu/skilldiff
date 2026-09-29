@@ -4,7 +4,7 @@ All notable changes to this project use this file.
 The format follows Keep a Changelog.
 This project uses semantic versioning.
 
-## [Unreleased]
+## [0.9.1] - 2026-09-28
 
 ### Removed
 

@@ -184,7 +184,7 @@ def build_runs() -> dict:
 def build_results() -> dict:
     return {
         "name": "csv-totals",
-        "skilldiff_version": "0.9.0",
+        "skilldiff_version": "0.9.1",
         "preset": "skill",
         "arm_labels": {},
         "harness": "claude",
