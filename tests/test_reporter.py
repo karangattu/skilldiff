@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import skilldiff.reporter as reporter
 from skilldiff.reporter import (
     calculate_metrics,
@@ -562,6 +564,19 @@ def test_evaluation_table_preserves_unknown_metrics_and_cost():
     control[0].update(input_tokens=0, output_tokens=0, tool_calls=0, skill_invoked=False)
     table = reporter.render_evaluation_table(_results(control, []))
     assert "| unknown | Control | N/A | N/A | 0 | 0 | 0 | 0 | 0 | no | N/A |" in table
+
+
+def test_skill_summary_columns_match_rendered_evaluation_table():
+    skill = Path(__file__).resolve().parents[1] / "skills" / "skilldiff" / "SKILL.md"
+    template_headers = [
+        line.replace("**", "").strip()
+        for line in skill.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("| **App** |")
+    ]
+    table = reporter.render_evaluation_table(_results(_runs("control", [1.0], 0.5), []))
+    assert template_headers == [table.splitlines()[0]], (
+        "Update the skill's final-summary template and the rendered evaluation table together."
+    )
 
 
 def test_evaluation_table_keeps_models_baseline_and_arm_labels():
