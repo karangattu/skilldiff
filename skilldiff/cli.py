@@ -16,7 +16,7 @@ from skilldiff.config import find_skill_dirs, load_experiment, read_skill_frontm
 from skilldiff.experiment import ExperimentRunner, find_user_level_installs
 from skilldiff.grader import Grader
 from skilldiff.persistence import atomic_json, read_json, run_lock
-from skilldiff.reporter import create_reports, render_report_table
+from skilldiff.reporter import create_reports, render_evaluation_table, render_report_table
 from skilldiff.revisions import resolve_comparison
 from skilldiff.runner import AgentRunner
 from skilldiff.workspace import Workspace
@@ -1186,6 +1186,9 @@ def _format_results(results: dict) -> str:
     warnings = results.get("warnings") or []
     if warnings:
         sections.append("Warnings:\n" + "\n".join(f"  - {w}" for w in warnings))
+    evaluation_table = render_evaluation_table(results)
+    if evaluation_table:
+        sections.append(evaluation_table)
     return "\n\n".join(sections)
 
 

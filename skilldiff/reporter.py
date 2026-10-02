@@ -1811,6 +1811,98 @@ def _skill_cell(run: dict[str, Any]) -> Cell:
     return "yes" if invoked else ("no", "bad")
 
 
+_EVALUATION_HEADERS = [
+    "App", "Arm", "Score", "Time", "Input", "Cached input", "Output",
+    "Total tokens", "Tool calls", "Skill loaded", "API-equivalent cost",
+]
+_EVALUATION_ALIGN = ["l", "l", "r", "r", "r", "r", "r", "r", "r", "l", "r"]
+_EVALUATION_NOTE = (
+    "App is the task ID (with the model when multiple models were evaluated). "
+    "Score is the mean of graded runs; time, tokens, tool calls, and cost are totals "
+    "across repetitions. Cached input includes cache reads and cache writes. "
+    "Skill loaded shows yes/no for one run or loaded/known runs for repetitions. "
+    "N/A means measurements or recorded pricing are missing."
+)
+
+
+def _evaluation_rows(
+    results: dict[str, Any],
+    control_runs: list[dict[str, Any]],
+    treatment_runs: list[dict[str, Any]],
+) -> list[list[Cell]]:
+    """One row per task, model, and arm, using recorded pricing only."""
+    baseline_runs = (results.get("runs") or {}).get("baseline") or []
+    arms = {"control": control_runs, "treatment": treatment_runs, "baseline": baseline_runs}
+    keys = list(dict.fromkeys(
+        (str(r.get("task_id", "")), str(r.get("model", "")))
+        for runs in arms.values() for r in runs
+    ))
+    multi_model = len({model for _, model in keys}) > 1
+    labels = results.get("arm_labels") or {}
+    preset = results.get("preset") or (results.get("settings") or {}).get("preset")
+    treatment_label = (
+        "Minified" if preset == "compression" else
+        "Skill B" if preset == "revision" or results.get("skill_comparison") else
+        "Treatment" if results.get("comparison") else "Skill"
+    )
+    default_labels = {"control": "Control", "treatment": treatment_label, "baseline": "Baseline"}
+    pricing = results.get("pricing") or {}
+    rows: list[list[Cell]] = []
+    for task, model in keys:
+        for arm, runs in arms.items():
+            group = [r for r in runs if (str(r.get("task_id", "")), str(r.get("model", "")))
+                     == (task, model)]
+            if not group:
+                continue
+            metrics = calculate_metrics(group)
+
+            def total(field: str) -> str:
+                if any(r.get(field) is None for r in group):
+                    return "N/A"
+                return f"{sum(int(r[field]) for r in group):,}"
+
+            tokens_known = all(
+                r.get("input_tokens") is not None
+                and r.get("output_tokens") is not None
+                and r.get("cache_read_tokens", 0) is not None
+                and r.get("cache_creation_tokens", 0) is not None
+                for r in group
+            )
+            cached = (
+                f"{metrics['total_cache_read_tokens'] + metrics['total_cache_creation_tokens']:,}"
+                if tokens_known else "N/A"
+            )
+            api = _api_equivalent_summary(group, pricing)
+            cost = api["cost"] if tokens_known and api["priced_runs"] == len(group) else None
+            used, known = metrics["skill_used_count"], metrics["skill_known_count"]
+            loaded = ("yes" if used else "no") if len(group) == known == 1 else (
+                f"{used}/{known}" if known else "N/A"
+            )
+            if known and known < len(group):
+                loaded += f" ({len(group) - known} unknown)"
+            rows.append([
+                f"{task} ({model})" if multi_model else task,
+                str(labels.get(arm) or default_labels[arm]),
+                _fmt_score_pct(metrics),
+                _fmt_time_opt(metrics["total_duration"])
+                if metrics["time_known_count"] == len(group) else "N/A",
+                total("input_tokens"), cached, total("output_tokens"),
+                f"{metrics['total_tokens']:,}" if tokens_known else "N/A",
+                total("tool_calls"), loaded,
+                _fmt_money(cost, str(pricing.get("currency") or "USD")),
+            ])
+    return rows
+
+
+def render_evaluation_table(results: dict[str, Any], run_root: Path | None = None) -> str:
+    """Markdown table shared by the final terminal output and saved reports."""
+    runs = _load_runs_for_report(results, run_root)
+    rows = _evaluation_rows(results, runs["control"], runs["treatment"])
+    if not rows:
+        return ""
+    return "\n".join(_md_table(_EVALUATION_HEADERS, rows, _EVALUATION_ALIGN))
+
+
 def _build_runs_table(
     control_runs: list[dict[str, Any]],
     treatment_runs: list[dict[str, Any]],
@@ -2771,6 +2863,12 @@ def build_report_blocks(
             ],
         )
     )
+
+    evaluation_rows = _evaluation_rows(results, control_runs, treatment_runs)
+    if evaluation_rows:
+        blocks.append(("h", 2, "Evaluation results"))
+        blocks.append(("p", _EVALUATION_NOTE))
+        blocks.append(("table", _EVALUATION_HEADERS, evaluation_rows, _EVALUATION_ALIGN))
 
     # Closing decision: the same statistics as the headline (held-out pairs
     # when they exist), then one bottom line. Reports must end with the

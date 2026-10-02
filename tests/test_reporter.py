@@ -523,6 +523,83 @@ def test_api_equivalent_cost_section_absent_without_rates():
     assert "No pricing rates were recorded with this run" in md
 
 
+def test_evaluation_table_totals_by_app_and_arm():
+    control = _tokened(
+        "control", [1.0, 0.5],
+        {"input_tokens": 100_000, "cache_read_tokens": 2_000_000,
+         "cache_creation_tokens": 10_000, "output_tokens": 20_000, "tool_calls": 3},
+    )
+    treatment = _tokened(
+        "treatment", [1.0, 1.0],
+        {"input_tokens": 50_000, "cache_read_tokens": 1_000_000,
+         "cache_creation_tokens": 0, "output_tokens": 10_000, "tool_calls": 2},
+    )
+    results = _results(control, treatment, pricing=_PRICING)
+    table = reporter.render_evaluation_table(results)
+    assert (
+        "| App | Arm | Score | Time | Input | Cached input | Output | Total tokens | "
+        "Tool calls | Skill loaded | API-equivalent cost |"
+    ) in table
+    assert (
+        "| t | Control | 75% | 20s | 200,000 | 4,020,000 | 40,000 | 4,260,000 | "
+        "6 | 0/2 | $2.48 |"
+    ) in table
+    assert (
+        "| t | Skill | 100% | 20s | 100,000 | 2,000,000 | 20,000 | 2,120,000 | "
+        "4 | 2/2 | $1.20 |"
+    ) in table
+    for build in (reporter.build_markdown_report, reporter.build_quarto_report):
+        report = build(results)
+        assert table.splitlines()[2] in report
+        assert report.index("## Evaluation results") < report.index("## Closing decision")
+    assert "<th class=\"r\">Cached input</th>" in reporter.build_html_report(results)
+
+
+def test_evaluation_table_preserves_unknown_metrics_and_cost():
+    control = [{"task_id": "unknown", "arm": "control", "model": "m"}]
+    table = reporter.render_evaluation_table(_results(control, [], pricing=_PRICING))
+    assert "| unknown | Control | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |" in table
+    control[0].update(input_tokens=0, output_tokens=0, tool_calls=0, skill_invoked=False)
+    table = reporter.render_evaluation_table(_results(control, []))
+    assert "| unknown | Control | N/A | N/A | 0 | 0 | 0 | 0 | 0 | no | N/A |" in table
+
+
+def test_evaluation_table_keeps_models_baseline_and_arm_labels():
+    control = _tokened("control", [1.0], {"tool_calls": 2})
+    treatment = _tokened("treatment", [0.5], {"tool_calls": 1})
+    treatment[0]["model"] = "other"
+    results = _results(
+        control, treatment, arm_labels={"control": "Original", "treatment": "Minified"}
+    )
+    results["runs"]["baseline"] = _tokened("baseline", [1.0], {"tool_calls": 1})
+    table = reporter.render_evaluation_table(results)
+    assert "| t (m) | Original |" in table
+    assert "| t (other) | Minified |" in table
+    assert "| t (m) | Baseline |" in table
+
+
+def test_evaluation_table_does_not_present_partial_totals_as_complete():
+    control = _tokened("control", [1.0, 1.0], {"tool_calls": 2})
+    control[1].pop("duration")
+    control[1].pop("tool_calls")
+    pricing = {**_PRICING, "rates": {}}
+    control[1]["skill_invoked"] = None
+    table = reporter.render_evaluation_table(_results(control, [], pricing=pricing))
+    assert "| t | Control | 100% | N/A |" in table
+    assert "| N/A | 0/1 (1 unknown) | N/A |" in table
+
+    control[1]["output_tokens"] = None
+    table = reporter.render_evaluation_table(_results(control, [], pricing=_PRICING))
+    assert "| N/A | N/A | N/A | N/A | 0/1 (1 unknown) | N/A |" in table
+
+    control[1]["input_tokens"] = None
+    control[1]["cache_read_tokens"] = None
+    control[1]["output_tokens"] = None
+    table = reporter.render_evaluation_table(_results(control, [], pricing=_PRICING))
+    assert "| t | Control | 100% | N/A | N/A | N/A | N/A | N/A |" in table
+    assert table.rstrip().endswith("| N/A |")
+
+
 def test_evaluation_completeness_row():
     control = _runs("control", [1.0, 1.0, 1.0, 1.0], 0.5)
     treatment = _runs("treatment", [1.0, 1.0, 1.0, 1.0], 0.5, skill_invoked=True)

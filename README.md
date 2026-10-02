@@ -33,6 +33,13 @@ Each run writes four files:
 
 Each run also saves the transcript and the diff for each agent run.
 
+The terminal output and saved reports include an **Evaluation results** table with
+App, Arm, Score, Time, Input, Cached input, Output, Total tokens, Tool calls,
+Skill loaded, and API-equivalent cost. App is the task ID; each app and arm has a
+row per model. Scores are means; resource usage and costs are totals across
+repetitions. Cached input includes cache reads and writes. Missing measurements
+or pricing show as `N/A`.
+
 Reports end with a **Closing decision** table — score, cost, time, tokens, and
 adoption, each with paired change, 95% CI, and a plain reading — followed by one
 bottom line: SHIP, DO NOT SHIP, or NEEDS MORE RUNS, with the reason. When the

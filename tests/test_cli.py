@@ -57,12 +57,16 @@ def test_cli_run_and_results(tmp_path: Path, monkeypatch, capsys):
     assert "[1/1] sonnet · changelog-entry · run 1" in captured.out
     assert "Report:" in captured.out
     assert "report.html" in captured.out
+    assert "| App | Arm | Score | Time | Input | Cached input |" in captured.out
+    assert "| changelog-entry | Control |" in captured.out
+    assert "| changelog-entry | Skill |" in captured.out
 
     ret_results = cmd_results(Args(run_dir=None, json=False))
     assert ret_results == 0
     captured_res = capsys.readouterr()
     assert "test-exp" in captured_res.out
     assert "Report:" in captured_res.out
+    assert "| App | Arm | Score | Time | Input | Cached input |" in captured_res.out
 
     ret_json = cmd_results(Args(run_dir=None, json=True))
     assert ret_json == 0
