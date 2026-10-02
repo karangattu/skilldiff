@@ -6,8 +6,18 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-02
+
 ### Added
 
+- An evaluation results table in the terminal and HTML, Markdown, and Quarto
+  reports, with App, Arm, Score, Time, Input, Cached input, Output, Total tokens,
+  Tool calls, Skill loaded, and API-equivalent cost. Rows group repetitions by
+  task, model, and arm, averaging graded scores and totaling resource usage.
+  Missing measurements and recorded pricing show as `N/A`.
+- A regression check that keeps the skill's final-summary columns consistent
+  with the generated evaluation table, and repository guidance to check all
+  affected user-facing paths before declaring a change complete.
 - Unknown config keys are rejected when the config loads. The experiment file,
   each nested block (`claude`, `codex`, `opencode`, `antigravity`, `pr`,
   `thresholds`, `failure_policy`, `pricing`, and each per-model rate), task
@@ -19,6 +29,12 @@ This project uses semantic versioning.
   silently treating an empty list, false, zero, or empty string as defaults.
   Alias blocks (`agy` and `on_failure`) are checked even when their canonical
   blocks are also present. Optional null and empty mapping blocks remain valid.
+
+### Changed
+
+- The skill's final-summary template, README example, and synthetic sample
+  reports use the new evaluation table. Claude plugin metadata now uses the
+  same version as the Python package.
 
 ## [0.9.1] - 2026-09-28
 

@@ -12,6 +12,7 @@ The numbers are synthetic; do not quote them as findings.
 import json
 from pathlib import Path
 
+from skilldiff import __version__
 from skilldiff.reporter import (
     build_html_report,
     build_markdown_report,
@@ -184,7 +185,7 @@ def build_runs() -> dict:
 def build_results() -> dict:
     return {
         "name": "csv-totals",
-        "skilldiff_version": "0.9.1",
+        "skilldiff_version": __version__,
         "preset": "skill",
         "arm_labels": {},
         "harness": "claude",

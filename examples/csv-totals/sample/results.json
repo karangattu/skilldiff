@@ -1,6 +1,6 @@
 {
   "name": "csv-totals",
-  "skilldiff_version": "0.9.1",
+  "skilldiff_version": "0.10.0",
   "preset": "skill",
   "arm_labels": {},
   "harness": "claude",

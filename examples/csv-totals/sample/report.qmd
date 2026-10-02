@@ -135,7 +135,7 @@ Each pair ran in identical fresh workspaces, in balanced arm order (seed `1234`)
 - **Failure policy:** agent_failure=exclude, missing=exclude
 - **Seed:** `1234` (balanced arm order)
 - **Categories:** `fix-total`=intended, `write-total`=intended
-- **skilldiff:** 0.9.1
+- **skilldiff:** 0.10.0
 
 ## How to read this report
 
@@ -145,6 +145,17 @@ Each pair ran in identical fresh workspaces, in balanced arm order (seed `1234`)
 - Tokens include cached input where the harness reports it. Cost is the harness-reported price. On subscription auth the spend is $0 at the margin; the API-equivalent cost section converts the recorded token breakdown with rates from https://www.anthropic.com/pricing (checked 2026-09-27), so regenerated reports reproduce the estimate.
 - Checks `N/A` means no named checks; `1/2*` means one check had unknown status.
 - *Skill used* comes from the harness's tool calls (Claude) or from references to the skill's files in the transcript (other harnesses).
+
+## Evaluation results
+
+App is the task ID (with the model when multiple models were evaluated). Score is the mean of graded runs; time, tokens, tool calls, and cost are totals across repetitions. Cached input includes cache reads and cache writes. Skill loaded shows yes/no for one run or loaded/known runs for repetitions. N/A means measurements or recorded pricing are missing.
+
+| App | Arm | Score | Time | Input | Cached input | Output | Total tokens | Tool calls | Skill loaded | API-equivalent cost |
+|:---|:---|---:|---:|---:|---:|---:|---:|---:|:---|---:|
+| fix-total | Control | 39% | 392s | 180,000 | 1,568,000 | 25,600 | 1,773,600 | N/A | 0/4 | $1.56 |
+| fix-total | Skill | 96% | 310s | 152,000 | 1,316,000 | 20,800 | 1,488,800 | N/A | 3/4 | $1.29 |
+| write-total | Control | 46% | 398s | 180,000 | 1,568,000 | 25,600 | 1,773,600 | N/A | 0/4 | $1.56 |
+| write-total | Skill | 61% | 332s | 160,000 | 1,400,000 | 22,400 | 1,582,400 | N/A | 4/4 | $1.37 |
 
 ## Closing decision
 
