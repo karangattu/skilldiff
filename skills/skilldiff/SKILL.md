@@ -193,19 +193,33 @@ Read `report.md` (for pull requests) or `report.html`. Report these results:
    inside the noise. On subscription auth the real spend is $0 at the margin, so
    the API-equivalent cost is the comparison that matters. If the run recorded
    `pricing:` rates (source, date, and per-model rates per 1M tokens, written to
-   `skilldiff.yaml` before the run), the report already ends with an
+   `skilldiff.yaml` before the run), the report includes an
    **API-equivalent cost** table — recorded token breakdown per arm × those
    rates — and regenerating the report reproduces the estimate exactly. Carry
-   that table into your summary. If the run has no recorded rates, look up the
-   current per-token prices on the providers' own pricing pages yourself,
+   those costs into the final evaluation table in your summary. If the run has
+   no recorded rates, look up the current per-token prices on the providers'
+   own pricing pages yourself,
    multiply them by the token counts in the report, and show the API-equivalent
-   cost per arm, naming the price source and date next to the table. Use this
-   shape, with one plain verdict per row:
+   cost per arm, naming the price source and date next to the table. Label costs
+   computed with newly looked-up rates as estimates; do not present them as the
+   run's recorded pricing.
 
-   | Metric | Control | Skill | Change | Reading |
-   |---|---|---|---|---|
-   | Task score | 50% | 83% | +33 pp | No clear difference |
-   | Cost | $0.50 | $0.40 | -$0.10 | Costs less |
+   At the end of the evaluation summary, reproduce the report's **Evaluation
+   results** table using these columns in this order:
+
+   | **App** | **Arm** | **Score** | **Time** | **Input** | **Cached input** | **Output** | **Total tokens** | **Tool calls** | **Skill loaded** | **API-equivalent cost** |
+   | ------- | ------- | --------- | -------- | --------- | ---------------- | ---------- | ---------------- | -------------- | ---------------- | ----------------------- |
+
+   Use one row per task, model, and arm, keeping the recorded arm labels and
+   including the baseline when present. App is the task ID; include the model
+   in the App cell when multiple models were evaluated. Score is the mean of
+   graded runs. Time, token counts, tool calls, and API-equivalent cost are
+   totals across repetitions. Cached input includes cache reads and cache
+   writes; total tokens include input, cached input, and output. Skill loaded
+   is yes/no for one run or loaded/known runs for repetitions, with unknown
+   runs noted separately. Show missing measurements or unavailable pricing
+   as `N/A`, never zero. Use the saved table directly when available; for
+   older reports, derive the rows from `results.json` using these same rules.
 
    The report itself ends with a **Closing decision** table — score, cost, time,
    tokens, and adoption, each with paired change, 95% CI, and one plain reading —
