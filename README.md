@@ -57,13 +57,10 @@ committed sample report. Copy it as a starting point.
 
 The numbers below are examples. They are not real results.
 
-| Metric | Control | Skill | Paired mean Δ | 95% CI | Reading |
-|:---|---:|---:|---:|---:|:---|
-| Task score (mean) | 60% | 80% | +20 pp | +5 to +35 pp (n=6) | Skill wins |
-| Success | 3/5 | 4/5 | +1 | | More successes |
-| Cost (median) | $0.30 | $0.24 | -$0.06 | -$0.10 to -$0.02 (n=6) | Costs less |
-| Time (median) | 90s | 75s | -15s | -25s to -5s (n=6) | Faster |
-| Skill used | unknown | 5/5 | | | Full adoption |
+| **App** | **Arm** | **Score** | **Time** | **Input** | **Cached input** | **Output** | **Total tokens** | **Tool calls** | **Skill loaded** | **API-equivalent cost** |
+| ------- | ------- | --------- | -------- | --------- | ---------------- | ---------- | ---------------- | -------------- | ---------------- | ----------------------- |
+| csv-totals | Control | 60% | 450s | 100,000 | 500,000 | 70,000 | 670,000 | 30 | 0/5 | $1.50 |
+| csv-totals | Skill | 80% | 375s | 80,000 | 400,000 | 56,000 | 536,000 | 25 | 5/5 | $1.20 |
 
 How to read the table:
 
