@@ -109,6 +109,22 @@ def test_cli_check_demo(tmp_path: Path, monkeypatch, capsys):
     assert "6 agent sessions per full run" in out
 
 
+def test_cli_check_rejects_existing_binary_that_cannot_run(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    cmd_init(Args(force=False))
+    fake = tmp_path / "claude"
+    fake.write_text("#!/bin/sh\necho 'sandbox denied' >&2\nexit 77\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("CLAUDE_BIN", str(fake))
+
+    code = cmd_check(Args(config="skilldiff.yaml", no_grade=True))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "FAIL  claude CLI failed" in out
+    assert "sandbox denied" in out
+    assert "ok    claude CLI:" not in out
+
+
 def test_cli_check_flags_grader_that_always_passes(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     cmd_init(Args(force=False))

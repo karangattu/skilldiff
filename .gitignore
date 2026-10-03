@@ -33,3 +33,4 @@ runs/
 .DS_Store
 /evaluations
 uv.lock
+.posit/

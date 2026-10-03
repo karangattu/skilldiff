@@ -341,7 +341,13 @@ The headline also flags weak proof:
 - `CI collapsed` means all pairs gave the same difference.
 - `only 2 tasks` means repetitions describe those tasks, not the skill in general.
 
-Define `failure_policy` before you run. Grader timeouts and errors are always `N/A`.
+Define `failure_policy` before you run. With `agent_failure: exclude`, an agent
+error or timeout is omitted from paired scores, success counts, time, token, and
+cost comparisons even if the grader scored its partial work. The failed attempt
+and its raw measurements remain visible in Run details. With `zero`, a failed
+agent gets a task score of zero and its resource use remains in the comparison;
+its partial grader checks are still diagnostic only. Grader timeouts and errors
+are always `N/A`.
 
 </details>
 

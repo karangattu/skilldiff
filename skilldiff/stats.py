@@ -12,6 +12,38 @@ BOOTSTRAP_RESAMPLES = 2000
 BOOTSTRAP_SEED = 20260922
 
 
+def analysis_run(run: dict[str, Any], agent_failure: str = "exclude") -> dict[str, Any]:
+    """Apply the pre-registered agent-failure policy without changing raw evidence.
+
+    Graders may score an untouched fixture after the agent process fails. That
+    score is useful diagnostic evidence, but it is not a completed agent result.
+    """
+    result = dict(run)
+    if result.get("status") in (None, "ok", "correctness"):
+        return result
+    if agent_failure == "zero" and result.get("grade_status") not in ("timeout", "error"):
+        result.update(
+            score=0.0,
+            success=False,
+            grade_status="graded",
+            failure_scored_zero=True,
+            analysis_excluded=False,
+        )
+    else:
+        result["analysis_excluded"] = True
+        result["failure_scored_zero"] = False
+    return result
+
+
+def usable_agent_run(run: dict[str, Any]) -> bool:
+    """Whether this session contributes to outcome and efficiency summaries."""
+    if run.get("analysis_excluded") is True:
+        return False
+    return run.get("status") in (None, "ok", "correctness") or bool(
+        run.get("failure_scored_zero")
+    )
+
+
 def pair_runs(
     control_runs: list[dict[str, Any]], treatment_runs: list[dict[str, Any]]
 ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
@@ -46,6 +78,8 @@ def bootstrap_ci(
 
 
 def _get_score(run: dict[str, Any]) -> Optional[float]:
+    if not usable_agent_run(run):
+        return None
     status = run.get("grade_status")
     if status in ("ungraded", "timeout", "error"):
         return None
@@ -65,6 +99,8 @@ def _get_score(run: dict[str, Any]) -> Optional[float]:
 
 
 def _get_cost(run: dict[str, Any]) -> Optional[float]:
+    if not usable_agent_run(run):
+        return None
     if "cost" not in run or run.get("cost") is None:
         return None
     try:
@@ -74,6 +110,8 @@ def _get_cost(run: dict[str, Any]) -> Optional[float]:
 
 
 def _get_duration(run: dict[str, Any]) -> Optional[float]:
+    if not usable_agent_run(run):
+        return None
     if "duration" not in run or run.get("duration") is None:
         return None
     try:
@@ -83,6 +121,8 @@ def _get_duration(run: dict[str, Any]) -> Optional[float]:
 
 
 def _total_tokens(run: dict[str, Any]) -> Optional[float]:
+    if not usable_agent_run(run):
+        return None
     keys = ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens")
     if all(k not in run or run.get(k) is None for k in keys):
         return None
@@ -93,6 +133,8 @@ def _total_tokens(run: dict[str, Any]) -> Optional[float]:
 
 
 def _get_turns(run: dict[str, Any]) -> Optional[float]:
+    if not usable_agent_run(run):
+        return None
     if "num_turns" not in run or run.get("num_turns") is None:
         return None
     try:
@@ -140,6 +182,19 @@ def paired_comparison(
     result["losses"] = sum(1 for d in score_diffs if d < -1e-9)
     result["ties"] = len(score_diffs) - result["wins"] - result["losses"]
     result["scored_pairs"] = len(score_pairs)
+    success_pairs = [
+        (bool(c["success"]), bool(t["success"]))
+        for c, t in pairs
+        if _get_score(c) is not None
+        and _get_score(t) is not None
+        and isinstance(c.get("success"), bool)
+        and isinstance(t.get("success"), bool)
+    ]
+    result["success"] = {
+        "control": sum(c for c, _ in success_pairs),
+        "treatment": sum(t for _, t in success_pairs),
+        "n": len(success_pairs),
+    }
     return result
 
 

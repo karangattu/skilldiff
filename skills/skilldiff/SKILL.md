@@ -213,8 +213,11 @@ Read `report.md` (for pull requests) or `report.html`. Report these results:
    Use one row per task, model, and arm, keeping the recorded arm labels and
    including the baseline when present. App is the task ID; include the model
    in the App cell when multiple models were evaluated. Score is the mean of
-   graded runs. Time, token counts, tool calls, and API-equivalent cost are
-   totals across repetitions. Cached input includes cache reads and cache
+   eligible graded runs. Time, token counts, tool calls, and API-equivalent
+   cost are totals across eligible repetitions. With `agent_failure: exclude`,
+   a failed agent's partial grade and resource use stay in Run details but do
+   not enter the comparison. With `zero`, a failed agent scores zero while its
+   resource use remains in the comparison. Cached input includes cache reads and cache
    writes; total tokens include input, cached input, and output. Skill loaded
    is yes/no for one run or loaded/known runs for repetitions, with unknown
    runs noted separately. Show missing measurements or unavailable pricing

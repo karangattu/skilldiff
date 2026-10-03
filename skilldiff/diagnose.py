@@ -2,6 +2,17 @@ import json
 from pathlib import Path
 from typing import Any
 
+from skilldiff.stats import analysis_run, usable_agent_run
+
+
+def _graded_score(run: dict[str, Any]) -> float | None:
+    if not usable_agent_run(run) or run.get("grade_status") in ("ungraded", "timeout", "error"):
+        return None
+    try:
+        return float(run["score"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
 
 def diagnose_run(run_dir: Path) -> dict[str, Any]:
     path = Path(run_dir).resolve()
@@ -25,6 +36,8 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         control_runs = []
         treatment_runs = []
     task_details = {str(t.get("id")): t for t in (data.get("task_details") or [])}
+    policy = (data.get("failure_policy") or (data.get("settings") or {}).get(
+        "failure_policy") or {}).get("agent_failure", "exclude")
 
     under_triggered = []
     over_triggered = []
@@ -55,8 +68,10 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         if category == "irrelevant" and invoked is True:
             over_triggered.append({"task_id": task_id, "model": model, "rep": rep})
 
-        c_score = c_run.get("score")
-        t_score = t_run.get("score")
+        c_analysis = analysis_run(c_run, policy)
+        t_analysis = analysis_run(t_run, policy)
+        c_score = _graded_score(c_analysis)
+        t_score = _graded_score(t_analysis)
         if c_score is not None and t_score is not None and float(t_score) < float(c_score):
             regressions.append(
                 {
@@ -103,7 +118,9 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
                 "cache_creation_tokens",
             )
         )
-        if c_tok > 0 and t_tok > c_tok * 1.5 and (t_score or 0) <= (c_score or 0):
+        if (usable_agent_run(c_analysis) and usable_agent_run(t_analysis)
+                and c_score is not None and t_score is not None
+                and c_tok > 0 and t_tok > c_tok * 1.5 and t_score <= c_score):
             token_bloat_tasks.append(
                 {
                     "task_id": task_id,

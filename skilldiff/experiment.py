@@ -31,7 +31,7 @@ from skilldiff.snapshots import (
     snapshot_paths,
     tree_contents,
 )
-from skilldiff.stats import paired_comparison
+from skilldiff.stats import analysis_run, paired_comparison
 from skilldiff.workspace import Workspace
 
 MAX_STORED_ERROR = 2000
@@ -1117,18 +1117,16 @@ class ExperimentRunner:
                         records[arm]["skill_path"] = str(self.config.skill_b)
                 if arm in ("control", "baseline") and workspaces[arm].removed_from_control:
                     records[arm]["removed_from_fixture"] = workspaces[arm].removed_from_control
-                # Failure policy decided before running: score_zero turns
-                # infrastructure failures into explicit zeros instead of N/A.
+                # Preserve the partial grader output for audit, but do not
+                # count an infrastructure failure as a completed repair.
                 fp = dict(getattr(self.config, "failure_policy", {}) or {})
-                if (
-                    fp.get("agent_failure") == "zero"
-                    and records[arm].get("status") not in (None, "ok", "correctness")
-                    and records[arm].get("score") is None
-                ):
-                    records[arm]["score"] = 0.0
-                    records[arm]["success"] = False
-                    records[arm]["grade_status"] = "graded"
-                    records[arm]["failure_scored_zero"] = True
+                if records[arm].get("status") not in (None, "ok", "correctness"):
+                    if (fp.get("agent_failure") == "zero"
+                            and records[arm].get("grade_status") not in ("timeout", "error")):
+                        records[arm]["partial_score"] = records[arm].get("score")
+                        records[arm].update(analysis_run(records[arm], "zero"))
+                    else:
+                        records[arm]["analysis_excluded"] = True
                 self._save_run_artifacts(arm_dir, records[arm], res.transcript, diff_text)
 
             if "baseline" in records:
@@ -1177,6 +1175,15 @@ class ExperimentRunner:
         control_runs.sort(key=sort_key)
         treatment_runs.sort(key=sort_key)
         baseline_runs = sorted(list(self._baseline_runs), key=sort_key)
+        raw_control_runs, raw_treatment_runs, raw_baseline_runs = (
+            control_runs, treatment_runs, baseline_runs
+        )
+        agent_failure = (getattr(self.config, "failure_policy", {}) or {}).get(
+            "agent_failure", "exclude"
+        )
+        control_runs = [analysis_run(r, agent_failure) for r in raw_control_runs]
+        treatment_runs = [analysis_run(r, agent_failure) for r in raw_treatment_runs]
+        baseline_runs = [analysis_run(r, agent_failure) for r in raw_baseline_runs]
 
         by_model: dict[str, dict[str, Any]] = {}
         for model in self.config.models:
@@ -1206,13 +1213,13 @@ class ExperimentRunner:
         warnings = list(warnings)
         warnings.extend(
             _run_warnings(
-                control_runs,
-                treatment_runs,
+                raw_control_runs,
+                raw_treatment_runs,
                 self.tasks,
                 treatment_label=treat_label,
                 is_skill_comparison=bool(self.config.is_skill_comparison),
                 is_pr=bool(self.comparison),
-                baseline_runs=baseline_runs,
+                baseline_runs=raw_baseline_runs,
             )
         )
         if interrupted:
@@ -1379,9 +1386,9 @@ class ExperimentRunner:
             "baseline_overall": baseline_overall,
             "baseline_comparisons": baseline_comparisons,
             "runs": {
-                "control": control_runs,
-                "treatment": treatment_runs,
-                **({"baseline": baseline_runs} if baseline_runs else {}),
+                "control": raw_control_runs,
+                "treatment": raw_treatment_runs,
+                **({"baseline": raw_baseline_runs} if raw_baseline_runs else {}),
             },
             "retries": list(self._retry_history),
         }

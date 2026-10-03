@@ -1,4 +1,10 @@
-from skilldiff.stats import bootstrap_ci, classify_effect, pair_runs, paired_comparison
+from skilldiff.stats import (
+    analysis_run,
+    bootstrap_ci,
+    classify_effect,
+    pair_runs,
+    paired_comparison,
+)
 
 
 def _run(arm, rep, score, cost=0.0, task="t", model="m"):
@@ -35,3 +41,24 @@ def test_classify_effect_unclear_when_ci_spans_zero():
     control = [_run("control", i, s) for i, s in enumerate([0, 1, 0, 1], 1)]
     treatment = [_run("treatment", i, s) for i, s in enumerate([1, 0, 1, 0], 1)]
     assert classify_effect(paired_comparison(control, treatment)["score"]) == "unclear"
+
+
+def test_agent_error_partial_grade_is_excluded_unless_zero_policy():
+    control = _run("control", 1, 1 / 11, cost=0.1)
+    control.update(status="error", duration=48, input_tokens=1000)
+    treatment = _run("treatment", 1, 1.0, cost=0.2)
+    treatment["input_tokens"] = 2000
+
+    excluded = paired_comparison([control], [treatment])
+    assert excluded["pairs"] == 1
+    assert all(excluded[key]["n"] == 0 for key in ("score", "cost", "duration", "tokens"))
+
+    zeroed = analysis_run(control, "zero")
+    assert control["score"] == 1 / 11  # Raw grader evidence is unchanged.
+    assert zeroed["score"] == 0.0
+    included = paired_comparison([zeroed], [treatment])
+    assert included["score"]["mean_diff"] == 1.0
+    assert included["cost"]["n"] == included["duration"]["n"] == 1
+
+    grader_error = analysis_run({**control, "grade_status": "error"}, "zero")
+    assert paired_comparison([grader_error], [treatment])["score"]["n"] == 0

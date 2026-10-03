@@ -12,7 +12,7 @@ import statistics
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from skilldiff.stats import classify_effect, paired_comparison
+from skilldiff.stats import analysis_run, classify_effect, paired_comparison, usable_agent_run
 
 # --------------------------------------------------------------------------- metrics
 
@@ -37,6 +37,8 @@ def _total_tokens_opt(run: dict[str, Any]) -> Optional[int]:
 
 
 def _known_score(run: dict[str, Any]) -> Optional[float]:
+    if not usable_agent_run(run):
+        return None
     if run.get("grade_status") in ("ungraded", "timeout", "error"):
         return None
     if "score" not in run or run.get("score") is None:
@@ -85,17 +87,18 @@ def calculate_metrics(runs_data: list[dict[str, Any]]) -> dict[str, Any]:
             "grade_status_counts": {},
         }
 
-    scores = [s for r in runs_data if (s := _known_score(r)) is not None]
-    costs = [c for r in runs_data if (c := _known_float(r, "cost")) is not None]
-    times = [t for r in runs_data if (t := _known_float(r, "duration")) is not None]
-    tok_opts = [_total_tokens_opt(r) for r in runs_data]
+    analyzed = [r for r in runs_data if usable_agent_run(r)]
+    scores = [s for r in analyzed if (s := _known_score(r)) is not None]
+    costs = [c for r in analyzed if (c := _known_float(r, "cost")) is not None]
+    times = [t for r in analyzed if (t := _known_float(r, "duration")) is not None]
+    tok_opts = [_total_tokens_opt(r) for r in analyzed]
     tokens = [t for t in tok_opts if t is not None]
     turns = [
         int(r["num_turns"])
-        for r in runs_data
+        for r in analyzed
         if "num_turns" in r and r.get("num_turns") is not None
     ]
-    known = [r for r in runs_data if r.get("skill_invoked") is not None]
+    known = [r for r in analyzed if r.get("skill_invoked") is not None]
     grade_counts: dict[str, int] = {}
     for r in runs_data:
         gs = str(r.get("grade_status") or ("graded" if "score" in r else "unknown"))
@@ -103,8 +106,8 @@ def calculate_metrics(runs_data: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "task_score": statistics.mean(scores) if scores else None,
-        "success_count": sum(1 for r in runs_data if r.get("success") is True),
-        "total_count": len(runs_data),
+        "success_count": sum(1 for r in analyzed if r.get("success") is True),
+        "total_count": len(analyzed),
         "graded_count": len(scores),
         "score_known_count": len(scores),
         "median_cost": statistics.median(costs) if costs else None,
@@ -116,17 +119,19 @@ def calculate_metrics(runs_data: list[dict[str, Any]]) -> dict[str, Any]:
         "tokens_known_count": len(tokens),
         "total_duration": sum(times) if times else None,
         "total_cost": round(sum(costs), 4) if costs else None,
-        "total_input_tokens": sum(int(r.get("input_tokens", 0) or 0) for r in runs_data),
-        "total_output_tokens": sum(int(r.get("output_tokens", 0) or 0) for r in runs_data),
-        "total_cache_read_tokens": sum(int(r.get("cache_read_tokens", 0) or 0) for r in runs_data),
+        "total_input_tokens": sum(int(r.get("input_tokens", 0) or 0) for r in analyzed),
+        "total_output_tokens": sum(int(r.get("output_tokens", 0) or 0) for r in analyzed),
+        "total_cache_read_tokens": sum(int(r.get("cache_read_tokens", 0) or 0) for r in analyzed),
         "total_cache_creation_tokens": sum(
-            int(r.get("cache_creation_tokens", 0) or 0) for r in runs_data
+            int(r.get("cache_creation_tokens", 0) or 0) for r in analyzed
         ),
         "total_tokens": sum(tokens) if tokens else None,
-        "total_tool_calls": sum(int(r.get("tool_calls", 0) or 0) for r in runs_data),
+        "total_tool_calls": sum(int(r.get("tool_calls", 0) or 0) for r in analyzed),
         "skill_used_count": sum(1 for r in known if r.get("skill_invoked")),
         "skill_known_count": len(known),
-        "error_count": sum(1 for r in runs_data if r.get("status") not in (None, "ok")),
+        "error_count": sum(
+            1 for r in runs_data if r.get("status") not in (None, "ok", "correctness")
+        ),
         "grade_status_counts": grade_counts,
     }
 
@@ -444,8 +449,12 @@ def _api_equivalent_summary(
     totals = {field: 0 for field, _ in _API_TOKEN_FIELDS}
     cost = 0.0
     priced_runs = 0
+    eligible_runs = 0
     unpriced: set[str] = set()
     for run in runs or []:
+        if not usable_agent_run(run):
+            continue
+        eligible_runs += 1
         tokens: dict[str, int] = {}
         for field, _rate_key in _API_TOKEN_FIELDS:
             try:
@@ -467,6 +476,7 @@ def _api_equivalent_summary(
         "totals": totals,
         "cost": cost if priced_runs else None,
         "priced_runs": priced_runs,
+        "eligible_runs": eligible_runs,
         "unpriced": sorted(unpriced),
     }
 
@@ -1147,10 +1157,29 @@ def _metric_rows(
     tok_reading = _metric_reading("tokens", "tokens", tok_fallback)
     turn_reading = _metric_reading("turns", "turns", turn_fallback)
 
-    success_diff = skill.get("success_count", 0) - control.get("success_count", 0)
-    success_reading = row_reading(
-        "success", success_diff, None, None, total_pairs, total_pairs, True
-    )
+    paired_success = paired.get("success") or {}
+    success_n = int(paired_success.get("n", 0))
+    if success_n:
+        control_success = int(paired_success["control"])
+        skill_success = int(paired_success["treatment"])
+        success_diff = skill_success - control_success
+        success_control_cell = f"{control_success}/{success_n}"
+        success_skill_cell = f"{skill_success}/{success_n}"
+        success_diff_cell = format_count_diff(success_diff)
+        success_reading = row_reading(
+            "success", success_diff, None, None, success_n, total_pairs, True
+        )
+    elif total_pairs:
+        success_diff = 0
+        success_control_cell = success_skill_cell = success_diff_cell = "N/A"
+        success_reading = "No usable success pairs"
+    else:
+        # Summary-only records lack individual pairs.
+        success_diff = skill.get("success_count", 0) - control.get("success_count", 0)
+        success_control_cell = f"{control.get('success_count', 0)}/{control.get('total_count', 0)}"
+        success_skill_cell = f"{skill.get('success_count', 0)}/{skill.get('total_count', 0)}"
+        success_diff_cell = format_count_diff(success_diff)
+        success_reading = row_reading("success", success_diff, None, None, 0, 0, True)
     has_cost = bool(
         (control.get("median_cost") is not None)
         or (skill.get("median_cost") is not None)
@@ -1179,9 +1208,9 @@ def _metric_rows(
         ],
         [
             "Success",
-            f"{control.get('success_count', 0)}/{control.get('total_count', 0)}",
-            f"{skill.get('success_count', 0)}/{skill.get('total_count', 0)}",
-            (format_count_diff(success_diff), _tone(success_diff, True)),
+            success_control_cell,
+            success_skill_cell,
+            (success_diff_cell, _tone(success_diff, True) if success_diff_cell != "N/A" else None),
             "",
             success_reading,
         ],
@@ -1637,9 +1666,12 @@ def _format_checks_passed(run: dict[str, Any]) -> str:
         if not known:
             return "N/A"
         passed = sum(1 for _, p in known if p)
+        result = f"{passed}/{len(checks)}"
         if len(known) < len(checks):
-            return f"{passed}/{len(checks)}*"
-        return f"{passed}/{len(checks)}"
+            result += "*"
+        if run.get("status") not in (None, "ok", "correctness"):
+            result += " (partial)"
+        return result
     # No named checks: fall back to success, or N/A when ungraded.
     if run.get("grade_status") in ("ungraded", "timeout", "error"):
         return "N/A"
@@ -1664,6 +1696,11 @@ def compare_checks(
     pairs = _pair_runs(control_runs, treatment_runs)
     agg: dict[tuple[str, str], dict[str, Any]] = {}
     for c, t in pairs:
+        # Partial grader checks describe an interrupted attempt, even when a
+        # zero-score failure policy keeps that pair in the task-score summary.
+        if (c.get("status") not in (None, "ok", "correctness")
+                or t.get("status") not in (None, "ok", "correctness")):
+            continue
         task_id = str(c.get("task_id") or t.get("task_id") or "")
         c_checks = {n: p for n, p in extract_checks(c)}
         t_checks = {n: p for n, p in extract_checks(t)}
@@ -1758,6 +1795,10 @@ def _run_status(run: dict[str, Any]) -> Cell:
 
 
 def _score_cell(run: dict[str, Any]) -> str:
+    if not usable_agent_run(run):
+        return "N/A (agent failure)"
+    if run.get("failure_scored_zero"):
+        return "0% (failure policy)"
     gs = run.get("grade_status")
     if gs in ("ungraded", "timeout", "error"):
         label = {"ungraded": "ungraded", "timeout": "grader timeout", "error": "grader error"}[gs]
@@ -1818,8 +1859,9 @@ _EVALUATION_HEADERS = [
 _EVALUATION_ALIGN = ["l", "l", "r", "r", "r", "r", "r", "r", "r", "l", "r"]
 _EVALUATION_NOTE = (
     "App is the task ID (with the model when multiple models were evaluated). "
-    "Score is the mean of graded runs; time, tokens, tool calls, and cost are totals "
-    "across repetitions. Cached input includes cache reads and cache writes. "
+    "Score is the mean of eligible graded runs; time, tokens, tool calls, and cost "
+    "are totals across eligible repetitions. Excluded agent failures remain in "
+    "Run details as partial attempts. Cached input includes cache reads and cache writes. "
     "Skill loaded shows yes/no for one run or loaded/known runs for repetitions. "
     "N/A means measurements or recorded pricing are missing."
 )
@@ -1831,7 +1873,11 @@ def _evaluation_rows(
     treatment_runs: list[dict[str, Any]],
 ) -> list[list[Cell]]:
     """One row per task, model, and arm, using recorded pricing only."""
-    baseline_runs = (results.get("runs") or {}).get("baseline") or []
+    policy = (results.get("failure_policy") or (results.get("settings") or {}).get(
+        "failure_policy") or {}).get("agent_failure", "exclude")
+    baseline_runs = [
+        analysis_run(r, policy) for r in ((results.get("runs") or {}).get("baseline") or [])
+    ]
     arms = {"control": control_runs, "treatment": treatment_runs, "baseline": baseline_runs}
     keys = list(dict.fromkeys(
         (str(r.get("task_id", "")), str(r.get("model", "")))
@@ -1850,18 +1896,19 @@ def _evaluation_rows(
     rows: list[list[Cell]] = []
     for task, model in keys:
         for arm, runs in arms.items():
-            group = [r for r in runs if (str(r.get("task_id", "")), str(r.get("model", "")))
-                     == (task, model)]
-            if not group:
+            group_all = [r for r in runs if (str(r.get("task_id", "")), str(r.get("model", "")))
+                         == (task, model)]
+            if not group_all:
                 continue
+            group = [r for r in group_all if usable_agent_run(r)]
             metrics = calculate_metrics(group)
 
             def total(field: str) -> str:
-                if any(r.get(field) is None for r in group):
+                if not group or any(r.get(field) is None for r in group):
                     return "N/A"
                 return f"{sum(int(r[field]) for r in group):,}"
 
-            tokens_known = all(
+            tokens_known = bool(group) and all(
                 r.get("input_tokens") is not None
                 and r.get("output_tokens") is not None
                 and r.get("cache_read_tokens", 0) is not None
@@ -1897,6 +1944,9 @@ def _evaluation_rows(
 def render_evaluation_table(results: dict[str, Any], run_root: Path | None = None) -> str:
     """Markdown table shared by the final terminal output and saved reports."""
     runs = _load_runs_for_report(results, run_root)
+    policy = (results.get("failure_policy") or (results.get("settings") or {}).get(
+        "failure_policy") or {}).get("agent_failure", "exclude")
+    runs = {arm: [analysis_run(r, policy) for r in records] for arm, records in runs.items()}
     rows = _evaluation_rows(results, runs["control"], runs["treatment"])
     if not rows:
         return ""
@@ -2002,7 +2052,8 @@ def _key_takeaways(
         else:
             bullets.append(
                 f"**Accuracy.** No graded pairs in {n} pair(s); scores are N/A "
-                "(ungraded tasks or grader failures). Only cost/time can be compared."
+                "(ungraded tasks, agent failures, or grader failures). "
+                "Only available efficiency data can be compared."
             )
 
     efficiency = _efficiency_sentence(paired, subject)
@@ -2136,6 +2187,13 @@ def build_report_blocks(
         subject = label.lower()
     name = str(results.get("name", "experiment"))
     runs_data = _load_runs_for_report(results, run_root)
+    failure_policy = results.get("failure_policy") or (results.get("settings") or {}).get(
+        "failure_policy") or {}
+    agent_failure = failure_policy.get("agent_failure", "exclude")
+    runs_data = {
+        arm: [analysis_run(r, agent_failure) for r in records]
+        for arm, records in runs_data.items()
+    }
     control_runs = runs_data["control"]
     treatment_runs = runs_data["treatment"]
 
@@ -2185,9 +2243,6 @@ def build_report_blocks(
 
     blocks: list[tuple] = []
     thresholds = results.get("thresholds") or (results.get("settings") or {}).get("thresholds")
-    failure_policy = results.get("failure_policy") or (results.get("settings") or {}).get(
-        "failure_policy"
-    )
 
     if headline_paired.get("pairs"):
         verdict, kind = _verdict(
@@ -2321,7 +2376,7 @@ def build_report_blocks(
         note = (
             "Planned pairs = models × tasks × runs per arm. Completed pairs match "
             "both arms on (model, task, repetition); usable score pairs are those "
-            "with graded scores on both sides. Agent failures and grader errors "
+            "with eligible graded scores on both sides. Agent failures and grader errors "
             "count runs across both arms (agent failures: status other than ok; "
             "grader errors: grader timeout or error, scored N/A)."
         )
@@ -2344,16 +2399,19 @@ def build_report_blocks(
             t = api["totals"]
             return [
                 arm,
-                _fmt_tokens(t["input_tokens"]),
-                _fmt_tokens(t["cache_read_tokens"]),
-                _fmt_tokens(t["cache_creation_tokens"]),
-                _fmt_tokens(t["output_tokens"]),
+                *(
+                    [_fmt_tokens(t[field]) for field, _ in _API_TOKEN_FIELDS]
+                    if api["eligible_runs"] else ["N/A"] * len(_API_TOKEN_FIELDS)
+                ),
                 _fmt_money(api["cost"], currency),
             ]
 
         diff_row: list[Cell] = [f"Change ({label} − Control)"]
         for field, _rate_key in _API_TOKEN_FIELDS:
-            diff_row.append(_signed_tokens(s_api["totals"][field] - c_api["totals"][field]))
+            diff_row.append(
+                _signed_tokens(s_api["totals"][field] - c_api["totals"][field])
+                if c_api["eligible_runs"] and s_api["eligible_runs"] else "N/A"
+            )
         cost_cell: Cell = _fmt_money_diff(cost_change, currency)
         if cost_change is not None:
             cost_cell = (cost_cell, _tone(round(cost_change, 2), False))
@@ -2386,8 +2444,9 @@ def build_report_blocks(
         note = (
             f"Rates in {currency} per 1M tokens from {pricing.get('source')} "
             f"(checked {pricing.get('date')}). {rate_bits}. "
-            "Each run's recorded token counts × its model's rates, summed over runs; "
-            "the run saves rates, source, date, and the token breakdown, so this "
+            "Each eligible run's recorded token counts × its model's rates, summed "
+            "over eligible runs; excluded agent failures remain in Run details. "
+            "The run saves rates, source, date, and the token breakdown, so this "
             "estimate reproduces from the saved run alone."
         )
         unpriced = sorted(set(c_api["unpriced"]) | set(s_api["unpriced"]))
@@ -2846,10 +2905,14 @@ def build_report_blocks(
                 "as descriptive statistics; the Δ and 95% CI measure the same "
                 "paired-mean effect. Reading states each row's verdict in plain "
                 "words and never disagrees with them.",
+                "Success compares only pairs with eligible graded scores and known "
+                "success outcomes on both sides.",
                 "The 95% CI is a bootstrap interval over paired runs. If it includes zero, "
                 "the difference could be noise. `n=X/Y` shows valid pairs for that metric.",
-                "Unknown values are **N/A** (ungraded tasks, grader timeouts/errors, or "
-                "missing cost/tokens). Valid-pair counts show how many pairs contributed.",
+                "Unknown values are **N/A** (ungraded tasks, excluded agent failures, "
+                "grader timeouts/errors, or missing cost/tokens). Valid-pair counts "
+                "show how many pairs contributed. Failed attempts retain their raw "
+                "time, tokens, and partial checks in Run details.",
                 _cost_basis_note(results),
                 "Checks `N/A` means no named checks; `1/2*` means one check had unknown status.",
                 *(

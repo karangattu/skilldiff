@@ -625,11 +625,53 @@ def test_evaluation_completeness_row():
 
     assert "## Evaluation completeness" in md
     # Planned (1 model × 1 task × 4 runs) / completed / usable / failures / errors.
-    assert "| 4 | 4 | 3 | 1 | 1 |" in md
+    assert "| 4 | 4 | 2 | 1 | 1 |" in md
     assert (
-        "Partial — 1 agent failure(s), 1 grader error(s), 1 pair(s) ungraded" in md
+        "Partial — 1 agent failure(s), 1 grader error(s), 2 pair(s) ungraded" in md
     )
     assert "The run was interrupted" in md
+
+
+def test_excluded_agent_failure_keeps_partial_evidence_out_of_all_comparisons():
+    control = _runs("control", [1.0, 1 / 11], 0.1)
+    treatment = _runs("treatment", [1.0, 1.0], 0.2, skill_invoked=True)
+    control[1].update(
+        status="error", duration=48.0, input_tokens=1000,
+        feedback={"checks": [{"name": "repair", "passed": False}]},
+    )
+    treatment[1]["feedback"] = {"checks": [{"name": "repair", "passed": True}]}
+    results = _results(
+        control, treatment, failure_policy={"agent_failure": "exclude"}, pricing=_PRICING
+    )
+    md = reporter.build_markdown_report(results)
+    paired = reporter.paired_comparison(control, treatment)
+
+    assert paired["score"]["n"] == paired["duration"]["n"] == 1
+    assert "| 2 | 2 | 1 | 1 | 0 |" in md  # One unusable score pair.
+    assert "| Task score (mean) | 100% | 100% | 0 pp |" in md
+    assert "| Success | 1/1 | 1/1 | 0 |" in md
+    assert "| Time (median) | 10s | 10s | 0s |" in md
+    assert "## By check" not in md
+    assert "N/A (agent failure)" in md
+    assert "0/1 (partial)" in md
+    assert reporter.calculate_metrics(control)["total_input_tokens"] == 100
+    assert "| Control | 100 | 1.0k | 0 | 50 |" in md
+    table = reporter.render_evaluation_table(results)
+    assert "| t | Control | 100% | 10s | 100 | 1,000 | 50 | 1,150 |" in table
+    assert control[1]["score"] == 1 / 11  # Reporter did not mutate the saved record.
+
+
+def test_zero_policy_overrides_partial_grade_but_not_grader_error():
+    control = _runs("control", [1 / 11, 1 / 11], 0.1)
+    treatment = _runs("treatment", [1.0, 1.0], 0.2)
+    control[0]["status"] = "error"
+    control[1].update(status="error", grade_status="error")
+    md = reporter.build_markdown_report(_results(
+        control, treatment, failure_policy={"agent_failure": "zero"}
+    ))
+    assert "| 2 | 2 | 1 | 2 | 1 |" in md
+    assert "0% (failure policy)" in md
+    assert "N/A (agent failure)" in md
 
 
 def test_evaluation_completeness_row_complete_run():

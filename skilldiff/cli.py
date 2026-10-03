@@ -75,7 +75,7 @@ parallel: 1                 # pairs to run at once
 
 # Failure / missing-result policy, decided before running (not after):
 # failure_policy:
-#   agent_failure: exclude  # or "zero" (failed sessions score 0)
+#   agent_failure: exclude  # omit failed sessions from comparisons; "zero" scores them 0
 #   missing: exclude
 
 # Practical decision thresholds (optional, shown in the verdict).
@@ -619,7 +619,6 @@ def cmd_check(args: argparse.Namespace) -> int:
     if not resolved:
         fail(f"{cfg.harness} CLI not found (`{binary}`); install it or set bin_path")
     else:
-        version = ""
         try:
             proc = subprocess.run(
                 [resolved, "--version"],
@@ -628,10 +627,17 @@ def cmd_check(args: argparse.Namespace) -> int:
                 timeout=30,
                 stdin=subprocess.DEVNULL,
             )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            fail(f"{cfg.harness} CLI failed to start (`{resolved} --version`): {exc}")
+        else:
             version = next(iter((proc.stdout or proc.stderr).strip().splitlines()), "")
-        except Exception:
-            pass
-        ok(f"{cfg.harness} CLI: {resolved} {version}".rstrip())
+            if proc.returncode:
+                fail(
+                    f"{cfg.harness} CLI failed (`{resolved} --version`, exit "
+                    f"{proc.returncode}): {version or 'no output'}"
+                )
+            else:
+                ok(f"{cfg.harness} CLI: {resolved} {version}".rstrip())
 
     if cfg.harness == "claude":
         if cfg.claude.auth == "subscription" and os.environ.get("ANTHROPIC_API_KEY"):

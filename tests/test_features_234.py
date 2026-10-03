@@ -379,6 +379,25 @@ def test_diagnose_run(tmp_path: Path):
     assert len(diag["recommendations"]) > 0
 
 
+def test_diagnose_ignores_partial_agent_failure_comparisons(tmp_path: Path):
+    failed = {
+        "task_id": "task_1", "model": "m", "repetition": 1,
+        "status": "error", "score": 1.0, "input_tokens": 100,
+    }
+    completed = {
+        "task_id": "task_1", "model": "m", "repetition": 1,
+        "status": "ok", "score": 0.0, "input_tokens": 500,
+    }
+    path = tmp_path / "results.json"
+    path.write_text(json.dumps({
+        "failure_policy": {"agent_failure": "exclude"},
+        "runs": {"control": [failed], "treatment": [completed]},
+    }))
+    diag = diagnose_run(path)
+    assert diag["regressions"] == []
+    assert diag["token_bloat_tasks"] == []
+
+
 def test_cli_lint_and_diagnose(tmp_path: Path, capsys):
     from skilldiff.cli import cmd_diagnose, cmd_lint
 
