@@ -6,6 +6,21 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-04
+
+### Added
+
+- Evaluation results table records and displays `Tool calls` and `Turns` columns, along
+  with a per-task `Δ (treatment - control)` difference row across matched eligible repetitions
+  for score, time, tokens, tool calls, turns, and API-equivalent cost.
+- Paired comparison, summary table, and closing decision table track and classify
+  median tool calls and turns with paired differences and bootstrap confidence intervals.
+
+### Fixed
+
+- Antigravity harness runner extracts `tool_calls` as `None` when unknown instead of
+  falling back to `num_turns`.
+
 ## [0.10.1] - 2026-10-04
 
 ### Fixed
