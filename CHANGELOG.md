@@ -6,6 +6,8 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-04
+
 ### Fixed
 
 - LLM and rubric grading requires an executable judge command instead of awarding
