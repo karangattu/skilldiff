@@ -16,9 +16,15 @@ from skilldiff.config import find_skill_dirs, load_experiment, read_skill_frontm
 from skilldiff.experiment import ExperimentRunner, find_user_level_installs
 from skilldiff.grader import Grader
 from skilldiff.persistence import atomic_json, read_json, run_lock
-from skilldiff.reporter import create_reports, render_evaluation_table, render_report_table
+from skilldiff.reporter import (
+    _paired_comparison_metrics,
+    create_reports,
+    render_evaluation_table,
+    render_report_table,
+)
 from skilldiff.revisions import resolve_comparison
 from skilldiff.runner import AgentRunner
+from skilldiff.stats import analysis_run, paired_comparison
 from skilldiff.workspace import Workspace
 
 DEFAULT_MODELS = {
@@ -1104,6 +1110,24 @@ def _format_results(results: dict) -> str:
     thresholds = results.get("thresholds") or (results.get("settings") or {}).get("thresholds")
     preset = results.get("preset") or (results.get("settings") or {}).get("preset")
     arm_labels = results.get("arm_labels") or {}
+    raw_runs = results.get("runs") or {}
+    failure_policy = results.get("failure_policy") or (results.get("settings") or {}).get(
+        "failure_policy") or {}
+    agent_failure = failure_policy.get("agent_failure", "exclude")
+    control_runs = [analysis_run(r, agent_failure) for r in raw_runs.get("control") or []]
+    treatment_runs = [analysis_run(r, agent_failure) for r in raw_runs.get("treatment") or []]
+
+    def comparable_source(model: str | None, fallback: dict) -> dict:
+        if not (control_runs or treatment_runs):
+            return fallback
+        control = [r for r in control_runs if model is None or r.get("model") == model]
+        treatment = [r for r in treatment_runs if model is None or r.get("model") == model]
+        control_metrics, treatment_metrics = _paired_comparison_metrics(control, treatment)
+        return {
+            "control": control_metrics,
+            "skill": treatment_metrics,
+            "paired": paired_comparison(control, treatment),
+        }
 
     sections: list[str] = []
     comparison = results.get("comparison")
@@ -1140,7 +1164,7 @@ def _format_results(results: dict) -> str:
     if len(models) <= 1:
         model_name = models[0] if models else None
         model_data = by_model.get(model_name) if model_name else None
-        source = model_data or results.get("overall", {})
+        source = comparable_source(model_name, model_data or results.get("overall", {}))
         sections.append(
             render_report_table(
                 experiment_name=name,
@@ -1157,7 +1181,7 @@ def _format_results(results: dict) -> str:
         )
     else:
         for model_name in models:
-            model_data = by_model.get(model_name)
+            model_data = comparable_source(model_name, by_model.get(model_name) or {})
             if not model_data:
                 continue
             sections.append(

@@ -12,7 +12,13 @@ import statistics
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from skilldiff.stats import analysis_run, classify_effect, paired_comparison, usable_agent_run
+from skilldiff.stats import (
+    analysis_run,
+    classify_effect,
+    pair_runs,
+    paired_comparison,
+    usable_agent_run,
+)
 
 # --------------------------------------------------------------------------- metrics
 
@@ -134,6 +140,88 @@ def calculate_metrics(runs_data: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "grade_status_counts": grade_counts,
     }
+
+
+def _paired_agent_runs(
+    control_runs: list[dict[str, Any]], treatment_runs: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Use the same completed agent pairs for descriptive efficiency totals."""
+    pairs = [
+        (control, treatment)
+        for control, treatment in pair_runs(control_runs, treatment_runs)
+        if usable_agent_run(control) and usable_agent_run(treatment)
+    ]
+    return [control for control, _ in pairs], [treatment for _, treatment in pairs]
+
+
+def _paired_metric_runs(
+    control_runs: list[dict[str, Any]],
+    treatment_runs: list[dict[str, Any]],
+    metric: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return pairs with an eligible measurement on both sides for one metric."""
+    def complete_tokens(run: dict[str, Any]) -> Optional[int]:
+        if run.get("input_tokens") is None or run.get("output_tokens") is None:
+            return None
+        if any(run.get(key) is None for key in ("cache_read_tokens", "cache_creation_tokens")
+               if key in run):
+            return None
+        return _total_tokens_opt(run)
+
+    getters = {
+        "score": _known_score,
+        "cost": lambda run: _known_float(run, "cost"),
+        "duration": lambda run: _known_float(run, "duration"),
+        "tokens": _total_tokens_opt,
+        "token_breakdown": complete_tokens,
+        "turns": lambda run: _known_float(run, "num_turns"),
+    }
+    getter = getters[metric]
+    pairs = [
+        (control, treatment)
+        for control, treatment in pair_runs(control_runs, treatment_runs)
+        if usable_agent_run(control)
+        and usable_agent_run(treatment)
+        and getter(control) is not None
+        and getter(treatment) is not None
+    ]
+    return [control for control, _ in pairs], [treatment for _, treatment in pairs]
+
+
+def _paired_comparison_metrics(
+    control_runs: list[dict[str, Any]], treatment_runs: list[dict[str, Any]]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Describe each comparison using the pairs behind that metric's delta."""
+    paired_control, paired_treatment = _paired_agent_runs(control_runs, treatment_runs)
+    control = calculate_metrics(paired_control)
+    treatment = calculate_metrics(paired_treatment)
+    fields = {
+        "score": ("task_score",),
+        "cost": ("median_cost", "total_cost", "cost_known_count"),
+        "duration": ("median_time", "total_duration", "time_known_count"),
+        "tokens": (
+            "median_tokens", "total_tokens", "tokens_known_count",
+            "total_input_tokens", "total_output_tokens", "total_cache_read_tokens",
+            "total_cache_creation_tokens",
+        ),
+        "turns": ("median_turns",),
+    }
+    for metric, names in fields.items():
+        metric_control, metric_treatment = _paired_metric_runs(
+            control_runs, treatment_runs, metric
+        )
+        for target, runs in ((control, metric_control), (treatment, metric_treatment)):
+            measured = calculate_metrics(runs)
+            for name in names:
+                target[name] = measured[name]
+            if metric == "score":
+                target["graded_count"] = measured["graded_count"]
+                target["score_known_count"] = measured["score_known_count"]
+    for target, runs in ((control, control_runs), (treatment, treatment_runs)):
+        adoption = calculate_metrics(runs)
+        for name in ("skill_used_count", "skill_known_count"):
+            target[name] = adoption[name]
+    return control, treatment
 
 
 # ------------------------------------------------------------------------ formatting
@@ -513,9 +601,27 @@ def render_report_table(
         d = _score_difference(control_metrics, skill_metrics)
         diff_score_txt = format_pp_diff(d) if d is not None else "N/A"
 
-    c_succ = f"{control_metrics.get('success_count', 0)}/{control_metrics.get('total_count', 0)}"
-    s_succ = f"{skill_metrics.get('success_count', 0)}/{skill_metrics.get('total_count', 0)}"
-    diff_succ = skill_metrics.get("success_count", 0) - control_metrics.get("success_count", 0)
+    paired_success = (paired or {}).get("success") or {}
+    if (paired or {}).get("pairs"):
+        success_n = int(paired_success.get("n", 0))
+        if success_n:
+            c_success = int(paired_success["control"])
+            s_success = int(paired_success["treatment"])
+            c_succ, s_succ = f"{c_success}/{success_n}", f"{s_success}/{success_n}"
+            diff_succ = s_success - c_success
+        else:
+            c_succ = s_succ = "N/A"
+            diff_succ = None
+    else:
+        c_succ = (
+            f"{control_metrics.get('success_count', 0)}/"
+            f"{control_metrics.get('total_count', 0)}"
+        )
+        s_succ = (
+            f"{skill_metrics.get('success_count', 0)}/"
+            f"{skill_metrics.get('total_count', 0)}"
+        )
+        diff_succ = skill_metrics.get("success_count", 0) - control_metrics.get("success_count", 0)
 
     c_cost = _fmt_cost_opt(control_metrics.get("median_cost"))
     s_cost = _fmt_cost_opt(skill_metrics.get("median_cost"))
@@ -590,14 +696,13 @@ def render_report_table(
         score_reading = row_reading(
             "score", None if d_frac is None else d_frac / 100.0, None, None, 0, 0, True
         )
-    success_reading = row_reading(
-        "success",
-        diff_succ,
-        None,
-        None,
-        (paired or {}).get("pairs", 0) if paired else 0,
-        (paired or {}).get("pairs", 0) if paired else 0,
-        True,
+    success_reading = (
+        "No usable success pairs" if diff_succ is None else row_reading(
+            "success", diff_succ, None, None,
+            paired_success.get("n", 0) if paired_success else 0,
+            (paired or {}).get("pairs", 0) if paired else 0,
+            True,
+        )
     )
 
     lines = [
@@ -606,7 +711,9 @@ def render_report_table(
         f"{'Metric':<18} {'Control':>8} {treatment_label:>10} "
         f"{'Paired mean Δ':>16} {'Reading':<28}",
         row("Task score", c_score_txt, s_score_txt, diff_score_txt, score_reading),
-        row("Success", c_succ, s_succ, format_count_diff(diff_succ), success_reading),
+        row("Success", c_succ, s_succ,
+            format_count_diff(diff_succ) if diff_succ is not None else "N/A",
+            success_reading),
         row(
             "Cost (median)",
             c_cost,
@@ -1669,7 +1776,8 @@ def _format_checks_passed(run: dict[str, Any]) -> str:
         result = f"{passed}/{len(checks)}"
         if len(known) < len(checks):
             result += "*"
-        if run.get("status") not in (None, "ok", "correctness"):
+        if (run.get("status") not in (None, "ok", "correctness")
+                or run.get("grade_status") in ("timeout", "error")):
             result += " (partial)"
         return result
     # No named checks: fall back to success, or N/A when ungraded.
@@ -1699,7 +1807,9 @@ def compare_checks(
         # Partial grader checks describe an interrupted attempt, even when a
         # zero-score failure policy keeps that pair in the task-score summary.
         if (c.get("status") not in (None, "ok", "correctness")
-                or t.get("status") not in (None, "ok", "correctness")):
+                or t.get("status") not in (None, "ok", "correctness")
+                or c.get("grade_status") in ("timeout", "error")
+                or t.get("grade_status") in ("timeout", "error")):
             continue
         task_id = str(c.get("task_id") or t.get("task_id") or "")
         c_checks = {n: p for n, p in extract_checks(c)}
@@ -1859,11 +1969,12 @@ _EVALUATION_HEADERS = [
 _EVALUATION_ALIGN = ["l", "l", "r", "r", "r", "r", "r", "r", "r", "l", "r"]
 _EVALUATION_NOTE = (
     "App is the task ID (with the model when multiple models were evaluated). "
-    "Score is the mean of eligible graded runs; time, tokens, tool calls, and cost "
-    "are totals across eligible repetitions. Excluded agent failures remain in "
-    "Run details as partial attempts. Cached input includes cache reads and cache writes. "
-    "Skill loaded shows yes/no for one run or loaded/known runs for repetitions. "
-    "N/A means measurements or recorded pricing are missing."
+    "Control and skill scores use pairs graded on both sides. Time, tokens, and cost "
+    "use matched eligible pairs with those measurements; tool calls use matched "
+    "eligible agent runs. Excluded and unpaired attempts remain in Run details. "
+    "Cached input includes cache reads and cache writes. Skill loaded covers all "
+    "eligible runs, including unpaired runs. A lone arm and the optional baseline "
+    "show descriptive totals. N/A means a measurement or recorded pricing is missing."
 )
 
 
@@ -1895,47 +2006,78 @@ def _evaluation_rows(
     pricing = results.get("pricing") or {}
     rows: list[list[Cell]] = []
     for task, model in keys:
-        for arm, runs in arms.items():
-            group_all = [r for r in runs if (str(r.get("task_id", "")), str(r.get("model", "")))
-                         == (task, model)]
+        grouped = {
+            arm: [
+                r for r in runs
+                if (str(r.get("task_id", "")), str(r.get("model", ""))) == (task, model)
+            ]
+            for arm, runs in arms.items()
+        }
+        control_metrics, treatment_metrics = _paired_comparison_metrics(
+            grouped["control"], grouped["treatment"]
+        )
+        paired_control, paired_treatment = _paired_agent_runs(
+            grouped["control"], grouped["treatment"]
+        )
+        token_control, token_treatment = _paired_metric_runs(
+            grouped["control"], grouped["treatment"], "token_breakdown"
+        )
+        for arm in arms:
+            group_all = grouped[arm]
             if not group_all:
                 continue
-            group = [r for r in group_all if usable_agent_run(r)]
-            metrics = calculate_metrics(group)
+            standalone = arm == "baseline" or not grouped[
+                "treatment" if arm == "control" else "control"
+            ]
+            if arm == "control" and grouped["treatment"]:
+                group, token_group, metrics = paired_control, token_control, control_metrics
+            elif arm == "treatment" and grouped["control"]:
+                group, token_group, metrics = paired_treatment, token_treatment, treatment_metrics
+            else:
+                group = [r for r in group_all if usable_agent_run(r)]
+                token_group = group
+                metrics = calculate_metrics(group)
 
-            def total(field: str) -> str:
-                if not group or any(r.get(field) is None for r in group):
+            def total(field: str, measured: list[dict[str, Any]]) -> str:
+                if not measured or any(r.get(field) is None for r in measured):
                     return "N/A"
-                return f"{sum(int(r[field]) for r in group):,}"
+                return f"{sum(int(r[field]) for r in measured):,}"
 
-            tokens_known = bool(group) and all(
+            tokens_known = bool(token_group) and all(
                 r.get("input_tokens") is not None
                 and r.get("output_tokens") is not None
                 and r.get("cache_read_tokens", 0) is not None
                 and r.get("cache_creation_tokens", 0) is not None
-                for r in group
+                for r in token_group
+            )
+            token_metrics = calculate_metrics(token_group)
+            cache_total = (
+                token_metrics["total_cache_read_tokens"]
+                + token_metrics["total_cache_creation_tokens"]
             )
             cached = (
-                f"{metrics['total_cache_read_tokens'] + metrics['total_cache_creation_tokens']:,}"
+                f"{cache_total:,}"
                 if tokens_known else "N/A"
             )
-            api = _api_equivalent_summary(group, pricing)
-            cost = api["cost"] if tokens_known and api["priced_runs"] == len(group) else None
+            api = _api_equivalent_summary(token_group, pricing)
+            cost = api["cost"] if tokens_known and api["priced_runs"] == len(token_group) else None
             used, known = metrics["skill_used_count"], metrics["skill_known_count"]
-            loaded = ("yes" if used else "no") if len(group) == known == 1 else (
+            eligible_count = calculate_metrics(group_all)["total_count"]
+            loaded = ("yes" if used else "no") if eligible_count == known == 1 else (
                 f"{used}/{known}" if known else "N/A"
             )
-            if known and known < len(group):
-                loaded += f" ({len(group) - known} unknown)"
+            if known and known < eligible_count:
+                loaded += f" ({eligible_count - known} unknown)"
             rows.append([
                 f"{task} ({model})" if multi_model else task,
                 str(labels.get(arm) or default_labels[arm]),
                 _fmt_score_pct(metrics),
                 _fmt_time_opt(metrics["total_duration"])
-                if metrics["time_known_count"] == len(group) else "N/A",
-                total("input_tokens"), cached, total("output_tokens"),
-                f"{metrics['total_tokens']:,}" if tokens_known else "N/A",
-                total("tool_calls"), loaded,
+                if not standalone or metrics["time_known_count"] == len(group) else "N/A",
+                total("input_tokens", token_group), cached,
+                total("output_tokens", token_group),
+                f"{token_metrics['total_tokens']:,}" if tokens_known else "N/A",
+                total("tool_calls", group), loaded,
                 _fmt_money(cost, str(pricing.get("currency") or "USD")),
             ])
     return rows
@@ -2028,8 +2170,9 @@ def _key_takeaways(
 ) -> list[str]:
     subject = "treatment" if results.get("comparison") else "skill"
     paired = paired_comparison(control_runs, treatment_runs)
-    control = calculate_metrics(control_runs)
-    skill = calculate_metrics(treatment_runs)
+    control, skill = _paired_comparison_metrics(control_runs, treatment_runs)
+    all_control = calculate_metrics(control_runs)
+    all_skill = calculate_metrics(treatment_runs)
     bullets: list[str] = []
 
     n = paired.get("pairs", 0)
@@ -2069,10 +2212,10 @@ def _key_takeaways(
             totals.insert(0, f"cost {cc} → {ss}")
         bullets.append(f"**Efficiency.** {efficiency} Totals: {', '.join(totals)}.")
 
-    if skill.get("skill_known_count"):
-        used, known = skill["skill_used_count"], skill["skill_known_count"]
+    if all_skill.get("skill_known_count"):
+        used, known = all_skill["skill_used_count"], all_skill["skill_known_count"]
         text = f"**Adoption.** The agent used the skill in {used} of {known} skill runs"
-        c_used = control.get("skill_used_count", 0)
+        c_used = all_control.get("skill_used_count", 0)
         text += (
             f"; {c_used} control run(s) also referenced it."
             if c_used
@@ -2128,7 +2271,14 @@ def _key_takeaways(
                 f"**Biggest regression:** `{worst[1]}` ({format_pp_diff(round(worst[0] * 100))})."
             )
     c_pct_all = _score_percent(control)
-    if task_effects and all(abs(e) < 1e-9 for e, _ in task_effects) and (c_pct_all or 0) >= 95:
+    planned_pairs = (
+        len(results.get("models") or [])
+        * int(results.get("tasks_count") or len(results.get("tasks") or []))
+        * int(results.get("runs_per_arm") or 1)
+    )
+    if (task_effects and scored == n and (not planned_pairs or n == planned_pairs)
+            and all(abs(e) < 1e-9 for e, _ in task_effects)
+            and (c_pct_all or 0) >= 95):
         bullets.append(
             "**Ceiling effect.** Control already solves these tasks, so accuracy can't "
             f"improve. Add harder tasks the {subject} is designed for, such as obscure APIs, "
@@ -2196,10 +2346,8 @@ def build_report_blocks(
     }
     control_runs = runs_data["control"]
     treatment_runs = runs_data["treatment"]
-
     if control_runs or treatment_runs:
-        control = calculate_metrics(control_runs)
-        skill = calculate_metrics(treatment_runs)
+        control, skill = _paired_comparison_metrics(control_runs, treatment_runs)
         paired = paired_comparison(control_runs, treatment_runs)
     else:  # Summary-only results (older versions or hand-built input).
         overall = results.get("overall", {})
@@ -2222,22 +2370,25 @@ def build_report_blocks(
         if (control_runs or treatment_runs)
         else None
     )
+    held_out_pairs = int((paired_held_out or {}).get("pairs", 0))
+    held_out_scored = int(((paired_held_out or {}).get("score") or {}).get("n", 0))
+    held_out_coverage = f"{held_out_scored}/{held_out_pairs} usable score pair(s)"
     rec_tasks_count = tasks_count or None
     headline_paired = paired
     headline_control, headline_skill = control, skill
     split_basis_note = ""
     if paired_held_out and paired_held_out.get("pairs"):
-        held_c = [r for r in control_runs if _run_split(r, task_splits) == "held-out"]
-        held_t = [r for r in treatment_runs if _run_split(r, task_splits) == "held-out"]
+        raw_held_c = [r for r in control_runs if _run_split(r, task_splits) == "held-out"]
+        raw_held_t = [r for r in treatment_runs if _run_split(r, task_splits) == "held-out"]
         headline_paired = paired_held_out
-        headline_control = calculate_metrics(held_c)
-        headline_skill = calculate_metrics(held_t)
+        headline_control, headline_skill = _paired_comparison_metrics(raw_held_c, raw_held_t)
         rec_tasks_count = (
-            len({str(r.get("task_id", "")) for r in held_c + held_t}) or rec_tasks_count
+            len({str(r.get("task_id", "")) for r in raw_held_c + raw_held_t})
+            or rec_tasks_count
         )
         split_basis_note = (
-            f"Headline and closing decision use the {paired_held_out.get('pairs')} "
-            "held-out pair(s) only — the honest estimate. Dev pairs are for "
+            f"Headline and closing decision use held-out data only "
+            f"({held_out_coverage}). Dev pairs are for "
             "iteration and shown separately in By split."
         )
 
@@ -2389,8 +2540,11 @@ def build_report_blocks(
     pricing = results.get("pricing") or {}
     if pricing and (control_runs or treatment_runs):
         currency = str(pricing.get("currency") or "USD")
-        c_api = _api_equivalent_summary(control_runs, pricing)
-        s_api = _api_equivalent_summary(treatment_runs, pricing)
+        priced_control, priced_treatment = _paired_metric_runs(
+            control_runs, treatment_runs, "token_breakdown"
+        )
+        c_api = _api_equivalent_summary(priced_control, pricing)
+        s_api = _api_equivalent_summary(priced_treatment, pricing)
         cost_change = None
         if c_api["cost"] is not None and s_api["cost"] is not None:
             cost_change = float(s_api["cost"]) - float(c_api["cost"])
@@ -2444,12 +2598,16 @@ def build_report_blocks(
         note = (
             f"Rates in {currency} per 1M tokens from {pricing.get('source')} "
             f"(checked {pricing.get('date')}). {rate_bits}. "
-            "Each eligible run's recorded token counts × its model's rates, summed "
-            "over eligible runs; excluded agent failures remain in Run details. "
+            "Each paired eligible run's recorded token counts × its model's rates, "
+            "summed over matched pairs. Unpaired and failed attempts remain in "
+            "Run details. "
             "The run saves rates, source, date, and the token breakdown, so this "
             "estimate reproduces from the saved run alone."
         )
-        unpriced = sorted(set(c_api["unpriced"]) | set(s_api["unpriced"]))
+        unpriced = sorted(
+            set(_api_equivalent_summary(control_runs, pricing)["unpriced"])
+            | set(_api_equivalent_summary(treatment_runs, pricing)["unpriced"])
+        )
         if unpriced:
             note += (
                 f" No rates recorded for {', '.join(f'`{m}`' for m in unpriced)}: "
@@ -2482,21 +2640,19 @@ def build_report_blocks(
             split_rows.append(
                 _group_row(
                     split,
-                    calculate_metrics(sc),
-                    calculate_metrics(st),
+                    *_paired_comparison_metrics(sc, st),
                     paired_comparison(sc, st),
                     show_usage=not comparison,
                 )
             )
         blocks.append(("table", _group_headers("Split", label), split_rows, group_align))
-        held_out_pairs = int((paired_held_out or {}).get("pairs", 0))
         if held_out_pairs:
             blocks.append(
                 (
                     "p",
                     f"Dev pairs are for iteration; the held-out set is the honest "
                     f"estimate. The headline and closing decision use the "
-                    f"{held_out_pairs} held-out pair(s) only.",
+                    f"held-out set only ({held_out_coverage}).",
                 )
             )
         else:
@@ -2516,7 +2672,7 @@ def build_report_blocks(
             if control_runs:
                 mc = [r for r in control_runs if r.get("model") == model]
                 mt = [r for r in treatment_runs if r.get("model") == model]
-                m_control, m_skill = calculate_metrics(mc), calculate_metrics(mt)
+                m_control, m_skill = _paired_comparison_metrics(mc, mt)
                 m_paired = paired_comparison(mc, mt)
             else:
                 m_control = by_model.get(model, {}).get("control", {})
@@ -2541,7 +2697,7 @@ def build_report_blocks(
                     for r in treatment_runs
                     if r.get("model") == model and r.get("task_id") == task_id
                 ]
-                t_control, t_skill = calculate_metrics(tc), calculate_metrics(tt)
+                t_control, t_skill = _paired_comparison_metrics(tc, tt)
                 t_paired = paired_comparison(tc, tt)
             else:
                 task_data = by_model.get(model, {}).get("by_task", {}).get(task_id, {})
@@ -2902,9 +3058,9 @@ def build_report_blocks(
             [
                 f"Differences are **{subject} minus control** as paired-mean changes. "
                 "Control/Skill columns show means (score) or medians (cost/time/tokens) "
-                "as descriptive statistics; the Δ and 95% CI measure the same "
-                "paired-mean effect. Reading states each row's verdict in plain "
-                "words and never disagrees with them.",
+                "from completed agent pairs; the Δ and 95% CI measure the paired-mean "
+                "effect. Adoption includes every eligible skill run. Reading states "
+                "each row's verdict in plain words and never disagrees with them.",
                 "Success compares only pairs with eligible graded scores and known "
                 "success outcomes on both sides.",
                 "The 95% CI is a bootstrap interval over paired runs. If it includes zero, "
@@ -2950,7 +3106,7 @@ def build_report_blocks(
         blocks.append(
             (
                 "p",
-                f"Held-out pairs only ({paired_held_out.get('pairs')}); all-pairs "
+                f"Held-out data only ({held_out_coverage}); all-pairs "
                 "figures are in the Summary table above, and dev results are in "
                 "By split.",
             )
@@ -3027,7 +3183,7 @@ def _category_summary(
         ]
         if not mc and not mt:
             continue
-        m_control, m_skill = calculate_metrics(mc), calculate_metrics(mt)
+        m_control, m_skill = _paired_comparison_metrics(mc, mt)
         m_paired = _paired(mc, mt)
         score_m = (m_paired.get("score") or {}).get("mean_diff", None)
         score_txt: Cell = (

@@ -639,6 +639,7 @@ def test_excluded_agent_failure_keeps_partial_evidence_out_of_all_comparisons():
         status="error", duration=48.0, input_tokens=1000,
         feedback={"checks": [{"name": "repair", "passed": False}]},
     )
+    treatment[1].update(duration=90.0, input_tokens=10000, cost=10.0)
     treatment[1]["feedback"] = {"checks": [{"name": "repair", "passed": True}]}
     results = _results(
         control, treatment, failure_policy={"agent_failure": "exclude"}, pricing=_PRICING
@@ -651,14 +652,83 @@ def test_excluded_agent_failure_keeps_partial_evidence_out_of_all_comparisons():
     assert "| Task score (mean) | 100% | 100% | 0 pp |" in md
     assert "| Success | 1/1 | 1/1 | 0 |" in md
     assert "| Time (median) | 10s | 10s | 0s |" in md
+    assert "time 10s → 10s" in md
     assert "## By check" not in md
     assert "N/A (agent failure)" in md
     assert "0/1 (partial)" in md
     assert reporter.calculate_metrics(control)["total_input_tokens"] == 100
     assert "| Control | 100 | 1.0k | 0 | 50 |" in md
+    assert "| Skill | 100 | 1.0k | 0 | 50 |" in md
     table = reporter.render_evaluation_table(results)
     assert "| t | Control | 100% | 10s | 100 | 1,000 | 50 | 1,150 |" in table
     assert control[1]["score"] == 1 / 11  # Reporter did not mutate the saved record.
+
+
+def test_comparative_tables_use_matched_pairs_for_each_metric():
+    for failure in ("agent", "grader"):
+        control = _runs("control", [1.0, 1.0], 0.1)
+        treatment = _runs("treatment", [1.0, 0.0], 0.1, skill_invoked=True)
+        for run in control + treatment:
+            run.update(task_split="held-out", task_category="intended")
+        control[1]["feedback"] = {"checks": [{"name": "repair", "passed": False}]}
+        treatment[1]["feedback"] = {"checks": [{"name": "repair", "passed": True}]}
+        if failure == "agent":
+            control[1]["status"] = "error"
+        else:
+            control[1].update(grade_status="error", score=None, success=None)
+        other_control = _runs("control", [1.0], 0.1)[0]
+        other_treatment = _runs("treatment", [1.0], 0.1, skill_invoked=True)[0]
+        for run in (other_control, other_treatment):
+            run.update(model="n", task_id="u", task_split="dev", task_category="irrelevant")
+        md = reporter.build_markdown_report(_results(
+            control + [other_control], treatment + [other_treatment],
+            models=["m", "n"], tasks=["t", "u"], tasks_count=2,
+            task_categories={"t": "intended", "u": "irrelevant"},
+            failure_policy={"agent_failure": "exclude"}, pricing=_PRICING,
+        ))
+
+        assert "| Task score (mean) | 100% | 100% | 0 pp |" in md
+        for label in ("held-out", "m", "t (m)"):
+            assert f"| {label} | 100% | 100% | 0 pp |" in md
+        assert "| intended | 1 | 100% | 100% | 0 pp |" in md
+        assert "1/2 usable score pair(s)" in md
+        assert "**Ceiling effect.**" not in md
+        expected_time = "10s" if failure == "agent" else "20s"
+        assert f"| t (m) | Control | 100% | {expected_time} |" in md
+        assert f"| t (m) | Skill | 100% | {expected_time} |" in md
+        assert "## By check" not in md
+        assert "0/1 (partial)" in md  # Raw failed attempt is still auditable.
+
+
+def test_api_cost_requires_complete_token_breakdowns_on_both_sides():
+    control = _runs("control", [1.0], 0.1)
+    treatment = _runs("treatment", [1.0], 0.1, skill_invoked=True)
+    control[0]["output_tokens"] = None
+    results = _results(control, treatment, pricing=_PRICING)
+    md = reporter.build_markdown_report(results)
+    evaluation = reporter.render_evaluation_table(results)
+
+    assert "| Control | N/A | N/A | N/A | N/A | N/A |" in md
+    assert "| Skill | N/A | N/A | N/A | N/A | N/A |" in md
+    assert "| t | Control | 100% | 10s | N/A | N/A | N/A | N/A |" in evaluation
+    assert "| t | Skill | 100% | 10s | N/A | N/A | N/A | N/A |" in evaluation
+
+
+def test_failed_only_pair_has_no_comparative_score_or_efficiency():
+    control = _runs("control", [1 / 11], 0.1)
+    treatment = _runs("treatment", [1.0], 0.1, skill_invoked=True)
+    control[0].update(
+        status="error", feedback={"checks": [{"name": "repair", "passed": False}]}
+    )
+    md = reporter.build_markdown_report(_results(
+        control, treatment, failure_policy={"agent_failure": "exclude"}, pricing=_PRICING
+    ))
+
+    assert "| t | N/A | N/A | N/A |" in md  # By task
+    assert "| t | Control | N/A | N/A | N/A | N/A | N/A | N/A |" in md
+    assert "| t | Skill | N/A | N/A | N/A | N/A | N/A | N/A |" in md
+    assert "N/A (agent failure)" in md
+    assert "0/1 (partial)" in md
 
 
 def test_zero_policy_overrides_partial_grade_but_not_grader_error():
@@ -705,7 +775,10 @@ def test_by_split_section_separates_dev_and_held_out():
     )
 
     assert "## By split" in md
-    assert "The headline and closing decision use the 3 held-out pair(s) only" in md
+    assert (
+        "The headline and closing decision use the held-out set only "
+        "(3/3 usable score pair(s))"
+    ) in md
     split_table = md[md.index("## By split") :]
     assert "| dev |" in split_table
     assert "| held-out |" in split_table

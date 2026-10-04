@@ -4,6 +4,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -136,6 +137,57 @@ def _finalize_status(result: RunResult, execution: ExecResult) -> RunResult:
     return result
 
 
+def _is_transient_error(
+    stderr: str, stdout: str, data: Optional[dict[str, Any]] = None
+) -> bool:
+    if isinstance(data, dict):
+        if data.get("retryable") is True:
+            return True
+        err = str(data.get("error") or "")
+        if any(
+            msg in err
+            for msg in (
+                "operation timed out",
+                "i/o timeout",
+                "Unavailable",
+                "connection reset",
+                "broken pipe",
+                "transport is closing",
+            )
+        ):
+            return True
+    combined = f"{stderr}\n{stdout}"
+    return any(
+        msg in combined
+        for msg in (
+            "operation timed out",
+            "i/o timeout",
+            "Unavailable",
+            "connection reset by peer",
+            "broken pipe",
+            "transport is closing",
+        )
+    )
+
+
+def _reset_cwd_workspace(cwd: Path) -> None:
+    if (cwd / ".git").is_dir():
+        subprocess.run(
+            ["git", "reset", "--hard", "HEAD"],
+            cwd=cwd,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "clean", "-fd"],
+            cwd=cwd,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
 class AgentRunner:
     def __init__(
         self,
@@ -206,7 +258,9 @@ class AgentRunner:
             raise RuntimeError("Cancelled before the agent started")
 
         exec_cmd = list(cmd)
-        if isolation in {"docker", "podman"}:
+        if sys.platform == "darwin" and isolation == "local" and shutil.which("caffeinate"):
+            exec_cmd = ["caffeinate", "-i", *exec_cmd]
+        elif isolation in {"docker", "podman"}:
             if not shutil.which(isolation):
                 raise RuntimeError(f"Container runtime '{isolation}' not found on PATH")
             img = container_image or "python:3.11"
@@ -779,49 +833,63 @@ class AgentRunner:
         if antigravity_cfg.extra_args:
             cmd.extend(antigravity_cfg.extra_args)
 
-        start_time = time.perf_counter()
-        try:
-            execution = self._exec(
-                cmd,
-                cwd,
-                os.environ.copy(),
-                timeout,
-                isolation=isolation,
-                container_image=container_image,
-            )
-        except Exception as exc:
-            return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            start_time = time.perf_counter()
+            try:
+                execution = self._exec(
+                    cmd,
+                    cwd,
+                    os.environ.copy(),
+                    timeout,
+                    isolation=isolation,
+                    container_image=container_image,
+                )
+            except Exception as exc:
+                if attempt + 1 < max_attempts and _is_transient_error(str(exc), ""):
+                    _reset_cwd_workspace(cwd)
+                    time.sleep(2)
+                    continue
+                return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
 
-        stdout = execution.stdout
-        exit_code = execution.exit_code
-        duration = execution.duration
-        response = stdout
-        cost = 0.0
-        input_tokens = 0
-        output_tokens = 0
-        tool_calls = 0
-        num_turns = 0
+            stdout = execution.stdout
+            exit_code = execution.exit_code
+            duration = execution.duration
+            response = stdout
+            cost = 0.0
+            input_tokens = 0
+            output_tokens = 0
+            tool_calls = 0
+            num_turns = 0
+            data = None
 
-        try:
-            data = json.loads(stdout)
-            if isinstance(data, dict):
-                response = data.get("response") or data.get("result") or stdout
-                cost = float(data.get("total_cost_usd") or data.get("cost") or 0.0)
-                if "duration_seconds" in data:
-                    try:
-                        duration = float(data["duration_seconds"])
-                    except (ValueError, TypeError):
-                        pass
-                usage = data.get("usage") or {}
-                input_tokens = int(usage.get("input_tokens", 0))
-                output_tokens = int(usage.get("output_tokens", 0))
-                cache_read_tokens = int(usage.get("cache_read_tokens", 0))
-                num_turns = int(data.get("num_turns") or 0)
-                tool_calls = int(data.get("tool_calls_count") or num_turns)
-                if data.get("status") and data.get("status") != "SUCCESS" and exit_code == 0:
-                    exit_code = 1
-        except (json.JSONDecodeError, ValueError, TypeError):
-            cache_read_tokens = 0
+            try:
+                data = json.loads(stdout)
+                if isinstance(data, dict):
+                    response = data.get("response") or data.get("result") or stdout
+                    cost = float(data.get("total_cost_usd") or data.get("cost") or 0.0)
+                    if "duration_seconds" in data:
+                        try:
+                            duration = float(data["duration_seconds"])
+                        except (ValueError, TypeError):
+                            pass
+                    usage = data.get("usage") or {}
+                    input_tokens = int(usage.get("input_tokens", 0))
+                    output_tokens = int(usage.get("output_tokens", 0))
+                    cache_read_tokens = int(usage.get("cache_read_tokens", 0))
+                    num_turns = int(data.get("num_turns") or 0)
+                    tool_calls = int(data.get("tool_calls_count") or num_turns)
+                    if data.get("status") and data.get("status") != "SUCCESS" and exit_code == 0:
+                        exit_code = 1
+            except (json.JSONDecodeError, ValueError, TypeError):
+                cache_read_tokens = 0
+
+            is_transient = exit_code != 0 and _is_transient_error(execution.stderr, stdout, data)
+            if is_transient and attempt + 1 < max_attempts and not execution.timed_out:
+                _reset_cwd_workspace(cwd)
+                time.sleep(2)
+                continue
+            break
 
         transcript = f"STDOUT:\n{stdout}\n\nSTDERR:\n{execution.stderr}"
         if isinstance(data, dict):

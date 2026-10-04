@@ -270,3 +270,19 @@ def test_kill_group_safe_pid_handling():
         _kill_group(mock_proc)
         mock_proc.kill.assert_called_once()
 
+
+def test_exec_caffeinate_on_darwin(tmp_path: Path):
+    from unittest.mock import MagicMock, patch
+
+    runner = AgentRunner()
+    with patch("sys.platform", "darwin"), patch(
+        "shutil.which", return_value="/usr/bin/caffeinate"
+    ), patch("subprocess.Popen") as mock_popen, patch("skilldiff.runner._kill_group"):
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        runner._exec(["echo", "hello"], cwd=tmp_path, env={}, timeout=5.0, isolation="local")
+
+        called_cmd = mock_popen.call_args[0][0]
+        assert called_cmd == ["caffeinate", "-i", "echo", "hello"]

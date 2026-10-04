@@ -3,12 +3,46 @@ from pathlib import Path
 
 import yaml
 
-from skilldiff.cli import cmd_check, cmd_init, cmd_results, cmd_run
+from skilldiff.cli import _format_results, cmd_check, cmd_init, cmd_results, cmd_run
 
 
 class Args:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
+
+
+def test_terminal_summary_uses_matched_eligible_pairs():
+    def run(arm, rep, score, duration, status="ok"):
+        return {
+            "arm": arm, "model": "m", "task_id": "t", "repetition": rep,
+            "status": status, "score": score, "success": score == 1.0,
+            "duration": duration, "input_tokens": 100, "output_tokens": 50,
+        }
+
+    results = {
+        "name": "partial", "models": ["m"], "tasks_count": 1, "runs_per_arm": 2,
+        "by_model": {"m": {
+            "control": {"task_score": 1.0, "median_time": 10.0},
+            "skill": {"task_score": 0.5, "median_time": 55.0},
+        }},
+        "runs": {
+            "control": [run("control", 1, 1.0, 10.0), run("control", 2, 1.0, 500.0, "error")],
+            "treatment": [run("treatment", 1, 1.0, 10.0), run("treatment", 2, 1.0, 100.0)],
+        },
+        "failure_policy": {"agent_failure": "exclude"},
+    }
+    output = _format_results(results)
+    score_line = next(line for line in output.splitlines() if line.startswith("Task score"))
+    time_line = next(line for line in output.splitlines() if line.startswith("Time (median)"))
+    success_line = next(line for line in output.splitlines() if line.startswith("Success"))
+
+    assert score_line.count("100%") == 2
+    assert "0 pp" in score_line
+    assert time_line.count("10s") >= 2
+    assert "55s" not in time_line
+    assert success_line.count("1/1") == 2
+    assert " 0 " in success_line
+    assert "| t | Skill | 100% | 10s |" in output
 
 
 def test_cli_init_and_overwrite(tmp_path: Path, monkeypatch):
