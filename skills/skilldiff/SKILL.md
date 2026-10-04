@@ -103,6 +103,9 @@ Other rules:
   Add them as `validation: {good: ..., broken: [...]}` in the task file so `check`
   grades all three. A grader that fails everything is broken, not strict. Crashing
   graders report `error` (N/A), never a plain zero.
+  A broken fixture that crashes or times out does not validate the grader: fix
+  the infrastructure until it returns a graded failing result. For an LLM/rubric
+  grader, supply a judge `command:`; SkillDiff has no built-in judge.
 
 Graders run with the workspace as the working directory. They also get these
 environment variables: `SKILLDIFF_RESPONSE_FILE` (the agent's final message),
@@ -181,12 +184,21 @@ Use `--parallel N` only if the user's rate limits allow it. Use `--resume` (or
 reused only when skill, task, PR revision, and execution settings match, and a
 mismatch refuses instead of silently mixing results.
 
+Container execution needs a locally available image containing the harness CLI,
+graders, and dependencies. `bin_path` refers to an executable inside that image.
+Claude and Codex container runs require API authentication; host login directories
+are not mounted. Run `skilldiff check` first. Resume also requires the same
+isolation mode and immutable container image identity.
+
 Read `report.md` (for pull requests) or `report.html`. Report these results:
 
 1. **Verdict with uncertainty.** Give the mean paired score difference and its 95% CI.
    If the CI includes zero, the effect is not established. Say so plainly.
    Shipping needs bounds to clear thresholds, not point estimates. Report the
    task count alongside the pair count.
+   Use the count of tasks contributing usable paired scores, not the planned
+   task count. Terminal and saved reports share the same decision; held-out
+   evidence controls it when present, and contaminated controls cannot ship.
 2. **Adoption.** Say how many skill runs actually used the skill. Low adoption usually
    means that the skill's `description` doesn't match how users ask for the task.
 3. **Efficiency.** Give the cost, time, and token changes, and say which ones are
@@ -224,6 +236,10 @@ Read `report.md` (for pull requests) or `report.html`. Report these results:
    runs noted separately. Show missing measurements or unavailable pricing
    as `N/A`, never zero. Use the saved table directly when available; for
    older reports, derive the rows from `results.json` using these same rules.
+   A multi-turn task has one overall timeout and reports unknown aggregate
+   measurements as `N/A`. Agent sessions are not automatically retried.
+   The skill-context tax is a text-size estimate assuming text is carried each
+   turn, not measured prompt injection or spend.
 
    The report itself ends with a **Closing decision** table — score, cost, time,
    tokens, tool calls, turns, and adoption, each with paired change, 95% CI, and one plain reading —
@@ -257,6 +273,9 @@ positions and the report shows baseline-vs-A and baseline-vs-B. Use
 `skilldiff compare runA runB --strict` only for cross-run checks; prefer
 single-run A/B because `compare` must match tasks and repetitions to
 normalize efficiency.
+Each metric requires both sides to have a value and applies the recorded failure
+policy. Read the metric's usable pair counts; failed partial checks are diagnostic
+only. Strict comparison refuses differing failure policies.
 
 For compression: keep the skill name and trigger description identical so
 adoption changes do not confound the body comparison. Record source-size

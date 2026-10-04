@@ -29,9 +29,12 @@ csv-totals/
   breakdown and regenerating reproduces the estimate. The rates there are
   illustrative (checked 2026-09-27) — refresh them from the provider's pricing
   page before a real run.
-- **Closing decision.** Reports end with score, cost, time, tokens, and
-  adoption (paired change, CI, plain reading) plus one bottom line:
+- **Closing decision.** Reports end with score, cost, time, tokens,
+  tool calls, turns, and adoption (paired change, CI, plain reading) plus one bottom line:
   SHIP, DO NOT SHIP, or NEEDS MORE RUNS.
+  The terminal uses the same held-out decision and counts only tasks with usable
+  paired scores toward coverage. Historical sample files retain their recorded
+  output; regenerate reports in a separate directory to inspect current formatting.
 
 The numbers in `sample/` are synthetic. Do not quote them as findings.
 
@@ -40,7 +43,8 @@ The numbers in `sample/` are synthetic. Do not quote them as findings.
 ```bash
 skilldiff run -c skilldiff.yaml          # full run (paid agent sessions)
 skilldiff run -c skilldiff.yaml --runs 1 # cheap smoke test
-skilldiff report sample                  # rebuild reports from sample/results.json
+cp -R sample /tmp/csv-totals-report      # preserve the historical sample
+skilldiff report /tmp/csv-totals-report  # inspect the current report format
 ```
 
 `skilldiff run` needs the harness CLI (Claude by default) and network access.

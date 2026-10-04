@@ -35,19 +35,25 @@ Each run also saves the transcript and the diff for each agent run.
 
 The terminal output and saved reports include an **Evaluation results** table with
 App, Arm, Score, Time, Input, Cached input, Output, Total tokens, Tool calls,
-Skill loaded, and API-equivalent cost. App is the task ID; each app and arm has a
-row per model. Scores are means; resource usage and costs are totals across
-repetitions. Cached input includes cache reads and writes. Missing measurements
-or pricing show as `N/A`.
+Turns, Skill loaded, and API-equivalent cost. App is the task ID; each app and arm
+has a row per model, plus a paired Δ row when both arms are present. Scores are
+means; resource usage and costs are totals across eligible matched repetitions.
+Cached input includes cache reads and writes. Missing measurements or pricing
+show as `N/A`.
 
-Reports end with a **Closing decision** table — score, cost, time, tokens, and
-adoption, each with paired change, 95% CI, and a plain reading — followed by one
+Reports end with a **Closing decision** table — score, cost, time, tokens, tool
+calls, turns, and adoption, each with paired change, 95% CI, and a plain reading — followed by one
 bottom line: SHIP, DO NOT SHIP, or NEEDS MORE RUNS, with the reason. When the
 config records `pricing:` rates (per 1M tokens, with source and date), reports
 also reproduce an **API-equivalent cost** table from the saved token breakdown.
-A **Skill context tax** table shows the cost of carrying the skill itself: its
-installed size, the static tokens it injects on every turn, and the cumulative
-overhead across the run.
+A **Skill context tax** table estimates the frozen skill's text footprint and
+the overhead if that text is carried on every turn. File size and estimated
+tokens are separate from measured harness token use; this table does not measure
+actual prompt injection or spend.
+
+The terminal and saved reports use the same shipping decision, including control
+validity, held-out evidence, and the number of tasks with usable paired scores.
+Planned tasks with grader failures do not satisfy the task-coverage safeguard.
 
 A complete small evaluation lives in [`examples/csv-totals`](examples/csv-totals):
 a skill, dev and held-out tasks, fixtures, a deterministic grader, and a
@@ -107,6 +113,12 @@ Then complete these steps:
 **What each folder holds:** `skilldiff.yaml` holds name, skill path, harness, models, tasks, run count, seed, thresholds, failure policy, and optional `pricing:` rates (source, date, per-1M-token prices) for reproducible API-equivalent costs. `tasks/` holds one YAML file per task with an id, a prompt (or `prompts:` for a multi-turn script), a category, an optional `split: dev|held-out`, optional path assertions (`allowed_paths`, `forbidden_paths`), and optional `validation: {good, broken}`. `fixtures/` holds the small test projects, copied fresh for each run without `.git` history and with escaping symlinks rejected. `graders/` holds the scripts that score the work.
 
 Every key listed there is checked when the config loads: an unknown or misspelled key (in the experiment file, a nested block such as `claude:` or `thresholds:`, a task file, or a `grader:`) fails `skilldiff check` and `skilldiff run` immediately, naming the closest matching key, instead of being ignored while the run uses defaults you never chose.
+
+Values are checked too: path patterns, `prompts:`, and arguments must be lists of
+strings; flags must be YAML booleans; run and parallel counts must be positive
+integers; prices, thresholds, and timeouts must be finite numbers. Unsupported
+isolation modes fail rather than falling back to host execution. Distinct task
+files must have unique IDs; overlapping globs can safely select the same file.
 
 Older block names (`agy:` and `on_failure:`) are checked even when their replacements are also present. Optional sections accept `null` or `{}`; lists, booleans, numbers, and strings are rejected instead of being treated as empty settings.
 
@@ -261,10 +273,17 @@ grader:
 A task can also be scripted across several turns. Set `prompts:` to a list and
 each prompt runs in order in the same workspace, with tokens, cost, time, and
 turns summed across the turns.
+The configured timeout covers the entire script. If any turn lacks a measurement,
+that aggregate remains `N/A`; a missing measurement is never counted as zero.
+Agent sessions are not automatically retried, so each reported attempt includes
+its full observed expenditure and failure evidence.
 
 `allowed_paths` and `forbidden_paths` are integrity assertions. When a run
 modifies an out-of-scope file it is reported as an error, `N/A` with the path
 named, never as `0%`, so a stray edit cannot look like a wrong answer.
+Saved diffs and changed paths compare final work against the initial fixture,
+including changes the agent stages or commits. Baseline arms use the same
+grader inputs and integrity assertions as both skill arms.
 
 Categories:
 
@@ -290,7 +309,11 @@ A grader runs in the workspace after the agent stops:
 - A crashing grader (traceback, missing file, bad exit) shows `N/A`, not `0%`. Test failure shows `0%`.
 - Keep graders outside the fixture. Outside is not isolation by itself: confine agents so they cannot read parent paths.
 - Accept all valid solutions, not only the skill solution.
-- For output a script cannot score, set `type: llm` (alias `rubric`) with a `rubric:` describing what counts as correct. A judge model scores the response and diff, and must return JSON with `score`, `success`, and `feedback`. Add `command:` to run your own judge instead of the built-in one.
+- For output a script cannot score, set `type: llm` (alias `rubric`) with a
+  `rubric:` and a required judge `command:`. The command receives
+  `$SKILLDIFF_JUDGE_PROMPT_FILE` and must return JSON with `score`, `success`,
+  and `feedback`. There is no built-in judge; omitting the command fails
+  configuration validation instead of assigning an unevaluated score.
 
 Example grader output:
 
@@ -311,6 +334,9 @@ validation:
 ```
 
 `check` then grades untouched (must be below 100%), known-good (must be 100%), and broken (must fail).
+Every supplied validation fixture must produce a graded result. A crash, timeout,
+or missing grade on a broken example fails validation. Timed-out grader processes
+and their children are terminated before evaluation continues.
 
 </details>
 
@@ -401,6 +427,10 @@ skilldiff compare runs/2026-09-22T120000Z runs/2026-09-23T120000Z
 ```
 
 The output shows score changes, adoption changes, efficiency changes, and newly failing or passing checks. Efficiency uses per-run means over matched tasks and repetitions, not totals. It warns if models, tasks, or versions differ. Prefer a single-run A/B over `compare`, which must match tasks and repetitions to normalize efficiency.
+Each metric uses only matched model/task/repetition records with values on both
+sides and reports its usable counts. Failure policies apply before comparison;
+failed sessions' partial grader checks never become newly passing or failing
+checks. Different failure policies warn and fail strict comparison.
 
 </details>
 
@@ -409,7 +439,7 @@ The output shows score changes, adoption changes, efficiency changes, and newly 
 
 `skilldiff run --resume` selects the latest run. `--resume-from DIR` selects a specific run. Resume validates the saved metadata, input snapshots, checkpoint, and all completed arm artifacts before writing to that run.
 
-- Keep skills, tasks, fixtures, PR revisions, models, preset, baseline settings, active harness configuration, timeout, parallelism, failure policy, thresholds, and tool versions unchanged.
+- Keep skills, tasks, fixtures, PR revisions, models, preset, baseline settings, active harness configuration, timeout, parallelism, isolation mode, container image identity, failure policy, thresholds, and tool versions unchanged.
 - Omit `--seed` to reuse the original seed, or supply that same seed. You may increase `--runs`; decreasing it is refused.
 - Missing or corrupt records, changed snapshots, and incomplete pairs stop recovery with an error. Existing artifacts remain available. SkillDiff never silently reruns a partial paid pair; start a new run if needed.
 - Runs created before frozen-input metadata was introduced remain readable by `results`, `report`, and `compare`, but require a new run instead of resume.
@@ -448,7 +478,24 @@ Antigravity. Short names expand to full models. `gemini-3.8` becomes `gemini-3.8
 
 Sign in with each CLI's normal login before you run. Each harness accepts `bin_path` and `extra_args`. You can also set `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, or `AGY_BIN`.
 
-By default runs are on the host. Set `isolation: docker` (or `podman`) in `skilldiff.yaml`, with an optional `container_image` (default `python:3.11`), to run the agent and graders inside a container with the workspace mounted. The runtime must be on `PATH`.
+By default runs are on the host. Set `isolation: docker` (or `podman`) and
+`container_image` in `skilldiff.yaml` to run agents and graders inside a container.
+The runtime must be on `PATH`, its daemon must be running, and the image must
+already exist locally. SkillDiff records its immutable image ID and uses that
+identity for execution and resume; it does not pull images automatically.
+
+Use an image containing the harness CLI, grader programs, and their dependencies.
+The default `python:3.11` image only supplies Python; it is not a ready-to-run
+agent image. An explicit harness `bin_path` refers to a path inside the image.
+Automatically discovered host CLIs use their executable name inside the image.
+Workspace arguments are translated to `/workspace`. Graders also receive
+read-only mounts of task inputs and candidate artifacts.
+
+Only selected authentication variables and grader `SKILLDIFF_*` variables are
+forwarded. Host login directories are not mounted. Claude and Codex container
+runs require API authentication; their host subscription logins are unavailable
+inside the image. Run `skilldiff check` to verify the image, executable,
+authentication configuration, and graders before starting an evaluation.
 
 Running these from inside an agent needs a few things too:
 

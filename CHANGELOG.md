@@ -6,6 +6,38 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- LLM and rubric grading requires an executable judge command instead of awarding
+  an unevaluated perfect score. Three-way grader validation rejects crashes,
+  timeouts, and ungraded broken fixtures.
+- Final workspace evidence compares against the initial fixture, including staged,
+  committed, untracked, and ignored changes. Baseline arms receive the same prompt,
+  artifacts, and integrity assertions as both treatment arms.
+- Configuration validates value types, finite numbers, enums, and CLI overrides.
+  Task discovery rejects duplicate IDs while deduplicating overlapping globs;
+  development and held-out scaffolds have unique IDs and correct relative paths.
+- Terminal, Markdown, HTML, and Quarto share one decision using validity, held-out
+  evidence, and tasks with usable paired scores. Exports build their blocks once.
+- Automatic Antigravity retries are disabled to preserve first-attempt evidence. Scripted
+  tasks share one timeout budget and preserve unknown aggregate measurements.
+  Grader timeouts terminate descendant processes.
+- Container execution translates workspace paths, forwards selected authentication,
+  contains graders with read-only input mounts, cleans up named containers, and
+  records immutable image identity for execution and resume.
+- Cross-run comparisons match exact model/task/repetition observations, require
+  known measurements on both sides, and apply saved failure policies consistently.
+  Partial checks from failed sessions are excluded.
+- Skill footprint measurement works under hidden installation directories and uses
+  frozen inputs. Context tax is labelled as an estimate. Diagnosis covers all arms,
+  incomplete coverage, and grader failures instead of reporting a clean run.
+- Skill linting reports directory/frontmatter name mismatches.
+
+### Added
+
+- Behavioral regression tests using local executable fixtures, macOS CI, installed
+  wheel smoke checks, and a real container integration check without paid agents.
+
 ## [0.11.0] - 2026-10-04
 
 ### Added
