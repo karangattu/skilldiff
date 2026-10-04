@@ -8,10 +8,14 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python-version: "3.12"
 
     steps:
       - uses: actions/checkout@v7
@@ -31,5 +35,34 @@ jobs:
           ruff check .
 
       - name: Run tests with pytest
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
         run: |
           pytest -v
+
+      - name: Verify installed wheel and console entry point
+        shell: bash
+        run: |
+          python -m pip wheel --no-deps . -w dist
+          python -m venv "$RUNNER_TEMP/skilldiff-wheel"
+          "$RUNNER_TEMP/skilldiff-wheel/bin/python" -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/skilldiff-wheel/bin/skilldiff" --version
+          "$RUNNER_TEMP/skilldiff-wheel/bin/skilldiff" init --dir wheel-demo
+          CLAUDE_BIN=/bin/echo "$RUNNER_TEMP/skilldiff-wheel/bin/skilldiff" check -c wheel-demo/skilldiff.yaml
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: docker pull python:3.11-slim
+      - name: Verify real container paths, grading, and cleanup
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+          SKILLDIFF_CONTAINER_RUNTIME: docker
+          SKILLDIFF_CONTAINER_IMAGE: python:3.11-slim
+        run: pytest tests/test_audit_container.py -v
