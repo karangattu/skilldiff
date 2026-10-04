@@ -6,6 +6,29 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-04
+
+### Fixed
+
+- Failed or timed-out agent sessions no longer contribute partial grader scores
+  or resource measurements to comparisons under `agent_failure: exclude`.
+  The `zero` policy assigns a zero score while retaining resource usage;
+  grader errors remain `N/A`. Raw grades, checks, and measurements remain in
+  Run details for diagnosis.
+- Terminal summaries and report comparisons use matched eligible repetitions
+  for each metric, including success counts, split/model/task/category tables,
+  and evaluation results. API-equivalent costs require complete token
+  breakdowns on both sides. Failure diagnosis ignores excluded partial work.
+- `skilldiff check` verifies that the harness CLI can execute, reporting startup
+  errors, timeouts, and nonzero exits before an evaluation starts.
+
+### Added
+
+- Antigravity retries transient transport failures once after resetting its
+  evaluation workspace.
+- Local agent sessions on macOS use `caffeinate` when available to prevent
+  idle sleep during execution.
+
 ## [0.10.0] - 2026-10-02
 
 ### Added
