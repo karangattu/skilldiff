@@ -20,7 +20,9 @@ def measure_skill_footprint(skill_dir: Optional[Path]) -> dict[str, Any]:
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        if any(part.startswith(".") or part == "__pycache__" for part in path.parts):
+        if any(
+            part.startswith(".") or part == "__pycache__" for part in path.relative_to(root).parts
+        ):
             continue
         try:
             raw = path.read_bytes()

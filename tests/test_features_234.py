@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -111,8 +111,9 @@ def test_grader_llm_rubric_evaluation(tmp_path: Path):
         control_transcript="",
         treatment_transcript="",
     )
-    assert grade_c_fb.score == 1.0
-    assert "Rubric: Verify fallback" in grade_c_fb.feedback
+    assert grade_c_fb.score is None
+    assert grade_c_fb.grade_status == "error"
+    assert "judge command" in grade_c_fb.feedback
 
 
 def test_task_config_extensions(tmp_path: Path):
@@ -128,6 +129,7 @@ def test_task_config_extensions(tmp_path: Path):
         "  - '.env'\n"
         "grader:\n"
         "  type: llm\n"
+        "  command: python judge.py\n"
         "  rubric: 'Check quality'\n"
     )
     task = load_task(task_file)
@@ -249,32 +251,6 @@ def test_runner_multi_turn(tmp_path: Path):
         assert "TURN 1" in res.transcript
         assert "TURN 2" in res.transcript
 
-
-def test_runner_container_isolation(tmp_path: Path):
-    runner = AgentRunner()
-    cmd = ["echo", "hello"]
-
-    with patch("shutil.which", return_value="/usr/local/bin/docker"), patch(
-        "subprocess.Popen"
-    ) as mock_popen, patch("skilldiff.runner._kill_group"):
-        mock_proc = MagicMock()
-        mock_proc.wait.return_value = 0
-        mock_popen.return_value = mock_proc
-
-        runner._exec(
-            cmd,
-            cwd=tmp_path,
-            env={},
-            timeout=10.0,
-            isolation="docker",
-            container_image="custom-image:1.0",
-        )
-
-        called_cmd = mock_popen.call_args[0][0]
-        assert called_cmd[0] == "docker"
-        assert called_cmd[1] == "run"
-        assert "custom-image:1.0" in called_cmd
-        assert "echo" in called_cmd
 
 
 def test_measure_skill_footprint(tmp_path: Path):

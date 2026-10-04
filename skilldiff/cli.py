@@ -12,18 +12,25 @@ from typing import Optional
 import yaml
 
 from skilldiff import __version__
-from skilldiff.config import find_skill_dirs, load_experiment, read_skill_frontmatter
+from skilldiff.config import (
+    find_skill_dirs,
+    load_experiment,
+    read_skill_frontmatter,
+    validate_integer,
+    validate_string_list,
+)
 from skilldiff.experiment import ExperimentRunner, find_user_level_installs
 from skilldiff.grader import Grader
 from skilldiff.persistence import atomic_json, read_json, run_lock
 from skilldiff.reporter import (
     _paired_comparison_metrics,
+    build_decision_context,
     create_reports,
     render_evaluation_table,
     render_report_table,
 )
 from skilldiff.revisions import resolve_comparison
-from skilldiff.runner import AgentRunner
+from skilldiff.runner import AgentRunner, resolve_container_image, validate_container_auth
 from skilldiff.stats import analysis_run, paired_comparison
 from skilldiff.workspace import Workspace
 
@@ -71,6 +78,8 @@ models:
 
 tasks:
   - ./tasks/*.yaml
+  - ./tasks/dev/*.yaml
+  - ./tasks/heldout/*.yaml   # frozen validation set; tune on dev tasks first
 
 runs: 3                     # repetitions per arm; use 5+ as a starting point, not a rule
 timeout_seconds: 1800       # per agent session
@@ -128,6 +137,7 @@ models:
 
 tasks:
   - ./tasks/*.yaml
+  - ./tasks/dev/*.yaml
   - ./tasks/heldout/*.yaml   # frozen validation set; tune on dev tasks first
 
 runs: 3
@@ -270,6 +280,14 @@ def _write(path: Path, content: str, force: bool) -> bool:
     return True
 
 
+def _nested_task(template: str, task_id: str) -> str:
+    """Adapt a task template for a split directory under tasks/."""
+    _, body = template.split("\n", 1)
+    return (f"id: {task_id}\n" + body).replace("../fixtures/", "../../fixtures/").replace(
+        "$SKILLDIFF_TASK_DIR/../graders/", "$SKILLDIFF_TASK_DIR/../../graders/"
+    )
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     root = Path(getattr(args, "dir", None) or ".")
     force = bool(getattr(args, "force", False))
@@ -339,6 +357,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         name = f"{skill_path.name}-eval"
         files = {
             root / "tasks" / "my-first-task.yaml": CUSTOM_TASK_YAML,
+            root / "tasks" / "heldout" / "my-held-out-task.yaml": _nested_task(
+                CUSTOM_TASK_YAML, "my-held-out-task"
+            ),
             root / "graders" / "my_first_task.py": CUSTOM_GRADER,
         }
     else:
@@ -443,7 +464,8 @@ def _init_skill_ab(
     (root / "skilldiff.yaml").parent.mkdir(parents=True, exist_ok=True)
     (root / "skilldiff.yaml").write_text(text, encoding="utf-8")
     _write(root / "tasks" / "my-first-task.yaml", CUSTOM_TASK_YAML, force)
-    _write(root / "tasks" / "heldout" / "my-first-task.yaml", CUSTOM_TASK_YAML, force)
+    _write(root / "tasks" / "heldout" / "my-first-task.yaml",
+           _nested_task(CUSTOM_TASK_YAML, "my-held-out-task"), force)
     _write(root / "graders" / "my_first_task.py", CUSTOM_GRADER, force)
     (root / "fixtures" / "my-project").mkdir(parents=True, exist_ok=True)
     print(f"Initialized skill A/B experiment in {root} (A={rel_a}, B={rel_b})")
@@ -479,16 +501,14 @@ def _init_pr(args: argparse.Namespace, root: Path, force: bool, harness: str) ->
         },
         "harness": harness,
         "models": [DEFAULT_MODELS[harness]],
-        "tasks": ["./tasks/*.yaml"],
+        "tasks": ["./tasks/*.yaml", "./tasks/dev/*.yaml", "./tasks/heldout/*.yaml"],
         "runs": 3,
         "timeout_seconds": 1800,
         "parallel": 1,
     }
     text = yaml.safe_dump(config, sort_keys=False) + "\n" + HARNESS_BLOCKS[harness]
     _write(root / "skilldiff.yaml", text, force)
-    _write(
-        root / "tasks" / "my-first-task.yaml",
-        """id: my-first-task
+    task_template = """id: my-first-task
 # Both arms start from pr.repo at their respective revisions. Do not set task.repo.
 prompt: |
   TODO: describe a realistic task that uses the feature introduced by this PR.
@@ -496,9 +516,10 @@ prompt: |
 grader:
   type: command
   command: python3 "$SKILLDIFF_TASK_DIR/../graders/my_first_task.py"
-""",
-        force,
-    )
+"""
+    _write(root / "tasks" / "my-first-task.yaml", task_template, force)
+    _write(root / "tasks" / "heldout" / "my-held-out-task.yaml",
+           _nested_task(task_template, "my-held-out-task"), force)
     _write(root / "graders" / "my_first_task.py", CUSTOM_GRADER, force)
     print(f"Initialized PR #{args.pr} experiment in {root}")
     print("Fetch the GitHub PR head into your local repository before check/run:")
@@ -544,6 +565,15 @@ def cmd_check(args: argparse.Namespace) -> int:
         f"configuration loads: {len(cfg.models)} model(s), {len(tasks)} task(s), "
         f"{cfg.runs} run(s) per arm"
     )
+    image_id = None
+    if cfg.isolation != "local":
+        try:
+            validate_container_auth(cfg)
+            image_id = resolve_container_image(cfg.isolation, cfg.container_image)
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            fail(f"container configuration: {exc}")
+            return 1
+        ok(f"{cfg.isolation} image: {image_id}")
 
     comparison = None
     if cfg.pr:
@@ -621,26 +651,38 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     runner = AgentRunner()
     binary = runner.binary_for(cfg.harness, cfg)
-    resolved = shutil.which(binary) or (binary if Path(binary).exists() else None)
+    if image_id:
+        resolved = getattr(cfg, cfg.harness).bin_path or Path(binary).name
+    else:
+        resolved = shutil.which(binary) or (binary if Path(binary).exists() else None)
     if not resolved:
         fail(f"{cfg.harness} CLI not found (`{binary}`); install it or set bin_path")
     else:
         try:
-            proc = subprocess.run(
-                [resolved, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                stdin=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            if image_id:
+                with tempfile.TemporaryDirectory(prefix="skilldiff-version-") as tmp:
+                    proc = runner._exec(
+                        [resolved, "--version"], Path(tmp), os.environ.copy(), 30,
+                        isolation=cfg.isolation, container_image=image_id,
+                    )
+                returncode = -1 if proc.timed_out else proc.exit_code
+            else:
+                proc = subprocess.run(
+                    [resolved, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    stdin=subprocess.DEVNULL,
+                )
+                returncode = proc.returncode
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
             fail(f"{cfg.harness} CLI failed to start (`{resolved} --version`): {exc}")
         else:
             version = next(iter((proc.stdout or proc.stderr).strip().splitlines()), "")
-            if proc.returncode:
+            if returncode:
                 fail(
                     f"{cfg.harness} CLI failed (`{resolved} --version`, exit "
-                    f"{proc.returncode}): {version or 'no output'}"
+                    f"{returncode}): {version or 'no output'}"
                 )
             else:
                 ok(f"{cfg.harness} CLI: {resolved} {version}".rstrip())
@@ -648,12 +690,13 @@ def cmd_check(args: argparse.Namespace) -> int:
     if cfg.harness == "claude":
         if cfg.claude.auth == "subscription" and os.environ.get("ANTHROPIC_API_KEY"):
             ok("ANTHROPIC_API_KEY is set but will be removed; runs use your subscription")
-        if cfg.claude.auth == "api_key" and not os.environ.get("ANTHROPIC_API_KEY"):
+        if (cfg.isolation == "local" and cfg.claude.auth == "api_key"
+                and not os.environ.get("ANTHROPIC_API_KEY")):
             fail("claude.auth is api_key but ANTHROPIC_API_KEY is not set")
         if cfg.claude.permission_mode == "bypassPermissions":
             warn("bypassPermissions lets agents run any command outside the workspace")
 
-    installs = find_user_level_installs(cfg.skill_names, cfg.harness)
+    installs = [] if image_id else find_user_level_installs(cfg.skill_names, cfg.harness)
     if installs:
         if cfg.harness == "claude" and cfg.claude.isolate:
             # Skills are blocked by isolate, but instructions/plugins/memory are not.
@@ -751,6 +794,9 @@ def cmd_check(args: argparse.Namespace) -> int:
                 allowed_paths=getattr(task, "allowed_paths", None),
                 forbidden_paths=getattr(task, "forbidden_paths", None),
                 task_prompt=task.prompt,
+                isolation=cfg.isolation,
+                container_image=image_id,
+                inputs_root=config_path.resolve().parent,
             )
             grade = grader.grade_workspace(ws.root)
             # Validation fixtures: untouched must fail, known-good must pass,
@@ -852,14 +898,21 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
 
-    if getattr(args, "runs", None):
-        exp_config.runs = int(args.runs)
-    if getattr(args, "parallel", None):
-        exp_config.parallel = int(args.parallel)
-    if getattr(args, "model", None):
-        exp_config.models = list(args.model)
-    if getattr(args, "seed", None) is not None:
-        exp_config.seed = int(getattr(args, "seed"))
+    try:
+        for key in ("runs", "parallel"):
+            value = getattr(args, key, None)
+            if value is not None:
+                validate_integer(value, key, positive=True)
+                setattr(exp_config, key, value)
+        if getattr(args, "model", None) is not None:
+            validate_string_list(args.model, "model", nonempty=True)
+            exp_config.models = list(args.model)
+        if getattr(args, "seed", None) is not None:
+            validate_integer(args.seed, "seed")
+            exp_config.seed = args.seed
+    except ValueError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 1
     task_filter = getattr(args, "task", None)
     if task_filter:
         tasks = [t for t in tasks if t.id in task_filter]
@@ -1072,6 +1125,9 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
         return 0
 
     print(f"Diagnosis for {report.get('run_dir')} ({report.get('total_pairs')} pairs):")
+    print(f"  Usable score pairs: {report.get('usable_score_pairs')}/{report.get('total_pairs')}")
+    print(f"  Agent failures: {len(report.get('agent_failures', []))}")
+    print(f"  Grader failures: {len(report.get('grader_failures', []))}")
     under = report.get("under_triggered", [])
     over = report.get("over_triggered", [])
     regs = report.get("regressions", [])
@@ -1161,6 +1217,9 @@ def _format_results(results: dict) -> str:
         arm_labels.get("treatment")
         or ("Skill B" if skill_comparison else ("Treatment" if comparison else "Skill"))
     )
+    decision = build_decision_context(
+        results, control_runs, treatment_runs, treatment_label=treat_label
+    )
     if len(models) <= 1:
         model_name = models[0] if models else None
         model_data = by_model.get(model_name) if model_name else None
@@ -1177,6 +1236,7 @@ def _format_results(results: dict) -> str:
                 treatment_label=treat_label,
                 thresholds=thresholds,
                 preset=preset,
+                decision=decision,
             )
         )
     else:
@@ -1197,8 +1257,14 @@ def _format_results(results: dict) -> str:
                     treatment_label=treat_label,
                     thresholds=thresholds,
                     preset=preset,
+                    include_recommendation=False,
                 )
             )
+
+        if decision["basis_note"]:
+            sections.append(decision["basis_note"])
+        _, rec_label, rec_reason = decision["recommendation"]
+        sections.append(f"Recommendation: {rec_label} — {rec_reason}")
 
     baseline_comps = results.get("baseline_comparisons") or {}
     for key, title in (

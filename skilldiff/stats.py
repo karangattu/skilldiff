@@ -126,6 +126,8 @@ def _total_tokens(run: dict[str, Any]) -> Optional[float]:
     keys = ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens")
     if all(k not in run or run.get(k) is None for k in keys):
         return None
+    if any(k in run and run[k] is None for k in keys):
+        return None
     try:
         return float(sum(int(run.get(k) or 0) for k in keys))
     except (TypeError, ValueError):

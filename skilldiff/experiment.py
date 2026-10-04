@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import platform
 import random
 import re
@@ -16,11 +17,16 @@ from typing import Any, Callable, Optional
 
 from skilldiff import __version__
 from skilldiff.config import ExperimentConfig, TaskConfig
-from skilldiff.grader import Grader
+from skilldiff.grader import Candidate, Grader
 from skilldiff.persistence import atomic_json, atomic_write, read_json, run_lock
 from skilldiff.reporter import calculate_metrics, create_reports
 from skilldiff.revisions import resolve_comparison
-from skilldiff.runner import AgentRunner, RunResult
+from skilldiff.runner import (
+    AgentRunner,
+    RunResult,
+    resolve_container_image,
+    validate_container_auth,
+)
 from skilldiff.snapshots import (
     SNAPSHOT_VERSION,
     create_snapshots,
@@ -291,7 +297,19 @@ def collect_provenance(config: ExperimentConfig, tasks: list[TaskConfig]) -> dic
         binary = runner.binary_for(config.harness, config)
     except Exception:
         binary = config.harness
-    agent_cli = {config.harness: _cli_version(binary)}
+    if config.isolation in {"docker", "podman"}:
+        configured = getattr(config, config.harness).bin_path
+        image_binary = configured or Path(binary).name
+        with tempfile.TemporaryDirectory(prefix="skilldiff-version-") as tmp:
+            result = runner._exec(
+                [image_binary, "--version"], Path(tmp), os.environ.copy(), 10,
+                isolation=config.isolation, container_image=config.container_image,
+            )
+        if result.exit_code or result.timed_out:
+            raise ValueError("Cannot inspect container agent CLI version: " + result.stderr.strip())
+        agent_cli = {config.harness: (result.stdout or result.stderr).strip()}
+    else:
+        agent_cli = {config.harness: _cli_version(binary)}
 
     return {
         "skill_hash": skill_hash,
@@ -348,13 +366,18 @@ class ExperimentRunner:
         self._snapshot_manifest_hash: str | None = None
         self._timestamp = ""
         self._stopped = threading.Event()
+        self._container_image_id: str | None = None
 
     # ------------------------------------------------------------------ setup
 
     def preflight_warnings(self) -> list[str]:
         warnings: list[str] = []
-        installs = find_user_level_installs(self.config.skill_names, self.config.harness)
-        isolated = self.config.harness == "claude" and self.config.claude.isolate
+        installs = (
+            find_user_level_installs(self.config.skill_names, self.config.harness)
+            if self.config.isolation == "local" else []
+        )
+        isolated = (self.config.isolation != "local" or
+                    self.config.harness == "claude" and self.config.claude.isolate)
         if installs and not isolated:
             warnings.append(
                 "The skill is also installed at user level, so the control arm can load it: "
@@ -363,7 +386,8 @@ class ExperimentRunner:
         # Harness-specific inheritance (instructions/plugins/memory) is checked
         # for skill experiments; PR mode has no skill so generic host files are
         # not flagged here (they are still noted by `check` when relevant).
-        if (self.config.skill or self.config.is_skill_comparison) and self.config.skill_names:
+        if (self.config.isolation == "local" and
+                (self.config.skill or self.config.is_skill_comparison) and self.config.skill_names):
             extra = [
                 i
                 for i in find_harness_inheritance(self.config.skill_names, self.config.harness)
@@ -377,7 +401,7 @@ class ExperimentRunner:
         # A/B mode: both revisions must differ.
         if self.config.is_skill_comparison:
             try:
-                prov = collect_provenance(self.config, self.tasks)
+                prov = self._provenance_snapshot or collect_provenance(self.config, self.tasks)
                 skills = prov.get("skills") or []
                 hashes = {}
                 for s in skills:
@@ -447,6 +471,9 @@ class ExperimentRunner:
             "skill_a_names": self._execution_config.skill_a_names,
             "skill_b_names": self._execution_config.skill_b_names,
             "harness": self.config.harness,
+            "isolation": self.config.isolation,
+            "container_image": self.config.container_image,
+            "container_image_id": self._container_image_id,
             "models": self.config.models,
             "runs": self.config.runs,
             "timeout_seconds": self.config.timeout_seconds,
@@ -567,9 +594,14 @@ class ExperimentRunner:
                 f"preset changed ({prev_exp.get('preset')} -> "
                 f"{getattr(self.config, 'preset', None)})"
             )
-        for key in ("timeout_seconds", "parallel", "thresholds", "failure_policy"):
+        for key in ("timeout_seconds", "parallel", "thresholds", "failure_policy",
+                    "container_image"):
             if prev_exp.get(key) != getattr(self.config, key):
                 reasons.append(f"{key} changed")
+        if prev_exp.get("isolation", "local") != self.config.isolation:
+            reasons.append("isolation changed")
+        if prev_exp.get("container_image_id") != self._container_image_id:
+            reasons.append("container image identity changed")
         harness = self.config.harness
         current_harness = asdict(getattr(self.config, harness))
         previous_harness = prev_exp.get(harness) or {}
@@ -688,8 +720,17 @@ class ExperimentRunner:
             source = getattr(self.config, field)
             if source:
                 setattr(self._execution_config, field, self._snapshot_paths[source.resolve()])
+        if self._container_image_id:
+            self._execution_config.container_image = self._container_image_id
 
     def run(self, resume: bool | Path = False) -> dict[str, Any]:
+        if self.config.isolation not in {"local", "docker", "podman"}:
+            raise ValueError(f"Unsupported isolation mode: {self.config.isolation}")
+        validate_container_auth(self.config)
+        if self.config.isolation != "local":
+            self._container_image_id = resolve_container_image(
+                self.config.isolation, self.config.container_image
+            )
         for label, values in (
             ("models", self.config.models), ("tasks", [task.id for task in self.tasks])
         ):
@@ -738,7 +779,10 @@ class ExperimentRunner:
         if any(run_root.is_relative_to(source) for source in sources):
             raise ValueError("Run directory must be outside skill and fixture input directories")
         self._grader_inputs = grader_inputs(self.tasks)
-        self._provenance_snapshot = collect_provenance(self.config, self.tasks)
+        provenance_config = deepcopy(self.config)
+        if self._container_image_id:
+            provenance_config.container_image = self._container_image_id
+        self._provenance_snapshot = collect_provenance(provenance_config, self.tasks)
         control_runs: list[dict[str, Any]] = []
         treatment_runs: list[dict[str, Any]] = []
         completed: set[tuple[str, str, int]] = set()
@@ -762,7 +806,7 @@ class ExperimentRunner:
             manifest = create_snapshots(run_root, sources, self._grader_inputs)
             self._check_graders()
             # Detect changes between provenance collection and copying, including task files.
-            after = collect_provenance(self.config, self.tasks)
+            after = collect_provenance(provenance_config, self.tasks)
             if after != self._provenance_snapshot:
                 raise ValueError("Inputs changed while preparing snapshots; start a new run")
             self._snapshot_manifest_hash = file_hash(run_root / "inputs/manifest.json")
@@ -878,6 +922,9 @@ class ExperimentRunner:
             allowed_paths=getattr(task, "allowed_paths", None),
             forbidden_paths=getattr(task, "forbidden_paths", None),
             task_prompt=task.prompt,
+            isolation=execution.isolation,
+            container_image=execution.container_image,
+            inputs_root=self.config.config_path.parent if self.config.config_path else None,
         )
 
         rep_str = f"{pair.repetition:03d}"
@@ -1034,24 +1081,11 @@ class ExperimentRunner:
             diffs = {arm: workspaces[arm].get_diff() for arm in workspaces if arm in results}
             self._ensure_running()
             self._check_graders()
-            grade_ctrl, grade_treat = grader.grade_pair(
-                control_ws=workspaces["control"].root,
-                treatment_ws=workspaces["treatment"].root,
-                control_response=results["control"].response,
-                treatment_response=results["treatment"].response,
-                control_diff=diffs["control"][0],
-                treatment_diff=diffs["treatment"][0],
-                control_transcript=results["control"].transcript,
-                treatment_transcript=results["treatment"].transcript,
-                control_changed_files=diffs["control"][1] if "control" in diffs else [],
-                treatment_changed_files=diffs["treatment"][1] if "treatment" in diffs else [],
-            )
-            grades = {"control": grade_ctrl, "treatment": grade_treat}
-            if "baseline" in results:
-                baseline_grade = Grader(
-                    task.grader, grader_names, model, task_dir=task_dir
-                ).grade_workspace(workspaces["baseline"].root)
-                grades["baseline"] = baseline_grade
+            grades = grader.grade_candidates([
+                Candidate("", arm, workspaces[arm].root, results[arm].response,
+                          diffs[arm][0], results[arm].transcript, diffs[arm][1])
+                for arm in workspaces if arm in results
+            ])
             self._check_graders()
 
             records: dict[str, dict[str, Any]] = {}
@@ -1266,7 +1300,7 @@ class ExperimentRunner:
             }
 
         from skilldiff.profiler import compute_context_tax, measure_skill_footprint
-        skill_target = self.config.skill or self.config.skill_b
+        skill_target = self._execution_config.skill or self._execution_config.skill_b
         footprint = measure_skill_footprint(skill_target)
         overall_skill_metrics = calculate_metrics(treatment_runs)
         context_tax = compute_context_tax(

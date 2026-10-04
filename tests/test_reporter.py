@@ -428,6 +428,9 @@ def test_report_handles_summary_only_results():
 def test_closing_decision_ships_on_established_gain():
     control = _runs("control", [0.0, 0.0, 0.5, 0.5, 1.0, 1.0], 0.5)
     treatment = _runs("treatment", [1.0, 1.0, 1.0, 1.0, 1.0, 1.0], 0.25, skill_invoked=True)
+    for runs in (control, treatment):
+        for index, run in enumerate(runs):
+            run["task_id"] = ("a", "b", "c")[index % 3]
     md = reporter.build_markdown_report(_results(control, treatment, tasks_count=4))
 
     # The report ends with the decision, after the reading notes.
@@ -472,6 +475,9 @@ def test_closing_decision_honors_preregistered_thresholds():
     # pre-registered bounds clear; without thresholds the collapse is caution.
     control = _runs("control", [0.0] * 6, 0.5)
     treatment = _runs("treatment", [1.0] * 6, 0.25, skill_invoked=True)
+    for runs in (control, treatment):
+        for index, run in enumerate(runs):
+            run["task_id"] = ("a", "b", "c")[index % 3]
     without = reporter.build_markdown_report(_results(control, treatment, tasks_count=4))
     assert "> **Recommendation: NEEDS MORE RUNS**" in without
     assert "CI collapsed" in without

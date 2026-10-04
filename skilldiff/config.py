@@ -1,5 +1,6 @@
 import difflib
 import glob
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -99,6 +100,122 @@ TASK_KEYS = frozenset(
 )
 GRADER_KEYS = frozenset({"type", "command", "rubric", "prompt", "model"})
 VALIDATION_KEYS = frozenset({"good", "broken", "bad"})
+
+
+def validate_string(value: Any, key: str, *, nullable: bool = False) -> None:
+    if value is None and nullable:
+        return
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{key} must be a non-empty string")
+
+
+def validate_string_list(value: Any, key: str, *, nonempty: bool = False) -> None:
+    if not isinstance(value, list) or (nonempty and not value):
+        qualifier = "non-empty " if nonempty else ""
+        raise ValueError(f"{key} must be a {qualifier}list of strings")
+    for index, item in enumerate(value):
+        validate_string(item, f"{key}[{index}]")
+
+
+def validate_boolean(value: Any, key: str) -> None:
+    if type(value) is not bool:
+        raise ValueError(f"{key} must be a boolean (true or false)")
+
+
+def validate_integer(value: Any, key: str, *, positive: bool = False) -> None:
+    if type(value) is not int or (positive and value <= 0):
+        qualifier = "positive " if positive else ""
+        raise ValueError(f"{key} must be a {qualifier}integer")
+
+
+def validate_number(value: Any, key: str, *, positive: bool = False) -> None:
+    finite = False
+    if not isinstance(value, bool) and isinstance(value, (int, float)):
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:
+            pass
+    if not finite:
+        raise ValueError(f"{key} must be a finite number")
+    if (positive and value <= 0) or (not positive and value < 0):
+        bound = "> 0" if positive else ">= 0"
+        raise ValueError(f"{key} must be {bound}")
+
+
+def validate_enum(value: Any, key: str, choices: set[str], *, nullable: bool = False) -> None:
+    if value is None and nullable:
+        return
+    if not isinstance(value, str) or value not in choices:
+        expected = " or ".join(repr(choice) for choice in sorted(choices))
+        raise ValueError(f"{key} must be {expected}")
+
+
+def validate_experiment_values(data: dict[str, Any]) -> None:
+    """Reject coercions that silently alter safety, budgets, or execution."""
+    if "name" in data:
+        validate_string(data["name"], "name")
+    for key in ("skill", "skill_a", "skill_b", "container_image"):
+        if key in data:
+            validate_string(data[key], key, nullable=True)
+    for key in ("models", "tasks"):
+        if key in data:
+            validate_string_list(data[key], key, nonempty=True)
+    for key in ("runs", "parallel"):
+        if key in data:
+            validate_integer(data[key], key, positive=True)
+    if "seed" in data and data["seed"] is not None:
+        validate_integer(data["seed"], "seed")
+    if "include_baseline" in data:
+        validate_boolean(data["include_baseline"], "include_baseline")
+    if "timeout_seconds" in data and data["timeout_seconds"] is not None:
+        validate_number(data["timeout_seconds"], "timeout_seconds", positive=True)
+    if "isolation" in data:
+        validate_enum(data["isolation"], "isolation", {"local", "docker", "podman"})
+    for block in ("claude", "codex", "opencode", "antigravity", "agy"):
+        values = data.get(block) or {}
+        for key in ("bin_path", "variant", "provider"):
+            if key in values:
+                validate_string(values[key], f"{block}.{key}", nullable=key != "provider")
+        for key in ("extra_args", "allowed_tools"):
+            if key in values:
+                validate_string_list(values[key], f"{block}.{key}")
+        for key in ("isolate", "dangerously_skip_permissions",
+                    "dangerously_bypass_approvals_and_sandbox"):
+            if key in values:
+                validate_boolean(values[key], f"{block}.{key}")
+    claude = data.get("claude") or {}
+    if "max_turns" in claude and claude["max_turns"] is not None:
+        validate_integer(claude["max_turns"], "claude.max_turns", positive=True)
+    if "max_budget_usd" in claude and claude["max_budget_usd"] is not None:
+        validate_number(claude["max_budget_usd"], "claude.max_budget_usd", positive=True)
+    for key, choices in (
+        ("effort", {"low", "medium", "high", "max"}),
+        ("permission_mode", {"acceptEdits", "bypassPermissions", "default", "dontAsk", "plan",
+                             "auto"}),
+    ):
+        if key in claude:
+            validate_enum(claude[key], f"claude.{key}", choices, nullable=True)
+    codex = data.get("codex") or {}
+    if "sandbox" in codex:
+        validate_enum(codex["sandbox"], "codex.sandbox",
+                      {"read-only", "workspace-write", "danger-full-access"}, nullable=True)
+    opencode = data.get("opencode") or {}
+    for key in ("service", "subscription"):
+        if key in opencode:
+            validate_enum(opencode[key], f"opencode.{key}", {"go", "zen"})
+    pr = data.get("pr") or {}
+    for key, choices in (("mode", {"agent", "correctness"}),
+                         ("pair", {"merge-base", "base-merge"})):
+        if key in pr:
+            validate_enum(pr[key], f"pr.{key}", choices)
+    for key, value in (data.get("thresholds") or {}).items():
+        if value is not None:
+            validate_number(value, f"thresholds.{key}")
+    for block in ("failure_policy", "on_failure"):
+        values = data.get(block) or {}
+        for key, choices in (("agent_failure", {"exclude", "zero"}), ("missing", {"exclude"})):
+            if key in values and values[key] is not None:
+                validate_enum(values[key], f"{block}.{key}", choices)
 
 
 def reject_unknown_keys(data: dict[str, Any], allowed: frozenset[str], context: str) -> None:
@@ -363,7 +480,9 @@ def read_skill_name(skill_dir: Path) -> Optional[str]:
     return str(name).strip() if name else None
 
 
-def parse_grader_config(data: Optional[dict[str, Any]]) -> Optional[GraderConfig]:
+def parse_grader_config(
+    data: Optional[dict[str, Any]], context: str = "grader"
+) -> Optional[GraderConfig]:
     if data is None:
         return None
     if not isinstance(data, dict):
@@ -371,8 +490,15 @@ def parse_grader_config(data: Optional[dict[str, Any]]) -> Optional[GraderConfig
     if not data:
         return None
     reject_unknown_keys(data, GRADER_KEYS, "'grader' block")
+    grader_type = data.get("type", "command")
+    validate_enum(grader_type, f"{context}.type", {"command", "llm", "rubric"})
+    for key in ("command", "rubric", "prompt", "model"):
+        if key in data:
+            validate_string(data[key], f"{context}.{key}", nullable=True)
+    if grader_type in {"llm", "rubric"} and not data.get("command"):
+        raise ValueError(f"{context}.command is required for an {grader_type} judge")
     return GraderConfig(
-        type=data.get("type", "command"),
+        type=grader_type,
         command=data.get("command"),
         rubric=data.get("rubric"),
         prompt=data.get("prompt"),
@@ -413,7 +539,8 @@ def parse_task_split(value: Any, task_path: Optional[Path], task_id: str) -> str
     """
     inferred = infer_task_split(task_path)
     explicit = ""
-    if value is not None and str(value).strip():
+    if value is not None:
+        validate_string(value, f"Task {task_id}.split")
         key = str(value).strip().lower()
         if key not in _SPLIT_ALIASES:
             raise ValueError(
@@ -483,14 +610,10 @@ def parse_pricing(data: Any) -> dict[str, Any]:
                     f"pricing.rates.{model} must include '{key}' (rate per 1M tokens)"
                 )
             try:
-                val = float(entry[key])
-            except (TypeError, ValueError):
-                raise ValueError(
-                    f"pricing.rates.{model}.{key} must be a number per 1M tokens"
-                )
-            if val < 0:
-                raise ValueError(f"pricing.rates.{model}.{key} must be >= 0")
-            out[key] = val
+                validate_number(entry[key], f"pricing.rates.{model}.{key}")
+            except ValueError as exc:
+                raise ValueError(f"{exc} (rate per 1M tokens)") from exc
+            out[key] = float(entry[key])
         rates[str(model)] = out
     return {"source": source, "date": date, "currency": currency, "rates": rates}
 
@@ -509,15 +632,18 @@ def load_task(task_path: Path) -> TaskConfig:
     reject_unknown_keys(data, TASK_KEYS, f"task file {task_path}")
 
     task_id = data.get("id")
-    if not task_id:
+    if task_id is None:
         task_id = task_path.stem
+    validate_string(task_id, f"Task {task_path}: id")
 
-    prompts_raw = data.get("prompts")
-    prompts: list[str] = []
-    if isinstance(prompts_raw, list):
-        prompts = [str(p).strip() for p in prompts_raw if str(p).strip()]
+    context = f"Task {task_id}"
+    prompts_raw = data.get("prompts", [])
+    validate_string_list(prompts_raw, f"{context}.prompts")
+    prompts = [p.strip() for p in prompts_raw]
 
-    prompt = str(data.get("prompt", "") or "").strip()
+    if "prompt" in data:
+        validate_string(data["prompt"], f"{context}.prompt")
+    prompt = data.get("prompt", "").strip()
     if not prompt and prompts:
         prompt = prompts[0]
     if not prompt:
@@ -525,12 +651,19 @@ def load_task(task_path: Path) -> TaskConfig:
     if not prompts and prompt:
         prompts = [prompt]
 
-    allowed_paths = [str(p) for p in data.get("allowed_paths", []) or []]
-    forbidden_paths = [str(p) for p in data.get("forbidden_paths", []) or []]
+    allowed_paths = data.get("allowed_paths", [])
+    forbidden_paths = data.get("forbidden_paths", [])
+    validate_string_list(allowed_paths, f"{context}.allowed_paths")
+    validate_string_list(forbidden_paths, f"{context}.forbidden_paths")
+    if "repo" in data:
+        validate_string(data["repo"], f"{context}.repo", nullable=True)
 
     grader_data = data.get("grader")
-    grader = parse_grader_config(grader_data)
-    category = str(data.get("category", "general") or "general").strip().lower() or "general"
+    grader = parse_grader_config(grader_data, f"{context}.grader")
+    category = data.get("category", "general")
+    validate_enum(
+        category, f"{context}.category", {"intended", "irrelevant", "ambiguous", "general"}
+    )
     split = parse_task_split(data.get("split"), task_path, task_id)
     validation = data.get("validation")
     if validation is None:
@@ -538,6 +671,13 @@ def load_task(task_path: Path) -> TaskConfig:
     if not isinstance(validation, dict):
         raise ValueError(f"Task {task_id}: 'validation' must be a mapping")
     reject_unknown_keys(validation, VALIDATION_KEYS, f"task {task_id} 'validation' block")
+    for key, value in validation.items():
+        if value is None:
+            continue
+        if key == "good" or isinstance(value, str):
+            validate_string(value, f"{context}.validation.{key}")
+        else:
+            validate_string_list(value, f"{context}.validation.{key}")
 
     return TaskConfig(
         id=str(task_id),
@@ -574,6 +714,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         )
     reject_unknown_keys(data, EXPERIMENT_KEYS, f"experiment config {experiment_path}")
     reject_unknown_block_keys(data)
+    validate_experiment_values(data)
     pricing = parse_pricing(data.get("pricing"))
 
     name = data.get("name")
@@ -583,7 +724,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     skill_str = data.get("skill")
     skill_a_str = data.get("skill_a")
     skill_b_str = data.get("skill_b")
-    include_baseline = bool(data.get("include_baseline", False))
+    include_baseline = data.get("include_baseline", False)
     pr_data = data.get("pr")
     modes_present = sum(
         [bool(skill_str), bool(skill_a_str or skill_b_str), pr_data is not None]
@@ -649,9 +790,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     if not task_patterns or not isinstance(task_patterns, list):
         raise ValueError("Experiment config must specify a non-empty list of 'tasks'")
 
-    runs = int(data.get("runs", 3))
-    if runs <= 0:
-        raise ValueError("Experiment 'runs' must be positive integer")
+    runs = data.get("runs", 3)
 
     harness = str(data.get("harness", "")).lower().strip()
     if not harness:
@@ -677,17 +816,17 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     auth = str(claude_data.get("auth", "subscription"))
     if auth not in {"subscription", "api_key"}:
         raise ValueError("claude.auth must be 'subscription' or 'api_key'")
-    budget_val = claude_data.get("max_budget_usd")
+    budget_val = claude_data.get("max_budget_usd", 2.0)
     claude_cfg = ClaudeConfig(
         auth=auth,
         effort=claude_data.get("effort", "high"),
         max_turns=claude_data.get("max_turns", 30),
         max_budget_usd=float(budget_val) if budget_val is not None else 2.0,
         permission_mode=claude_data.get("permission_mode", "acceptEdits"),
-        allowed_tools=[str(tool) for tool in claude_data.get("allowed_tools") or []],
-        isolate=bool(claude_data.get("isolate", True)),
+        allowed_tools=claude_data.get("allowed_tools", []),
+        isolate=claude_data.get("isolate", True),
         bin_path=claude_data.get("bin_path"),
-        extra_args=[str(a) for a in claude_data.get("extra_args") or []],
+        extra_args=claude_data.get("extra_args", []),
     )
 
     codex_data = data.get("codex") or {}
@@ -697,11 +836,11 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     codex_cfg = CodexConfig(
         auth=codex_auth,
         sandbox=codex_data.get("sandbox", "workspace-write"),
-        dangerously_bypass_approvals_and_sandbox=bool(
-            codex_data.get("dangerously_bypass_approvals_and_sandbox", False)
+        dangerously_bypass_approvals_and_sandbox=codex_data.get(
+            "dangerously_bypass_approvals_and_sandbox", False
         ),
         bin_path=codex_data.get("bin_path"),
-        extra_args=[str(a) for a in codex_data.get("extra_args", [])],
+        extra_args=codex_data.get("extra_args", []),
     )
 
     opencode_data = data.get("opencode") or {}
@@ -715,26 +854,22 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     opencode_cfg = OpenCodeConfig(
         service=service,
         provider=provider,
-        dangerously_skip_permissions=bool(opencode_data.get("dangerously_skip_permissions", True)),
+        dangerously_skip_permissions=opencode_data.get("dangerously_skip_permissions", True),
         variant=opencode_data.get("variant"),
         bin_path=opencode_data.get("bin_path"),
-        extra_args=[str(a) for a in opencode_data.get("extra_args", [])],
+        extra_args=opencode_data.get("extra_args", []),
     )
 
     antigravity_data = data.get("antigravity") or data.get("agy") or {}
     antigravity_cfg = AntigravityConfig(
-        dangerously_skip_permissions=bool(
-            antigravity_data.get("dangerously_skip_permissions", True)
-        ),
+        dangerously_skip_permissions=antigravity_data.get("dangerously_skip_permissions", True),
         bin_path=antigravity_data.get("bin_path"),
-        extra_args=[str(a) for a in antigravity_data.get("extra_args", [])],
+        extra_args=antigravity_data.get("extra_args", []),
     )
 
     timeout_val = data.get("timeout_seconds", 1800)
-    timeout_seconds = float(timeout_val) if timeout_val else None
-    parallel = int(data.get("parallel", 1))
-    if parallel < 1:
-        raise ValueError("Experiment 'parallel' must be at least 1")
+    timeout_seconds = float(timeout_val) if timeout_val is not None else None
+    parallel = data.get("parallel", 1)
 
     thresholds: dict[str, float] = {}
     raw_thresholds = data.get("thresholds") or {}
@@ -761,11 +896,6 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
             preset = "skill"
 
     seed = data.get("seed")
-    if seed is not None:
-        try:
-            seed = int(seed)
-        except (TypeError, ValueError):
-            raise ValueError("Experiment 'seed' must be an integer")
 
     failure_policy: dict[str, str] = {}
     raw_failure = data.get("failure_policy") or data.get("on_failure") or {}
@@ -794,7 +924,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         failure_policy=failure_policy,
         preset=preset,
         pr=pr,
-        models=[str(m) for m in models],
+        models=models,
         tasks_patterns=task_patterns,
         runs=runs,
         harness=harness,
@@ -845,20 +975,26 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
             )
 
     loaded_tasks: list[TaskConfig] = []
-    seen_ids: set[str] = set()
+    seen_ids: dict[str, Path] = {}
+    seen_paths: set[Path] = set()
 
     for pattern in task_patterns:
         resolved_pattern = str(base_dir / pattern)
         matching_paths = sorted(glob.glob(resolved_pattern))
         for p in matching_paths:
-            path_obj = Path(p)
+            path_obj = Path(p).resolve()
+            if path_obj in seen_paths:
+                continue
             if path_obj.is_file():
+                seen_paths.add(path_obj)
                 task = load_task(path_obj)
                 if pr and task.repo:
                     raise ValueError("Tasks in PR mode cannot specify repo; use pr.repo")
                 if task.id in seen_ids:
-                    continue
-                seen_ids.add(task.id)
+                    raise ValueError(
+                        f"Duplicate task id {task.id!r} in {seen_ids[task.id]} and {path_obj}"
+                    )
+                seen_ids[task.id] = path_obj
                 loaded_tasks.append(task)
 
     if not loaded_tasks:

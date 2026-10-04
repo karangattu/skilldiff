@@ -9,8 +9,11 @@ comparison unreliable.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
+
+from skilldiff.stats import METRICS, analysis_run, pair_runs, usable_agent_run
 
 
 def load_results(path: Path) -> tuple[dict[str, Any], Path]:
@@ -30,79 +33,85 @@ def _paired(results: dict[str, Any]) -> dict[str, Any]:
     return (results.get("overall") or {}).get("paired") or {}
 
 
-def _skill_runs(results: dict[str, Any]) -> list[dict[str, Any]]:
+def _arm_runs(results: dict[str, Any], arm: str) -> list[dict[str, Any]]:
     runs = results.get("runs") or {}
-    # Support control/treatment, control/skill, and skill A/B arms.
-    for key in ("treatment", "skill"):
-        skill_runs = runs.get(key) or []
-        if skill_runs:
-            return list(skill_runs)
-    # A/B with baseline: primary comparison is still treatment (Skill B).
+    names = ("treatment", "skill") if arm == "treatment" else (arm,)
+    if isinstance(runs, list):
+        return [r for r in runs if r.get("arm") in names]
+    for key in names:
+        if runs.get(key):
+            return list(runs[key])
     return []
 
 
-def _matched_efficiency(
-    a: dict[str, Any], b: dict[str, Any]
-) -> tuple[dict[str, Any], list[str]]:
+def _skill_runs(results: dict[str, Any]) -> list[dict[str, Any]]:
+    return _arm_runs(results, "treatment")
+
+
+def _failure_policy(results: dict[str, Any]) -> dict[str, str]:
+    saved = (
+        results.get("failure_policy") or (results.get("settings") or {}).get("failure_policy") or {}
+    )
+    return {"agent_failure": "exclude", "missing": "exclude", **saved}
+
+
+def _known_number(run: dict[str, Any], field: str) -> float | None:
+    if not usable_agent_run(run) or run.get(field) is None:
+        return None
+    try:
+        value = float(run[field])
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _known_tokens(run: dict[str, Any]) -> float | None:
+    value = METRICS["tokens"](run)
+    return value if value is not None and math.isfinite(value) else None
+
+
+def _analysis_pairs(a: dict[str, Any], b: dict[str, Any]) -> list[tuple[dict, dict]]:
+    return pair_runs(
+        [analysis_run(r, _failure_policy(a)["agent_failure"]) for r in _skill_runs(a)],
+        [analysis_run(r, _failure_policy(b)["agent_failure"]) for r in _skill_runs(b)],
+    )
+
+
+def _matched_efficiency(a: dict[str, Any], b: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """Normalize efficiency by matched tasks and repetitions.
 
     Totals mislead when runs differ in task count or repetitions. We filter
-    both experiments to the intersection of (model, task_id) pairs present in
-    the skill/treatment arm, then compare mean cost/time/tokens per run. When
+    both experiments to the intersection of (model, task_id, repetition) keys
+    in the skill/treatment arm, then use both-known values for each metric. When
     no run records exist (older results.json), fall back to totals.
     """
-    from skilldiff.reporter import _total_tokens_opt as _tok
-
     aruns, bruns = _skill_runs(a), _skill_runs(b)
-
-    def cost_of(r: dict[str, Any]) -> float | None:
-        v = r.get("cost")
-        try:
-            return float(v) if v is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    def dur_of(r: dict[str, Any]) -> float | None:
-        v = r.get("duration")
-        try:
-            return float(v) if v is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    def key(r: dict[str, Any]) -> tuple[str, str]:
-        return (str(r.get("model", "")), str(r.get("task_id", "")))
-
     matched_tasks: list[str] = []
     eff: dict[str, Any] = {}
-    if aruns and bruns:
-        a_keys = {key(r) for r in aruns}
-        b_keys = {key(r) for r in bruns}
-        common = a_keys & b_keys
-        matched_tasks = sorted({k[1] for k in common})
-        a_f = [r for r in aruns if key(r) in common]
-        b_f = [r for r in bruns if key(r) in common]
-
-        def mean(vals: list[float | None]) -> float | None:
-            known = [v for v in vals if v is not None]
-            return sum(known) / len(known) if known else None
-
-        for metric, label, fn in (
-            ("cost", "cost", cost_of),
-            ("duration", "time", dur_of),
-            ("tokens", "tokens", lambda r: _tok(r)),
+    if aruns or bruns:
+        pairs = _analysis_pairs(a, b)
+        matched_tasks = sorted(
+            {
+                str(c.get("task_id", ""))
+                for c, t in pairs
+                if usable_agent_run(c) and usable_agent_run(t)
+            }
+        )
+        for label, getter in (
+            ("cost", lambda r: _known_number(r, "cost")),
+            ("time", lambda r: _known_number(r, "duration")),
+            ("tokens", _known_tokens),
         ):
-            if label == "tokens":
-                av = mean([float(v) if v is not None else None for v in [fn(r) for r in a_f]])
-                bv = mean([float(v) if v is not None else None for v in [fn(r) for r in b_f]])
-            else:
-                av = mean([fn(r) for r in a_f])
-                bv = mean([fn(r) for r in b_f])
+            values = [(getter(c), getter(t)) for c, t in pairs]
+            known = [(av, bv) for av, bv in values if av is not None and bv is not None]
+            av = sum(av for av, _ in known) / len(known) if known else None
+            bv = sum(bv for _, bv in known) / len(known) if known else None
             eff[label] = {
                 "a": av,
                 "b": bv,
                 "delta": (bv - av) if av is not None and bv is not None else None,
-                "a_runs": len(a_f),
-                "b_runs": len(b_f),
+                "a_runs": len(known),
+                "b_runs": len(known),
                 "matched": True,
             }
         return eff, matched_tasks
@@ -139,6 +148,8 @@ def check_compatibility(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
         warnings.append(f"Tasks differ: {a.get('tasks')} vs {b.get('tasks')}.")
     if a.get("harness") != b.get("harness"):
         warnings.append(f"Harness differs: {a.get('harness')} vs {b.get('harness')}.")
+    if _failure_policy(a) != _failure_policy(b):
+        warnings.append(f"Failure policies differ: {_failure_policy(a)} vs {_failure_policy(b)}.")
     if a.get("skilldiff_version") != b.get("skilldiff_version"):
         warnings.append(
             f"skilldiff versions differ: {a.get('skilldiff_version')} "
@@ -162,11 +173,9 @@ def check_compatibility(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
     # Strict checks: grader contents and locks are part of tasks_hash now, but
     # surface them explicitly for older runs that lack them.
     for label, results in (("A", a), ("B", b)):
-        for entry in ((results.get("provenance") or {}).get("task_files") or []):
+        for entry in (results.get("provenance") or {}).get("task_files") or []:
             if entry.get("graders_hash") is None and entry.get("grader"):
-                warnings.append(
-                    f"Run {label} task {entry.get('id')} has no recorded grader hash."
-                )
+                warnings.append(f"Run {label} task {entry.get('id')} has no recorded grader hash.")
                 break
     return warnings
 
@@ -176,22 +185,23 @@ def _pct(metrics: dict[str, Any]) -> Any:
     return None if v is None else round(float(v) * 100)
 
 
-def compare_results(
-    a: dict[str, Any], b: dict[str, Any], strict: bool = False
-) -> dict[str, Any]:
+def compare_results(a: dict[str, Any], b: dict[str, Any], strict: bool = False) -> dict[str, Any]:
     am, bm = _skill_metrics(a), _skill_metrics(b)
     ap, bp = _paired(a), _paired(b)
 
-    def delta_pct(key: str) -> Any:
-        av, bv = am.get(key), bm.get(key)
-        if av is None or bv is None:
-            return None
-        try:
-            return float(bv) - float(av)
-        except (TypeError, ValueError):
-            return None
-
     score_a, score_b = _pct(am), _pct(bm)
+    score_counts: dict[str, Any] = {"matched": False}
+    matched_pairs = _analysis_pairs(a, b)
+    if any("score" in r or "grade_status" in r for r in _skill_runs(a) + _skill_runs(b)):
+        values = [(METRICS["score"](arun), METRICS["score"](brun)) for arun, brun in matched_pairs]
+        known = [
+            (av, bv)
+            for av, bv in values
+            if av is not None and bv is not None and math.isfinite(av) and math.isfinite(bv)
+        ]
+        score_a = round(sum(av for av, _ in known) / len(known) * 100) if known else None
+        score_b = round(sum(bv for _, bv in known) / len(known) * 100) if known else None
+        score_counts = {"matched": True, "a_runs": len(known), "b_runs": len(known)}
     score_delta = (score_b - score_a) if score_a is not None and score_b is not None else None
 
     adoption_a = (
@@ -204,6 +214,25 @@ def compare_results(
         if bm.get("skill_known_count")
         else "unknown"
     )
+    if any("skill_invoked" in r for r in _skill_runs(a) + _skill_runs(b)):
+        known_adoption = [
+            (arun["skill_invoked"], brun["skill_invoked"])
+            for arun, brun in matched_pairs
+            if usable_agent_run(arun)
+            and usable_agent_run(brun)
+            and isinstance(arun.get("skill_invoked"), bool)
+            and isinstance(brun.get("skill_invoked"), bool)
+        ]
+        adoption_a = (
+            f"{sum(av for av, _ in known_adoption)}/{len(known_adoption)}"
+            if known_adoption
+            else "unknown"
+        )
+        adoption_b = (
+            f"{sum(bv for _, bv in known_adoption)}/{len(known_adoption)}"
+            if known_adoption
+            else "unknown"
+        )
 
     eff, matched_tasks = _matched_efficiency(a, b)
 
@@ -213,43 +242,70 @@ def compare_results(
         return None if m is None else float(m) * 100
 
     eff_a, eff_b = effect(a), effect(b)
+    if _arm_runs(a, "control") or _arm_runs(b, "control"):
+
+        def effects(results: dict[str, Any]) -> list[dict[str, Any]]:
+            policy = _failure_policy(results)["agent_failure"]
+            pairs = pair_runs(
+                [analysis_run(r, policy) for r in _arm_runs(results, "control")],
+                [analysis_run(r, policy) for r in _skill_runs(results)],
+            )
+            records = []
+            for c_run, t_run in pairs:
+                cv, tv = METRICS["score"](c_run), METRICS["score"](t_run)
+                if cv is not None and tv is not None and math.isfinite(cv) and math.isfinite(tv):
+                    records.append({**t_run, "effect": tv - cv})
+            return records
+
+        common_effects = pair_runs(effects(a), effects(b))
+        eff_a = (
+            sum(arun["effect"] for arun, _ in common_effects) / len(common_effects) * 100
+            if common_effects
+            else None
+        )
+        eff_b = (
+            sum(brun["effect"] for _, brun in common_effects) / len(common_effects) * 100
+            if common_effects
+            else None
+        )
     effect_delta = (eff_b - eff_a) if eff_a is not None and eff_b is not None else None
 
-    # Newly failing/passing checks: compare skill-arm pass rates per (task, check).
+    # Check changes require completed evidence on both sides of the same repetition.
     from skilldiff.reporter import extract_checks
 
-    def skill_checks(results: dict[str, Any]) -> dict[tuple[str, str], tuple[int, int]]:
-        runs = results.get("runs") or {}
-        # Support both control/treatment and control/skill keys.
-        skill_runs = runs.get("treatment") or runs.get("skill") or []
-        agg: dict[tuple[str, str], list[int]] = {}
-        for r in skill_runs:
-            for name, passed in extract_checks(r):
-                if passed is None:
-                    continue
-                key = (str(r.get("task_id", "")), name)
-                entry = agg.setdefault(key, [0, 0])
-                entry[1] += 1
-                entry[0] += 1 if passed else 0
-        return {k: (v[0], v[1]) for k, v in agg.items()}
-
-    ca, cb = skill_checks(a), skill_checks(b)
+    checks: dict[tuple[str, str, str], list[int]] = {}
+    for arun, brun in pair_runs(_skill_runs(a), _skill_runs(b)):
+        if any(
+            not usable_agent_run(r)
+            or r.get("status") not in (None, "ok", "correctness")
+            or r.get("grade_status") in ("error", "timeout", "ungraded")
+            for r in (arun, brun)
+        ):
+            continue
+        ca, cb = dict(extract_checks(arun)), dict(extract_checks(brun))
+        for name in ca.keys() & cb.keys():
+            if ca[name] is None or cb[name] is None:
+                continue
+            key = (str(arun.get("model", "")), str(arun.get("task_id", "")), name)
+            entry = checks.setdefault(key, [0, 0, 0])
+            entry[0] += int(ca[name])
+            entry[1] += int(cb[name])
+            entry[2] += 1
     newly_failing: list[dict[str, Any]] = []
     newly_passing: list[dict[str, Any]] = []
-    for key in sorted(set(ca) | set(cb)):
-        pa, ta = ca.get(key, (0, 0))
-        pb, tb = cb.get(key, (0, 0))
-        if not ta or not tb:
-            continue
-        ra, rb = pa / ta, pb / tb
+    for (model, task, name), (pa, pb, total) in sorted(checks.items()):
+        ra, rb = pa / total, pb / total
+        change = {
+            "model": model,
+            "task": task,
+            "check": name,
+            "a": f"{pa}/{total}",
+            "b": f"{pb}/{total}",
+        }
         if ra >= 0.5 and rb < 0.5:
-            newly_failing.append(
-                {"task": key[0], "check": key[1], "a": f"{pa}/{ta}", "b": f"{pb}/{tb}"}
-            )
+            newly_failing.append(change)
         elif ra < 0.5 and rb >= 0.5:
-            newly_passing.append(
-                {"task": key[0], "check": key[1], "a": f"{pa}/{ta}", "b": f"{pb}/{tb}"}
-            )
+            newly_passing.append(change)
 
     # Provenance warnings (shared helper so --strict and default agree).
     warnings = check_compatibility(a, b)
@@ -261,7 +317,7 @@ def compare_results(
     return {
         "a_name": a.get("name"),
         "b_name": b.get("name"),
-        "score": {"a": score_a, "b": score_b, "delta_pp": score_delta},
+        "score": {"a": score_a, "b": score_b, "delta_pp": score_delta, **score_counts},
         "adoption": {"a": adoption_a, "b": adoption_b},
         "efficiency": eff,
         "matched_tasks": matched_tasks,
@@ -280,7 +336,12 @@ def format_comparison(comp: dict[str, Any]) -> str:
     sa = f"{s['a']}%" if s["a"] is not None else "N/A"
     sb = f"{s['b']}%" if s["b"] is not None else "N/A"
     sd = f"{s['delta_pp']:+.0f} pp" if s["delta_pp"] is not None else "N/A"
-    lines.append(f"Skill score: {sa} → {sb} ({sd})")
+    score_note = (
+        f" [n={s.get('a_runs')}/{s.get('b_runs')} matched runs]"
+        if s.get("matched")
+        else " (saved summaries; no score records to match)"
+    )
+    lines.append(f"Skill score: {sa} → {sb} ({sd}){score_note}")
     lines.append(f"Skill adoption: {comp['adoption']['a']} → {comp['adoption']['b']}")
     matched = comp.get("matched_tasks") or []
     matched_note = (
@@ -288,12 +349,14 @@ def format_comparison(comp: dict[str, Any]) -> str:
         if matched
         else " (totals; no run records to match)"
         if any(
-            not (comp["efficiency"].get(k) or {}).get("matched")
-            for k in ("cost", "time", "tokens")
+            not (comp["efficiency"].get(k) or {}).get("matched") for k in ("cost", "time", "tokens")
         )
         else " (per-run means over matched tasks)"
     )
-    lines.append(f"Efficiency is per-run means over matched tasks/reps{matched_note}:")
+    if all((comp["efficiency"].get(k) or {}).get("matched") for k in ("cost", "time", "tokens")):
+        lines.append(f"Efficiency is per-run means over matched tasks/reps{matched_note}:")
+    else:
+        lines.append("Efficiency uses unnormalized totals (no run records to match):")
     for label in ("cost", "time", "tokens"):
         e = comp["efficiency"][label]
         a_txt = "N/A" if e["a"] is None else f"{e['a']:.2f}" if label == "cost" else f"{e['a']:.0f}"
@@ -319,13 +382,15 @@ def format_comparison(comp: dict[str, Any]) -> str:
     if comp["newly_failing"]:
         lines.append("Newly failing checks (skill arm):")
         for r in comp["newly_failing"]:
-            lines.append(f"  - {r['task']} · {r['check']}: {r['a']} → {r['b']}")
+            model = f"{r['model']} · " if r.get("model") else ""
+            lines.append(f"  - {model}{r['task']} · {r['check']}: {r['a']} → {r['b']}")
     else:
         lines.append("Newly failing checks: none")
     if comp["newly_passing"]:
         lines.append("Newly passing checks (skill arm):")
         for r in comp["newly_passing"]:
-            lines.append(f"  - {r['task']} · {r['check']}: {r['a']} → {r['b']}")
+            model = f"{r['model']} · " if r.get("model") else ""
+            lines.append(f"  - {model}{r['task']} · {r['check']}: {r['a']} → {r['b']}")
     if comp["provenance_warnings"]:
         lines.append("Provenance:")
         for w in comp["provenance_warnings"]:

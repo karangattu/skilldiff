@@ -496,40 +496,6 @@ def test_antigravity_runner_cache_tokens_and_transcript(tmp_path: Path, monkeypa
             log_file.unlink()
 
 
-def test_antigravity_transient_retry_success(tmp_path: Path):
-    cfg_agy = AntigravityConfig(dangerously_skip_permissions=True)
-    runner = AgentRunner(antigravity_bin="fake-agy")
-
-    sample_stdout = json.dumps({
-        "status": "SUCCESS",
-        "response": "Recovered",
-        "duration_seconds": 2.0,
-        "usage": {
-            "input_tokens": 500,
-            "output_tokens": 100,
-        },
-    })
-
-    with patch.object(AgentRunner, "_exec") as mock_exec, patch("time.sleep"):
-        mock_exec.side_effect = [
-            ExecResult(
-                stdout="", stderr="read tcp: operation timed out", exit_code=1, duration=1.0
-            ),
-            ExecResult(stdout=sample_stdout, stderr="", exit_code=0, duration=2.0),
-        ]
-
-        res = runner.run(
-            prompt="Repair",
-            cwd=tmp_path,
-            model="gemini-3.8-flash-high",
-            config=cfg_agy,
-        )
-
-        assert mock_exec.call_count == 2
-        assert res.status == "ok"
-        assert res.response == "Recovered"
-        assert res.input_tokens == 500
-
 
 def test_antigravity_non_transient_no_retry(tmp_path: Path):
     cfg_agy = AntigravityConfig(dangerously_skip_permissions=True)

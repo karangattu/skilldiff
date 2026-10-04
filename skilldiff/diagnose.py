@@ -1,17 +1,50 @@
 import json
+import math
 from pathlib import Path
 from typing import Any
 
-from skilldiff.stats import analysis_run, usable_agent_run
+from skilldiff.stats import METRICS, analysis_run, pair_runs, usable_agent_run
 
 
 def _graded_score(run: dict[str, Any]) -> float | None:
     if not usable_agent_run(run) or run.get("grade_status") in ("ungraded", "timeout", "error"):
         return None
     try:
-        return float(run["score"])
+        score = float(run["score"])
     except (KeyError, TypeError, ValueError):
         return None
+    return score if math.isfinite(score) and 0 <= score <= 1 else None
+
+
+def _known_tokens(run: dict[str, Any]) -> float | None:
+    value = METRICS["tokens"](run)
+    return value if value is not None and math.isfinite(value) else None
+
+
+def _planned_pairs(data: dict[str, Any]) -> int | None:
+    settings = data.get("settings") or {}
+    repetitions = data.get("runs_per_arm", settings.get("runs"))
+    models = len(data.get("models") or [])
+    tasks = data.get("tasks_count") or len(data.get("tasks") or [])
+    if repetitions is None or not models or not tasks:
+        return None
+    return int(repetitions) * models * int(tasks)
+
+
+def _run_key(run: dict[str, Any]) -> tuple[str, str, int]:
+    return (str(run.get("model", "")), str(run.get("task_id", "")), int(run.get("repetition", 1)))
+
+
+def _planned_keys(data: dict[str, Any]) -> set[tuple[str, str, int]] | None:
+    repetitions = data.get("runs_per_arm", (data.get("settings") or {}).get("runs"))
+    if repetitions is None or not data.get("models") or not data.get("tasks"):
+        return None
+    return {
+        (str(model), str(task), rep)
+        for model in data["models"]
+        for task in data["tasks"]
+        for rep in range(1, int(repetitions) + 1)
+    }
 
 
 def diagnose_run(run_dir: Path) -> dict[str, Any]:
@@ -29,49 +62,97 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
     if isinstance(raw_runs, list):
         control_runs = [r for r in raw_runs if r.get("arm") == "control"]
         treatment_runs = [r for r in raw_runs if r.get("arm") in {"treatment", "skill"}]
+        baseline_runs = [r for r in raw_runs if r.get("arm") == "baseline"]
     elif isinstance(raw_runs, dict):
         control_runs = raw_runs.get("control") or []
         treatment_runs = raw_runs.get("treatment") or raw_runs.get("skill") or []
+        baseline_runs = raw_runs.get("baseline") or []
     else:
         control_runs = []
         treatment_runs = []
+        baseline_runs = []
+    arms = {"control": control_runs, "treatment": treatment_runs}
+    has_baseline = bool(baseline_runs) or bool(
+        (data.get("skill_comparison") or {}).get("include_baseline")
+        or (data.get("settings") or {}).get("include_baseline")
+        or data.get("include_baseline")
+    )
+    if has_baseline:
+        arms["baseline"] = baseline_runs
     task_details = {str(t.get("id")): t for t in (data.get("task_details") or [])}
-    policy = (data.get("failure_policy") or (data.get("settings") or {}).get(
-        "failure_policy") or {}).get("agent_failure", "exclude")
+    policy = (
+        data.get("failure_policy") or (data.get("settings") or {}).get("failure_policy") or {}
+    ).get("agent_failure", "exclude")
 
     under_triggered = []
     over_triggered = []
     regressions = []
     blast_violations = []
     agent_failures = []
+    grader_failures = []
     token_bloat_tasks = []
     recommendations = []
+    unknown_adoption_runs = 0
+    is_pr = bool(data.get("comparison")) or data.get("preset") == "pr"
+    skill_arms = {"treatment"}
+    if data.get("skill_comparison") or data.get("preset") in {"revision", "compression"}:
+        skill_arms.add("control")
+    for arm, records in arms.items():
+        for record in records:
+            identity = {
+                "arm": arm,
+                "task_id": str(record.get("task_id", "")),
+                "model": str(record.get("model", "")),
+                "rep": record.get("repetition", 1),
+            }
+            failed = record.get("status") not in (None, "ok", "correctness") or (
+                record.get("exit_code") not in (0, None)
+            )
+            if failed:
+                agent_failures.append(
+                    identity
+                    | {
+                        "status": record.get("status"),
+                        "error": record.get("error"),
+                    }
+                )
+            if record.get("grade_status") in {"error", "timeout"}:
+                grader_failures.append(
+                    identity
+                    | {
+                        "status": record["grade_status"],
+                        "feedback": record.get("feedback"),
+                    }
+                )
+            feedback = str(record.get("feedback") or "")
+            if "Blast radius violation" in feedback:
+                blast_violations.append(identity | {"violation": feedback})
+            if is_pr or arm not in skill_arms or failed:
+                continue
+            category = task_details.get(identity["task_id"], {}).get(
+                "category", record.get("task_category", "general")
+            )
+            invoked = record.get("skill_invoked")
+            if not isinstance(invoked, bool):
+                unknown_adoption_runs += 1
+            elif category == "intended" and not invoked:
+                under_triggered.append(identity)
+            elif category == "irrelevant" and invoked:
+                over_triggered.append(identity)
 
-    ctrl_by_key = {
-        (r.get("model"), r.get("task_id"), r.get("repetition")): r for r in control_runs
-    }
-
-    for t_run in treatment_runs:
+    pairs = pair_runs(control_runs, treatment_runs)
+    usable_score_pairs = 0
+    unknown_token_pairs = 0
+    for c_run, t_run in pairs:
         task_id = str(t_run.get("task_id", ""))
         model = str(t_run.get("model", ""))
-        rep = t_run.get("repetition")
-        key = (model, task_id, rep)
-        c_run = ctrl_by_key.get(key, {})
-
-        meta = task_details.get(task_id, {})
-        category = meta.get("category", t_run.get("task_category", "general"))
-
-        invoked = t_run.get("skill_invoked")
-        if category == "intended" and invoked is False:
-            under_triggered.append({"task_id": task_id, "model": model, "rep": rep})
-
-        if category == "irrelevant" and invoked is True:
-            over_triggered.append({"task_id": task_id, "model": model, "rep": rep})
-
+        rep = t_run.get("repetition", 1)
         c_analysis = analysis_run(c_run, policy)
         t_analysis = analysis_run(t_run, policy)
         c_score = _graded_score(c_analysis)
         t_score = _graded_score(t_analysis)
+        if c_score is not None and t_score is not None:
+            usable_score_pairs += 1
         if c_score is not None and t_score is not None and float(t_score) < float(c_score):
             regressions.append(
                 {
@@ -84,51 +165,105 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
                 }
             )
 
-        feedback = str(t_run.get("feedback") or "")
-        if "Blast radius violation" in feedback:
-            blast_violations.append({"task_id": task_id, "model": model, "violation": feedback})
-
-        if t_run.get("status") in {"error", "timeout"} or (
-            t_run.get("exit_code") not in (0, None)
+        c_tok = _known_tokens(c_analysis)
+        t_tok = _known_tokens(t_analysis)
+        if c_tok is None or t_tok is None:
+            unknown_token_pairs += 1
+        elif (
+            c_score is not None
+            and t_score is not None
+            and c_tok > 0
+            and t_tok > c_tok * 1.5
+            and t_score <= c_score
         ):
-            agent_failures.append(
-                {
-                    "task_id": task_id,
-                    "model": model,
-                    "status": t_run.get("status"),
-                    "error": t_run.get("error"),
-                }
-            )
-
-        c_tok = sum(
-            int(c_run.get(k) or 0)
-            for k in (
-                "input_tokens",
-                "output_tokens",
-                "cache_read_tokens",
-                "cache_creation_tokens",
-            )
-        )
-        t_tok = sum(
-            int(t_run.get(k) or 0)
-            for k in (
-                "input_tokens",
-                "output_tokens",
-                "cache_read_tokens",
-                "cache_creation_tokens",
-            )
-        )
-        if (usable_agent_run(c_analysis) and usable_agent_run(t_analysis)
-                and c_score is not None and t_score is not None
-                and c_tok > 0 and t_tok > c_tok * 1.5 and t_score <= c_score):
             token_bloat_tasks.append(
                 {
                     "task_id": task_id,
+                    "model": model,
+                    "rep": rep,
                     "control_tokens": c_tok,
                     "skill_tokens": t_tok,
                     "ratio": round(t_tok / c_tok, 2),
                 }
             )
+
+    if agent_failures:
+        recommendations.append(
+            f"Agent failures: {len(agent_failures)} session(s) failed across "
+            f"{', '.join(sorted({r['arm'] for r in agent_failures}))}. "
+            "Inspect their errors and restore completed sessions before drawing conclusions."
+        )
+    if grader_failures:
+        recommendations.append(
+            f"Grader failures: {len(grader_failures)} result(s) could not be evaluated. "
+            "Fix the grader errors or timeouts and rerun the affected pairs."
+        )
+    planned_pairs = _planned_pairs(data)
+    expected_keys = _planned_keys(data)
+    matched_keys = {_run_key(t) for _, t in pairs}
+    missing_planned_pairs = len(expected_keys - matched_keys) if expected_keys is not None else None
+    unmatched_runs = len(control_runs) + len(treatment_runs) - 2 * len(pairs)
+    if unmatched_runs:
+        recommendations.append(
+            f"Incomplete pairing: {unmatched_runs} control/treatment record(s) have no "
+            "matching model, task, and repetition in the other arm."
+        )
+    if not pairs or usable_score_pairs < len(pairs):
+        recommendations.append(
+            f"Score coverage: {usable_score_pairs}/{len(pairs)} matched pair(s) have "
+            "usable scores on both arms; complete grading before interpreting the result."
+        )
+    if planned_pairs is None or expected_keys is None:
+        recommendations.append(
+            "Planned coverage is unknown: this run does not record all model, task, and run counts."
+        )
+    elif (
+        len(pairs) != planned_pairs
+        or any(len(records) != planned_pairs for records in arms.values())
+        or matched_keys != expected_keys
+    ):
+        completed_planned_pairs = len(matched_keys & expected_keys)
+        recommendations.append(
+            f"Incomplete evaluation: {completed_planned_pairs}/{planned_pairs} planned pair(s) "
+            "are matched; "
+            "check missing arm results and resume the run."
+        )
+    baseline_pairs = pair_runs([t for _, t in pairs], baseline_runs)
+    control_by_key = {_run_key(c): c for c, _ in pairs}
+    baseline_usable_score_pairs = sum(
+        all(
+            _graded_score(analysis_run(record, policy)) is not None
+            for record in (control_by_key[_run_key(t)], t, baseline)
+        )
+        for t, baseline in baseline_pairs
+    )
+    if has_baseline and (
+        len(baseline_pairs) != len(pairs) or baseline_usable_score_pairs != len(pairs)
+    ):
+        recommendations.append(
+            f"Baseline coverage: {baseline_usable_score_pairs}/{len(pairs)} primary pair(s) "
+            "have matching, usable baseline scores; complete the baseline evaluation."
+        )
+    if unknown_adoption_runs:
+        recommendations.append(
+            f"Adoption coverage: skill use is unknown for {unknown_adoption_runs} session(s); "
+            "inspect transcripts before concluding that adoption is clean."
+        )
+    if unknown_token_pairs:
+        recommendations.append(
+            f"Efficiency coverage: token totals are unavailable for {unknown_token_pairs} "
+            "matched pair(s); token bloat cannot be ruled out for those pairs."
+        )
+    if data.get("valid") is False:
+        recommendations.append(
+            "Invalid evaluation: control or baseline contamination prevents a clean comparison."
+        )
+    if data.get("interrupted") or any(
+        r.get("complete") is False for records in arms.values() for r in records
+    ):
+        recommendations.append(
+            "Interrupted evaluation: resume the run to complete the missing results."
+        )
 
     if under_triggered:
         tasks_list = sorted({item["task_id"] for item in under_triggered})
@@ -172,12 +307,21 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
 
     return {
         "run_dir": str(path),
-        "total_pairs": len(treatment_runs),
+        "total_pairs": len(pairs),
+        "usable_score_pairs": usable_score_pairs,
+        "planned_pairs": planned_pairs,
+        "missing_planned_pairs": missing_planned_pairs,
+        "baseline_pairs": len(baseline_pairs),
+        "baseline_usable_score_pairs": baseline_usable_score_pairs,
+        "unmatched_runs": unmatched_runs,
+        "unknown_adoption_runs": unknown_adoption_runs,
+        "unknown_token_pairs": unknown_token_pairs,
         "under_triggered": under_triggered,
         "over_triggered": over_triggered,
         "regressions": regressions,
         "blast_violations": blast_violations,
         "agent_failures": agent_failures,
+        "grader_failures": grader_failures,
         "token_bloat_tasks": token_bloat_tasks,
         "recommendations": recommendations,
     }

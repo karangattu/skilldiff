@@ -1,5 +1,6 @@
 import fnmatch
 import json
+import math
 import os
 import random
 import re
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from skilldiff.config import GraderConfig
+from skilldiff.runner import AgentRunner
 
 # Environment variables share the OS argument-size limit, so large responses and diffs
 # are truncated there. Graders that need the full text should read the *_FILE paths.
@@ -41,10 +43,7 @@ def check_blast_radius(
                     allowed = True
                     break
             if not allowed:
-                return (
-                    f"Blast radius violation: modified path '{file_path}' "
-                    "outside allowed paths"
-                )
+                return f"Blast radius violation: modified path '{file_path}' outside allowed paths"
     return None
 
 
@@ -89,6 +88,9 @@ class Grader:
         allowed_paths: Optional[list[str]] = None,
         forbidden_paths: Optional[list[str]] = None,
         task_prompt: Optional[str] = None,
+        isolation: str = "local",
+        container_image: Optional[str] = None,
+        inputs_root: Optional[Path] = None,
     ):
         self.config = config
         self.skill_names = [skill_name] if isinstance(skill_name, str) else list(skill_name)
@@ -98,6 +100,9 @@ class Grader:
         self.allowed_paths = list(allowed_paths or [])
         self.forbidden_paths = list(forbidden_paths or [])
         self.task_prompt = task_prompt
+        self.isolation = isolation
+        self.container_image = container_image
+        self.inputs_root = inputs_root
 
     def grade_pair(
         self,
@@ -125,30 +130,25 @@ class Grader:
                 treat_files,
             ),
         ]
-        random.shuffle(pair)
-
-        labels = ["candidate-A", "candidate-B"]
-        candidates: list[Candidate] = []
-        for i, (arm, ws, resp, diff, trans, files) in enumerate(pair):
-            clues = [*self.skill_names, self.model_name, arm, "control", "treatment"]
-            candidates.append(
-                Candidate(
-                    label=labels[i],
-                    arm=arm,
-                    workspace_dir=ws,
-                    response=sanitize_text(resp, clues),
-                    diff=sanitize_text(diff, clues),
-                    transcript=sanitize_text(trans, clues),
-                    changed_files=files,
-                )
-            )
-
-        results_by_arm: dict[str, GradeResult] = {}
-        for cand in candidates:
-            res = self._evaluate_candidate(cand)
-            results_by_arm[cand.arm] = res
-
+        results_by_arm = self.grade_candidates([
+            Candidate("", arm, ws, resp, diff, trans, files)
+            for arm, ws, resp, diff, trans, files in pair
+        ])
         return results_by_arm["control"], results_by_arm["treatment"]
+
+    def grade_candidates(self, candidates: list[Candidate]) -> dict[str, GradeResult]:
+        candidates = list(candidates)
+        random.shuffle(candidates)
+        clues = [*self.skill_names, self.model_name, "control", "treatment", "baseline"]
+        results = {}
+        for index, cand in enumerate(candidates):
+            anonymous = Candidate(
+                f"candidate-{chr(ord('A') + index)}", cand.arm, cand.workspace_dir,
+                sanitize_text(cand.response, clues), sanitize_text(cand.diff, clues),
+                sanitize_text(cand.transcript, clues), cand.changed_files,
+            )
+            results[cand.arm] = self._evaluate_candidate(anonymous)
+        return results
 
     def grade_workspace(self, workspace_dir: Path) -> GradeResult:
         """Grade a single workspace, e.g. an untouched fixture during `skilldiff check`."""
@@ -156,7 +156,37 @@ class Grader:
             Candidate("candidate-A", "control", workspace_dir, "", "", "")
         )
 
+    def grade_candidate(
+        self,
+        workspace_dir: Path,
+        response: str,
+        diff: str,
+        transcript: str,
+        changed_files: list[str],
+        label: str = "candidate-A",
+    ) -> GradeResult:
+        clues = [*self.skill_names, self.model_name, "control", "treatment", "baseline"]
+        return self._evaluate_candidate(
+            Candidate(
+                label,
+                "baseline",
+                workspace_dir,
+                sanitize_text(response, clues),
+                sanitize_text(diff, clues),
+                sanitize_text(transcript, clues),
+                changed_files,
+            )
+        )
+
     def _evaluate_llm(self, cand: Candidate) -> GradeResult:
+        if not self.config or not self.config.command:
+            return GradeResult(
+                None,
+                None,
+                cand.label,
+                "LLM/rubric grading requires an executable judge command",
+                "error",
+            )
         if os.environ.get("SKILLDIFF_MOCK_RUNNER"):
             mock_score = float(os.environ.get("SKILLDIFF_MOCK_LLM_SCORE", "1.0"))
             return GradeResult(
@@ -168,9 +198,8 @@ class Grader:
             )
 
         rubric = (
-            (self.config.rubric if self.config else None)
-            or "Evaluate task correctness and completeness."
-        )
+            self.config.rubric if self.config else None
+        ) or "Evaluate task correctness and completeness."
         task_prompt = self.task_prompt or ""
         judge_prompt = (
             f"You are an impartial evaluator grading a task solution.\n\n"
@@ -191,13 +220,7 @@ class Grader:
                 env["SKILLDIFF_RUBRIC"] = rubric
                 return self._run_command(cand, env)
 
-        return GradeResult(
-            score=1.0,
-            success=True,
-            label=cand.label,
-            feedback=f"Rubric: {rubric[:60]}",
-            grade_status="graded",
-        )
+        raise AssertionError("Judge command is required")
 
     def _evaluate_candidate(self, cand: Candidate) -> GradeResult:
         if self.allowed_paths or self.forbidden_paths:
@@ -254,17 +277,46 @@ class Grader:
     def _run_command(self, cand: Candidate, env: dict[str, str]) -> GradeResult:
         assert self.config and self.config.command
         try:
-            proc = subprocess.run(
-                self.config.command,
-                shell=True,
-                cwd=cand.workspace_dir,
-                capture_output=True,
-                text=True,
-                env=env,
-                check=False,
-                stdin=subprocess.DEVNULL,
-                timeout=self.timeout,
+            mounts: list[tuple[Path, str]] = []
+            command = self.config.command
+            if self.isolation in {"docker", "podman"}:
+                if self.task_dir:
+                    root = (self.inputs_root or self.task_dir.parent).resolve()
+                    if root == Path(root.anchor) or root == Path.home():
+                        raise ValueError(
+                            "Container grader inputs must have a confined project root"
+                        )
+                    mounts.append((root, "/evaluation/inputs"))
+                for key in (
+                    "SKILLDIFF_RESPONSE_FILE",
+                    "SKILLDIFF_DIFF_FILE",
+                    "SKILLDIFF_JUDGE_PROMPT_FILE",
+                ):
+                    if key in env:
+                        source = Path(env[key]).parent.resolve()
+                        if not any(source == existing for existing, _ in mounts):
+                            mounts.append((source, f"/evaluation/artifacts-{len(mounts)}"))
+                for source, target in mounts:
+                    command = command.replace(str(source), target)
+            shell_command = ["/bin/sh", "-c", command]
+            if self.isolation == "local" and os.name == "nt":
+                shell_command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", command]
+            proc = AgentRunner()._exec(
+                shell_command,
+                cand.workspace_dir,
+                env,
+                self.timeout,
+                isolation=self.isolation,
+                container_image=self.container_image,
+                readonly_mounts=mounts,
+                forward_env=[key for key in env if key.startswith("SKILLDIFF_")],
             )
+            if proc.cleanup_error:
+                return GradeResult(None, None, cand.label, proc.cleanup_error, "error")
+            if proc.timed_out:
+                return GradeResult(
+                    None, None, cand.label, f"Grader timed out after {self.timeout}s", "timeout"
+                )
             stdout = (proc.stdout or "").strip()
             stderr = (proc.stderr or "").strip()
 
@@ -318,9 +370,7 @@ class Grader:
                         feedback=(stdout or stderr) + "\n[grader score not a number]",
                         grade_status="error",
                     )
-                success = (
-                    parsed_success if parsed_success is not None else score >= 0.5
-                )
+                success = parsed_success if parsed_success is not None else score >= 0.5
                 return GradeResult(
                     score=score,
                     success=bool(success),
@@ -329,18 +379,27 @@ class Grader:
                     grade_status="graded",
                 )
 
+            if self.config.type in {"llm", "rubric"}:
+                return GradeResult(
+                    None,
+                    None,
+                    cand.label,
+                    (stdout or stderr) + "\n[judge returned no valid verdict]",
+                    "error",
+                )
+
             # No structured output: distinguish test failure from grader crash.
             # A crashing grader must never become an ordinary zero score.
-            if _looks_like_grader_crash(proc.returncode, stdout, stderr, parsed_any):
+            if _looks_like_grader_crash(proc.exit_code, stdout, stderr, parsed_any):
                 return GradeResult(
                     score=None,
                     success=None,
                     label=cand.label,
-                    feedback=(stdout or stderr) or f"grader exited {proc.returncode}",
+                    feedback=(stdout or stderr) or f"grader exited {proc.exit_code}",
                     grade_status="error",
                 )
-            score = 1.0 if proc.returncode == 0 else 0.0
-            success = proc.returncode == 0
+            score = 1.0 if proc.exit_code == 0 else 0.0
+            success = proc.exit_code == 0
             return GradeResult(
                 score=score,
                 success=success,
@@ -452,9 +511,7 @@ def validate_grader_payload(data: object) -> Optional[str]:
     return None
 
 
-def _looks_like_grader_crash(
-    returncode: int, stdout: str, stderr: str, parsed: bool
-) -> bool:
+def _looks_like_grader_crash(returncode: int, stdout: str, stderr: str, parsed: bool) -> bool:
     """A crashing grader must become grade_status=error, never a plain 0."""
     if parsed:
         return False
@@ -507,21 +564,23 @@ def validate_grader_against_directories(
         "score": untouched.score,
         "grade_status": untouched.grade_status,
     }
-    if untouched.grade_status in ("timeout", "error"):
+    if (
+        untouched.grade_status != "graded"
+        or untouched.score is None
+        or not math.isfinite(untouched.score)
+    ):
         checks.append("untouched fixture could not be graded (grader error/timeout)")
         report["verdict"] = "grader-broken"
         return report
     if untouched.score is not None and untouched.score >= 1.0:
         checks.append("untouched fixture already scores 100% (task too easy)")
     else:
-        checks.append(
-            f"untouched scores {round((untouched.score or 0) * 100)}% (must be <100%)"
-        )
+        checks.append(f"untouched scores {round((untouched.score or 0) * 100)}% (must be <100%)")
 
     if good_dir is not None:
         good = grader.grade_workspace(good_dir)
         report["good"] = {"score": good.score, "grade_status": good.grade_status}
-        if good.grade_status != "graded" or good.score is None:
+        if good.grade_status != "graded" or good.score is None or not math.isfinite(good.score):
             checks.append("known-good solution could not be graded")
             report["verdict"] = "grader-broken"
             return report
@@ -540,6 +599,14 @@ def validate_grader_against_directories(
             "score": broken.score,
             "grade_status": broken.grade_status,
         }
+        if (
+            broken.grade_status != "graded"
+            or broken.score is None
+            or not math.isfinite(broken.score)
+        ):
+            checks.append(f"broken solution {i} could not be graded")
+            report["verdict"] = "grader-broken"
+            return report
         if broken.grade_status == "graded" and broken.score is not None and broken.score >= 1.0:
             checks.append(f"broken solution {i} still scores 100% (grader misses failures)")
             report["verdict"] = "grader-too-lax"

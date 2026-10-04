@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from skilldiff.config import find_skill_dirs
@@ -113,9 +114,7 @@ def copy_fixture_clean(src_dir: Path, dst_root: Path) -> None:
             shutil.copy2(src, dst)
     escaping = find_escaping_symlinks(dst_root)
     if escaping:
-        raise ValueError(
-            "Fixture contains symlinks escaping the workspace: " + ", ".join(escaping)
-        )
+        raise ValueError("Fixture contains symlinks escaping the workspace: " + ", ".join(escaping))
     if (dst_root / ".git").exists():
         raise ValueError("Fixture copy must not contain .git history")
 
@@ -171,14 +170,6 @@ def check_workspace_isolation(
         issues.append("workspace has escaping symlinks: " + ", ".join(escaping))
     return issues
 
-IGNORED_DIFF_PREFIXES = (
-    ".claude/",
-    ".codex/",
-    ".opencode/",
-    ".agents/",
-    ".agent/",
-    ".gemini/",
-)
 
 GIT_DIFF_EXCLUDES = [
     ":(exclude).claude",
@@ -214,12 +205,11 @@ class Workspace:
         for extra in strip_skill_dirs or []:
             extra_resolved = extra.resolve() if extra else None
             if extra_resolved:
-                self.strip_skill_dirs.extend(
-                    find_skill_dirs(extra_resolved) or [extra_resolved]
-                )
+                self.strip_skill_dirs.extend(find_skill_dirs(extra_resolved) or [extra_resolved])
         # Copies of the skill that shipped with the fixture and were removed from control.
         self.removed_from_control: list[str] = []
         self.isolation_issues: list[str] = []
+        self.initial_commit: str | None = None
 
     def _get_skill_target_dirs(self, skill_name: str) -> list[Path]:
         if self.harness == "codex":
@@ -308,46 +298,43 @@ class Workspace:
             self.root, names, self.harness, self.is_treatment
         )
 
-        add_args = ["git", "add", "-A"] + (["--force"] if self.source_commit else [])
+        add_args = ["git", "add", "-A", "--force"]
         subprocess.run(add_args, cwd=self.root, check=True)
         subprocess.run(
             ["git", "commit", "-q", "-m", "initial", "--allow-empty"],
             cwd=self.root,
             check=True,
         )
+        self.initial_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.root, text=True
+        ).strip()
 
     def get_diff(self) -> tuple[str, list[str]]:
-        proc_status = subprocess.run(
-            ["git", "status", "--porcelain"],
+        """Compare final content to setup, independently of the agent's Git index/HEAD."""
+        if not self.initial_commit:
+            raise ValueError("Workspace has no immutable initial commit")
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{self.initial_commit}^{{commit}}"],
             cwd=self.root,
+            check=True,
             capture_output=True,
-            text=True,
-            check=False,
         )
-        changed_files: list[str] = []
-        for line in proc_status.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(maxsplit=1)
-            if len(parts) == 2:
-                path = parts[1]
-                if self.source_commit or not path.startswith(IGNORED_DIFF_PREFIXES):
-                    changed_files.append(path)
-
-        subprocess.run(["git", "add", "-N", "."], cwd=self.root, check=False)
-        cmd_diff = ["git", "diff", "--"]
-        if not self.source_commit:
-            cmd_diff += GIT_DIFF_EXCLUDES
-        proc_diff = subprocess.run(
-            cmd_diff,
-            cwd=self.root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        diff_text = proc_diff.stdout
-        return diff_text, changed_files
+        # A separate index includes untracked files without changing the agent's index.
+        with tempfile.TemporaryDirectory(prefix="skilldiff-index-") as tmp:
+            env = os.environ.copy()
+            env["GIT_INDEX_FILE"] = str(Path(tmp) / "index")
+            for command in (
+                ["git", "read-tree", self.initial_commit],
+                ["git", "add", "--all", "--force", "."],
+            ):
+                subprocess.run(command, cwd=self.root, env=env, check=True, capture_output=True)
+            base = ["git", "diff", "--cached", "--no-renames", self.initial_commit]
+            paths = ["--", *([] if self.source_commit else GIT_DIFF_EXCLUDES)]
+            patch = subprocess.check_output(base + paths, cwd=self.root, env=env, text=True)
+            names = subprocess.check_output(
+                base + ["--name-only", "-z"] + paths, cwd=self.root, env=env
+            )
+            return patch, [os.fsdecode(name) for name in names.split(b"\0") if name]
 
     def cleanup(self) -> None:
         if self.root.exists():

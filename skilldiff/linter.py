@@ -71,7 +71,7 @@ def lint_skill(skill_dir: Path) -> LintResult:
             errors.append(
                 f"Skill name '{name_str}' must be lowercase alphanumeric with hyphens/dots"
             )
-        if path.name != name_str and not (path / "SKILL.md").exists():
+        if path.name != name_str:
             warnings.append(
                 f"Skill name '{name_str}' differs from directory name '{path.name}'"
             )

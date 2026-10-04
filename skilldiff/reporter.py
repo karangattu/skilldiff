@@ -12,11 +12,13 @@ import statistics
 from pathlib import Path
 from typing import Any, Optional, Union
 
+from skilldiff.persistence import atomic_write
 from skilldiff.stats import (
     analysis_run,
     classify_effect,
     pair_runs,
     paired_comparison,
+    task_level_effects,
     usable_agent_run,
 )
 
@@ -35,6 +37,8 @@ def _total_tokens(run: dict[str, Any]) -> int:
 def _total_tokens_opt(run: dict[str, Any]) -> Optional[int]:
     keys = ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens")
     if all(k not in run or run.get(k) is None for k in keys):
+        return None
+    if any(k in run and run[k] is None for k in keys):
         return None
     try:
         return int(sum(int(run.get(k) or 0) for k in keys))
@@ -615,6 +619,8 @@ def render_report_table(
     treatment_label: str = "Skill",
     thresholds: dict[str, Any] | None = None,
     preset: str | None = None,
+    decision: dict[str, Any] | None = None,
+    include_recommendation: bool = True,
 ) -> str:
     """Plain-text summary for the terminal.
 
@@ -864,22 +870,26 @@ def render_report_table(
     lines.extend(
         ["", f"Models: {models_count}    Tasks: {tasks_count}    Runs per arm: {runs_per_arm}"]
     )
-    if paired and paired.get("pairs"):
+    verdict_paired = decision["paired"] if decision is not None else paired
+    if verdict_paired and verdict_paired.get("pairs"):
         verdict, _ = _verdict(
-            paired,
+            verdict_paired,
             treatment_label.lower(),
             thresholds=thresholds,
-            tasks_count=tasks_count,
+            tasks_count=decision["tasks_count"] if decision is not None else tasks_count,
             preset=preset,
         )
         lines.append(_strip_inline(verdict))
-        _, rec_label, rec_reason = _recommendation(
-            paired,
-            treatment_label.lower(),
-            thresholds=thresholds,
-            tasks_count=tasks_count or None,
-            preset=preset,
-        )
+    if include_recommendation:
+        if decision is not None:
+            if decision["basis_note"]:
+                lines.append(decision["basis_note"])
+            _, rec_label, rec_reason = decision["recommendation"]
+        else:
+            _, rec_label, rec_reason = _recommendation(
+                paired or {}, treatment_label.lower(), thresholds=thresholds,
+                tasks_count=tasks_count or None, preset=preset,
+            )
         lines.append("")
         lines.append(_strip_inline(f"Recommendation: {rec_label} — {rec_reason}"))
     return "\n".join(lines)
@@ -1597,17 +1607,69 @@ def _run_split(run: dict[str, Any], task_splits: dict[str, str]) -> str:
     return "held-out" if split.strip().lower() in _HELD_OUT_ALIASES else "dev"
 
 
-def _held_out_paired(
-    control_runs: list[dict[str, Any]],
-    treatment_runs: list[dict[str, Any]],
-    task_splits: dict[str, str],
+def build_decision_context(
+    results: dict[str, Any],
+    control_runs: list[dict[str, Any]] | None = None,
+    treatment_runs: list[dict[str, Any]] | None = None,
+    run_root: Path | None = None,
+    treatment_label: str = "Skill",
 ) -> dict[str, Any]:
-    """Paired statistics over held-out runs only; {} when the run has none."""
-    c = [r for r in control_runs if _run_split(r, task_splits) == "held-out"]
-    t = [r for r in treatment_runs if _run_split(r, task_splits) == "held-out"]
-    if not c or not t:
-        return {}
-    return paired_comparison(c, t)
+    """Select the same eligible evidence and decision for every output surface."""
+    policy = results.get("failure_policy") or (results.get("settings") or {}).get(
+        "failure_policy") or {}
+    if control_runs is None or treatment_runs is None:
+        runs = _load_runs_for_report(results, run_root)
+        control_runs, treatment_runs = runs["control"], runs["treatment"]
+    control_runs = [analysis_run(r, policy.get("agent_failure", "exclude")) for r in control_runs]
+    treatment_runs = [analysis_run(r, policy.get("agent_failure", "exclude"))
+                      for r in treatment_runs]
+    splits = {
+        str(task["id"]): str(task.get("split", ""))
+        for task in results.get("task_details") or []
+        if isinstance(task, dict) and task.get("id")
+    }
+    held_control = [r for r in control_runs if _run_split(r, splits) == "held-out"]
+    held_treatment = [r for r in treatment_runs if _run_split(r, splits) == "held-out"]
+    held = paired_comparison(held_control, held_treatment) if held_control or held_treatment else {}
+    if control_runs or treatment_runs:
+        control, skill = _paired_comparison_metrics(control_runs, treatment_runs)
+        paired = paired_comparison(control_runs, treatment_runs)
+        selected_control, selected_treatment = control_runs, treatment_runs
+        if held_control or held_treatment:
+            # Even an unmatched held-out arm must not fall back to development evidence.
+            selected_control, selected_treatment = held_control, held_treatment
+        selected_paired = paired_comparison(selected_control, selected_treatment)
+        selected_metrics = _paired_comparison_metrics(selected_control, selected_treatment)
+        tasks_count = task_level_effects(selected_control, selected_treatment)["tasks"]
+    else:
+        overall = results.get("overall") or {}
+        control = {**calculate_metrics([]), **overall.get("control", {})}
+        skill = {**calculate_metrics([]), **overall.get("skill", {})}
+        paired = overall.get("paired") or {}
+        selected_paired, selected_metrics = paired, (control, skill)
+        tasks_count = None  # Legacy summary-only records cannot establish task coverage.
+    pairs = int(held.get("pairs", 0))
+    scored = int((held.get("score") or {}).get("n", 0))
+    coverage = f"{scored}/{pairs} usable score pair(s)"
+    note = ""
+    if held_control or held_treatment:
+        note = (
+            f"Headline and closing decision use held-out data only ({coverage}). "
+            "Dev pairs are for iteration."
+        )
+    thresholds = results.get("thresholds") or (results.get("settings") or {}).get("thresholds")
+    preset = results.get("preset") or (results.get("settings") or {}).get("preset")
+    recommendation = _recommendation(
+        selected_paired, treatment_label.lower(), thresholds=thresholds,
+        tasks_count=tasks_count, preset=preset, valid=results.get("valid") is not False,
+        paired_held_out=held if held.get("pairs") else None,
+    )
+    return {
+        "overall_control": control, "overall_skill": skill, "overall_paired": paired,
+        "control": selected_metrics[0], "skill": selected_metrics[1],
+        "paired": selected_paired, "held_out": held, "tasks_count": tasks_count,
+        "basis_note": note, "coverage": coverage, "recommendation": recommendation,
+    }
 
 
 def _recommendation(
@@ -1698,6 +1760,12 @@ def _recommendation(
     # Pre-registered thresholds decide when present.
     if practical:
         if practical.startswith("Practical check: meets"):
+            if tasks_count is not None and tasks_count < 3:
+                return (
+                    _RECOMMENDATION_KIND["NEEDS MORE RUNS"], "NEEDS MORE RUNS",
+                    f"{basis}Only {tasks_count} task(s) contributed usable paired scores. "
+                    "Add representative tasks before shipping.",
+                )
             return (
                 _RECOMMENDATION_KIND["SHIP"],
                 "SHIP",
@@ -2484,51 +2552,25 @@ def build_report_blocks(
     }
     control_runs = runs_data["control"]
     treatment_runs = runs_data["treatment"]
-    if control_runs or treatment_runs:
-        control, skill = _paired_comparison_metrics(control_runs, treatment_runs)
-        paired = paired_comparison(control_runs, treatment_runs)
-    else:  # Summary-only results (older versions or hand-built input).
-        overall = results.get("overall", {})
-        control = {**calculate_metrics([]), **overall.get("control", {})}
-        skill = {**calculate_metrics([]), **overall.get("skill", {})}
-        paired = overall.get("paired") or {}
-
+    decision = build_decision_context(
+        results, control_runs, treatment_runs, run_root, label
+    )
+    control, skill, paired = (
+        decision["overall_control"], decision["overall_skill"], decision["overall_paired"]
+    )
     tasks_count = int(results.get("tasks_count") or len(results.get("tasks") or []) or 0)
-
-    # Dev vs held-out: split metadata comes from run records (task_split) or
-    # task_details. Held-out pairs are the honest estimate: they drive the
-    # headline verdict and the closing decision, never a dev-mixed average.
     task_splits = {
         str(td.get("id")): str(td.get("split", ""))
         for td in results.get("task_details") or []
         if isinstance(td, dict) and td.get("id")
     }
-    paired_held_out = (
-        _held_out_paired(control_runs, treatment_runs, task_splits)
-        if (control_runs or treatment_runs)
-        else None
-    )
-    held_out_pairs = int((paired_held_out or {}).get("pairs", 0))
-    held_out_scored = int(((paired_held_out or {}).get("score") or {}).get("n", 0))
-    held_out_coverage = f"{held_out_scored}/{held_out_pairs} usable score pair(s)"
-    rec_tasks_count = tasks_count or None
-    headline_paired = paired
-    headline_control, headline_skill = control, skill
-    split_basis_note = ""
-    if paired_held_out and paired_held_out.get("pairs"):
-        raw_held_c = [r for r in control_runs if _run_split(r, task_splits) == "held-out"]
-        raw_held_t = [r for r in treatment_runs if _run_split(r, task_splits) == "held-out"]
-        headline_paired = paired_held_out
-        headline_control, headline_skill = _paired_comparison_metrics(raw_held_c, raw_held_t)
-        rec_tasks_count = (
-            len({str(r.get("task_id", "")) for r in raw_held_c + raw_held_t})
-            or rec_tasks_count
-        )
-        split_basis_note = (
-            f"Headline and closing decision use held-out data only "
-            f"({held_out_coverage}). Dev pairs are for "
-            "iteration and shown separately in By split."
-        )
+    paired_held_out = decision["held_out"]
+    held_out_pairs = int(paired_held_out.get("pairs", 0))
+    held_out_coverage = decision["coverage"]
+    rec_tasks_count = decision["tasks_count"]
+    headline_paired = decision["paired"]
+    headline_control, headline_skill = decision["control"], decision["skill"]
+    split_basis_note = decision["basis_note"]
 
     blocks: list[tuple] = []
     thresholds = results.get("thresholds") or (results.get("settings") or {}).get("thresholds")
@@ -2933,8 +2975,9 @@ def build_report_blocks(
         blocks.append(
             (
                 "p",
-                "Static token footprint injected into agent system prompt and tools on every turn, "
-                "plus cumulative session overhead.",
+                "Estimated text footprint of the frozen skill files. Session and experiment "
+                "tax assume that footprint is carried each turn; these are estimates, "
+                "not measured prompt injection or spend.",
             )
         )
         t_bytes = context_tax.get("total_bytes", 0)
@@ -2945,14 +2988,14 @@ def build_report_blocks(
         exp_tokens = context_tax.get("total_experiment_tokens", 0)
         tax_rows = [
             ["Installed skill size", f"{t_bytes:,} bytes", f"{f_count} file(s)", ""],
-            ["Static prompt injection", f"~{s_tokens:,} tokens", "Per turn", "Context footprint"],
+            ["Estimated text footprint", f"~{s_tokens:,} tokens", "Skill files", "Estimate"],
             [
                 "Cumulative session tax",
                 f"~{sess_tokens:,} tokens",
                 f"Across {med_turns:.0f} median turn(s)",
-                "Session overhead",
+                "Estimated overhead",
             ],
-            ["Total experiment tax", f"~{exp_tokens:,} tokens", "All runs", "Spend overhead"],
+            ["Total experiment tax", f"~{exp_tokens:,} tokens", "All runs", "Estimated overhead"],
         ]
         blocks.append(
             (
@@ -3230,15 +3273,7 @@ def build_report_blocks(
     # Closing decision: the same statistics as the headline (held-out pairs
     # when they exist), then one bottom line. Reports must end with the
     # decision, not with reading notes.
-    rec_kind, rec_label, rec_reason = _recommendation(
-        paired,
-        subject,
-        thresholds=thresholds,
-        tasks_count=rec_tasks_count,
-        preset=preset,
-        valid=results.get("valid") is not False,
-        paired_held_out=paired_held_out,
-    )
+    rec_kind, rec_label, rec_reason = decision["recommendation"]
     blocks.append(("h", 2, "Closing decision"))
     if split_basis_note:
         blocks.append(
@@ -3591,13 +3626,17 @@ a{color:var(--note)}li{margin:4px 0}
 
 def build_html_report(results: dict[str, Any], run_root: Path | None = None) -> str:
     title, blocks = build_report_blocks(results, run_root)
+    return _render_html(title, blocks, str(results.get("timestamp", "")))
+
+
+def _render_html(title: str, blocks: list[tuple], date: str) -> str:
     parts = [
         "<!doctype html>",
         '<html lang="en"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width,initial-scale=1">',
         f"<title>{html.escape(title)}</title><style>{_CSS}</style></head><body><main>",
         f"<h1>{html.escape(title)}</h1>",
-        f'<p class="date">{html.escape(str(results.get("timestamp", "")))}</p>',
+        f'<p class="date">{html.escape(date)}</p>',
     ]
     for block in blocks:
         kind = block[0]
@@ -3641,15 +3680,17 @@ def build_html_report(results: dict[str, Any], run_root: Path | None = None) -> 
 
 def create_reports(results: dict[str, Any], run_root: Path) -> dict[str, Path]:
     """Write report.html, report.md, and report.qmd into run_root."""
-    builders = {
-        "html": ("report.html", build_html_report),
-        "md": ("report.md", build_markdown_report),
-        "qmd": ("report.qmd", build_quarto_report),
+    title, blocks = build_report_blocks(results, run_root)
+    date = str(results.get("timestamp", ""))
+    reports = {
+        "html": ("report.html", _render_html(title, blocks, date)),
+        "md": ("report.md", _render_markdown(title, blocks, "gfm", date)),
+        "qmd": ("report.qmd", _render_markdown(title, blocks, "quarto", date)),
     }
     paths: dict[str, Path] = {}
-    for key, (filename, build) in builders.items():
+    for key, (filename, content) in reports.items():
         paths[key] = run_root / filename
-        paths[key].write_text(build(results, run_root), encoding="utf-8")
+        atomic_write(paths[key], content)
     return paths
 
 

@@ -8,6 +8,8 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -30,12 +32,12 @@ class RunResult:
     cost: Optional[float]
     input_tokens: Optional[int]
     output_tokens: Optional[int]
-    tool_calls: int
+    tool_calls: Optional[int]
     exit_code: int
     error: Optional[str] = None
-    cache_read_tokens: Optional[int] = 0
-    cache_creation_tokens: Optional[int] = 0
-    num_turns: Optional[int] = 0
+    cache_read_tokens: Optional[int] = None
+    cache_creation_tokens: Optional[int] = None
+    num_turns: Optional[int] = None
     # True/False when the harness output says whether the agent loaded the skill;
     # None when it cannot be determined.
     skill_invoked: Optional[bool] = None
@@ -52,6 +54,7 @@ class ExecResult:
     exit_code: int
     duration: float
     timed_out: bool = False
+    cleanup_error: Optional[str] = None
 
 
 # Variables that tie a process to the Claude Code session it runs in. When skilldiff is
@@ -78,6 +81,59 @@ PARENT_SESSION_VARS = (
     "CLAUDE_CODE_REPORT_FINDINGS",
     "CLAUDE_CODE_DESKTOP_APP_VERSION",
 )
+
+# Container CLIs receive only explicit provider credentials/configuration.
+# Host session state, HOME, PATH and unrelated secrets stay on the host.
+CONTAINER_AUTH_VARS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+)
+
+
+def resolve_container_image(runtime: str, image: Optional[str], timeout: float = 20) -> str:
+    binary = shutil.which(runtime)
+    if not binary:
+        raise ValueError(f"Container runtime '{runtime}' not found on PATH")
+    proc = subprocess.run(
+        [binary, "image", "inspect", "--format", "{{.Id}}", image or "python:3.11"],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    identity = proc.stdout.strip()
+    if proc.returncode or not identity.startswith("sha256:") or "\n" in identity:
+        raise ValueError(
+            "Container image must be available locally and inspectable: "
+            + (proc.stderr.strip() or image or "python:3.11")
+        )
+    return identity
+
+
+def validate_container_auth(config: ExperimentConfig) -> None:
+    if config.isolation == "local":
+        return
+    harness = config.harness
+    if harness in {"claude", "codex"}:
+        if getattr(config, harness).auth != "api_key":
+            raise ValueError(f"Container {harness} execution requires {harness}.auth: api_key")
+        credentials = (
+            ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+            if harness == "claude"
+            else ("OPENAI_API_KEY",)
+        )
+        if not any(os.environ.get(key) for key in credentials):
+            raise ValueError(
+                f"Container {harness} api_key authentication requires {' or '.join(credentials)}"
+            )
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
@@ -115,7 +171,7 @@ def _failed_result(prompt: str, exc: Exception, duration: float) -> RunResult:
         cost=None,
         input_tokens=None,
         output_tokens=None,
-        tool_calls=0,
+        tool_calls=None,
         exit_code=-1,
         error=str(exc),
         status="error",
@@ -135,57 +191,6 @@ def _finalize_status(result: RunResult, execution: ExecResult) -> RunResult:
         result.status = "error"
         result.error = result.error or execution.stderr.strip() or f"exit code {result.exit_code}"
     return result
-
-
-def _is_transient_error(
-    stderr: str, stdout: str, data: Optional[dict[str, Any]] = None
-) -> bool:
-    if isinstance(data, dict):
-        if data.get("retryable") is True:
-            return True
-        err = str(data.get("error") or "")
-        if any(
-            msg in err
-            for msg in (
-                "operation timed out",
-                "i/o timeout",
-                "Unavailable",
-                "connection reset",
-                "broken pipe",
-                "transport is closing",
-            )
-        ):
-            return True
-    combined = f"{stderr}\n{stdout}"
-    return any(
-        msg in combined
-        for msg in (
-            "operation timed out",
-            "i/o timeout",
-            "Unavailable",
-            "connection reset by peer",
-            "broken pipe",
-            "transport is closing",
-        )
-    )
-
-
-def _reset_cwd_workspace(cwd: Path) -> None:
-    if (cwd / ".git").is_dir():
-        subprocess.run(
-            ["git", "reset", "--hard", "HEAD"],
-            cwd=cwd,
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        subprocess.run(
-            ["git", "clean", "-fd"],
-            cwd=cwd,
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
 
 
 class AgentRunner:
@@ -248,6 +253,8 @@ class AgentRunner:
         timeout: Optional[float],
         isolation: str = "local",
         container_image: Optional[str] = None,
+        readonly_mounts: Optional[list[tuple[Path, str]]] = None,
+        forward_env: Optional[list[str]] = None,
     ) -> ExecResult:
         """Run an agent CLI without a stdin pipe, with a timeout, and clean up its children.
 
@@ -256,28 +263,67 @@ class AgentRunner:
         """
         if self._cancelled:
             raise RuntimeError("Cancelled before the agent started")
+        if isolation not in {"local", "docker", "podman"}:
+            raise ValueError(f"Unsupported isolation mode: {isolation}")
+
+        started = time.monotonic()
+        deadline = started + timeout if timeout is not None else None
 
         exec_cmd = list(cmd)
+        env = dict(env)
+        container_name = None
+        runtime = None
         if sys.platform == "darwin" and isolation == "local" and shutil.which("caffeinate"):
             exec_cmd = ["caffeinate", "-i", *exec_cmd]
         elif isolation in {"docker", "podman"}:
-            if not shutil.which(isolation):
-                raise RuntimeError(f"Container runtime '{isolation}' not found on PATH")
-            img = container_image or "python:3.11"
+            runtime = shutil.which(isolation)
+            if not runtime:
+                raise ValueError(f"Container runtime '{isolation}' not found on PATH")
+            try:
+                img = (container_image if container_image and container_image.startswith("sha256:")
+                       else resolve_container_image(isolation, container_image,
+                            min(20, timeout) if timeout is not None else 20))
+            except subprocess.TimeoutExpired:
+                return ExecResult("", "Container image inspection timed out", -1,
+                                  round(time.monotonic() - started, 2), True)
+            container_name = "skilldiff-" + uuid.uuid4().hex
+            mappings = [(cwd.resolve(), "/workspace"), *(readonly_mounts or [])]
+
+            def translate(value: str) -> str:
+                for source, target in mappings:
+                    original = str(source.resolve())
+                    if value == original or value.startswith(original + "/"):
+                        return target + value[len(original) :]
+                return value
+
+            container_cmd = [translate(arg) for arg in cmd]
             exec_cmd = [
-                isolation,
+                runtime,
                 "run",
                 "--rm",
+                "--name",
+                container_name,
                 "-v",
                 f"{cwd.resolve()}:/workspace",
                 "-w",
                 "/workspace",
-                img,
-                *cmd,
             ]
+            for source, target in readonly_mounts or []:
+                exec_cmd.extend(["-v", f"{source.resolve()}:{target}:ro"])
+            container_env = {
+                key: env[key] for key in (*CONTAINER_AUTH_VARS, *(forward_env or [])) if key in env
+            }
+            # Pass values through the client's environment, keeping credentials out of argv.
+            for key, value in container_env.items():
+                env[key] = translate(value)
+                exec_cmd.extend(["-e", key])
+            exec_cmd.extend([img, *container_cmd])
 
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-            start = time.perf_counter()
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return ExecResult("", "Task timeout exhausted before process start", -1,
+                                  round(time.monotonic() - started, 2), True)
             proc = subprocess.Popen(
                 exec_cmd,
                 cwd=cwd,
@@ -290,8 +336,9 @@ class AgentRunner:
             with self._active_lock:
                 self._active.add(proc)
             timed_out = False
+            cleanup_error = None
             try:
-                exit_code = proc.wait(timeout=timeout)
+                exit_code = proc.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 _kill_group(proc)
@@ -300,15 +347,31 @@ class AgentRunner:
                 _kill_group(proc)
                 with self._active_lock:
                     self._active.discard(proc)
-            duration = round(time.perf_counter() - start, 2)
+                if container_name:
+                    try:
+                        cleanup = subprocess.run(
+                            [runtime, "rm", "-f", container_name],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                            timeout=10,
+                            check=False,
+                        )
+                        if cleanup.returncode and "No such container" not in cleanup.stderr:
+                            cleanup_error = "Container cleanup failed: " + cleanup.stderr.strip()
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        cleanup_error = "Container cleanup failed: " + str(exc)
+            duration = round(time.monotonic() - started, 2)
             out.seek(0)
             err.seek(0)
             return ExecResult(
                 stdout=out.read().decode("utf-8", errors="replace"),
-                stderr=err.read().decode("utf-8", errors="replace"),
-                exit_code=exit_code,
+                stderr=err.read().decode("utf-8", errors="replace") +
+                       ("\n" + cleanup_error if cleanup_error else ""),
+                exit_code=exit_code if not cleanup_error else (exit_code or -1),
                 duration=duration,
                 timed_out=timed_out,
+                cleanup_error=cleanup_error,
             )
 
     def _run_multi_turn(
@@ -321,38 +384,38 @@ class AgentRunner:
         skill_names: Optional[list[str]] = None,
         timeout: Optional[float] = None,
     ) -> RunResult:
-        total_duration = 0.0
-        total_cost = 0.0
-        total_input_tokens = 0
-        total_output_tokens = 0
-        total_cache_read = 0
-        total_cache_creation = 0
-        total_tool_calls = 0
-        total_turns = 0
+        started = time.monotonic()
+        deadline = started + timeout if timeout is not None else None
+        metrics = (
+            "cost",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "tool_calls",
+            "num_turns",
+        )
+        totals = dict.fromkeys(metrics, 0)
         skill_invoked = False
         skill_available = None
         transcripts: list[str] = []
         last_res: Optional[RunResult] = None
 
         for idx, turn_prompt in enumerate(prompts):
-            turn_timeout = timeout
-            if timeout is not None:
-                turn_timeout = max(5.0, timeout - total_duration)
+            turn_timeout = None if deadline is None else deadline - time.monotonic()
+            if turn_timeout is not None and turn_timeout <= 0:
+                if last_res is not None:
+                    last_res.status = "timeout"
+                    last_res.exit_code = -1
+                    last_res.error = "Task timeout exhausted before the next turn"
+                break
             res = self.run(turn_prompt, cwd, model, config, harness, skill_names, turn_timeout)
             last_res = res
-            total_duration += res.duration or 0.0
-            if res.cost is not None:
-                total_cost += res.cost
-            if res.input_tokens is not None:
-                total_input_tokens += res.input_tokens
-            if res.output_tokens is not None:
-                total_output_tokens += res.output_tokens
-            if res.cache_read_tokens is not None:
-                total_cache_read += res.cache_read_tokens
-            if res.cache_creation_tokens is not None:
-                total_cache_creation += res.cache_creation_tokens
-            total_tool_calls += res.tool_calls or 0
-            total_turns += (res.num_turns or 1)
+            for metric in metrics:
+                value = getattr(res, metric)
+                totals[metric] = (
+                    None if value is None or totals[metric] is None else totals[metric] + value
+                )
             if res.skill_invoked:
                 skill_invoked = True
             if res.skill_available is not None:
@@ -372,16 +435,16 @@ class AgentRunner:
             prompt="\n---\n".join(prompts),
             response=last_res.response,
             transcript="\n\n".join(transcripts),
-            duration=round(total_duration, 2),
-            cost=round(total_cost, 6),
-            input_tokens=total_input_tokens,
-            output_tokens=total_output_tokens,
-            tool_calls=total_tool_calls,
+            duration=round(time.monotonic() - started, 2),
+            cost=round(totals["cost"], 6) if totals["cost"] is not None else None,
+            input_tokens=totals["input_tokens"],
+            output_tokens=totals["output_tokens"],
+            tool_calls=totals["tool_calls"],
             exit_code=last_res.exit_code,
             error=last_res.error,
-            cache_read_tokens=total_cache_read,
-            cache_creation_tokens=total_cache_creation,
-            num_turns=total_turns,
+            cache_read_tokens=totals["cache_read_tokens"],
+            cache_creation_tokens=totals["cache_creation_tokens"],
+            num_turns=totals["num_turns"],
             skill_invoked=skill_invoked,
             skill_available=skill_available,
             status=last_res.status,
@@ -397,6 +460,13 @@ class AgentRunner:
         skill_names: Optional[list[str]] = None,
         timeout: Optional[float] = None,
     ) -> RunResult:
+        timeout = timeout if timeout is not None else getattr(config, "timeout_seconds", None)
+        if isinstance(config, ExperimentConfig):
+            validate_container_auth(config)
+        if timeout is not None and timeout <= 0:
+            result = _failed_result(str(prompt), TimeoutError("Task timeout exhausted"), 0.0)
+            result.status = "timeout"
+            return result
         if isinstance(prompt, list):
             if not prompt:
                 return _failed_result("", ValueError("Empty prompt list"), 0.0)
@@ -451,6 +521,22 @@ class AgentRunner:
             codex_cfg = getattr(config, "codex", CodexConfig())
             opencode_cfg = getattr(config, "opencode", OpenCodeConfig())
             antigravity_cfg = getattr(config, "antigravity", AntigravityConfig())
+
+        if isolation in {"docker", "podman"}:
+            # An explicitly configured bin_path is a path in the image. Automatically
+            # discovered host paths instead refer to the same executable name in PATH.
+            configs = {
+                "claude": claude_cfg,
+                "codex": codex_cfg,
+                "opencode": opencode_cfg,
+                "antigravity": antigravity_cfg,
+            }
+            configs = {key: deepcopy(value) for key, value in configs.items()}
+            for key, value in configs.items():
+                if not value.bin_path:
+                    value.bin_path = Path(self.binary_for(key)).name
+            claude_cfg, codex_cfg = configs["claude"], configs["codex"]
+            opencode_cfg, antigravity_cfg = configs["opencode"], configs["antigravity"]
 
         names = skill_names or []
         if active_harness == "codex":
@@ -621,6 +707,8 @@ class AgentRunner:
         output_tokens = 0
         tool_calls = 0
         num_turns = 0
+        saw_usage = saw_cost = False
+        input_complete = output_complete = cache_complete = True
 
         for line in stdout.splitlines():
             line = line.strip()
@@ -654,6 +742,14 @@ class AgentRunner:
 
             usage = item.get("usage")
             if isinstance(usage, dict):
+                saw_usage = True
+                input_complete = input_complete and any(
+                    k in usage for k in ("input_tokens", "prompt_tokens")
+                )
+                output_complete = output_complete and any(
+                    k in usage for k in ("output_tokens", "completion_tokens")
+                )
+                cache_complete = cache_complete and "cached_input_tokens" in usage
                 if item_type == "turn.completed":
                     input_tokens += int(usage.get("input_tokens") or 0)
                     cached_tokens += int(usage.get("cached_input_tokens") or 0)
@@ -671,6 +767,7 @@ class AgentRunner:
             if "cost" in item:
                 try:
                     cost = float(item["cost"])
+                    saw_cost = True
                 except (ValueError, TypeError):
                     pass
 
@@ -688,14 +785,14 @@ class AgentRunner:
             response=response_texts[-1] if response_texts else stdout,
             transcript=f"STDOUT:\n{stdout}\n\nSTDERR:\n{execution.stderr}",
             duration=execution.duration,
-            cost=cost,
-            input_tokens=uncached_input,
-            output_tokens=output_tokens,
-            tool_calls=tool_calls,
+            cost=cost if saw_cost else None,
+            input_tokens=uncached_input if saw_usage and input_complete else None,
+            output_tokens=output_tokens if saw_usage and output_complete else None,
+            tool_calls=tool_calls if num_turns or tool_calls else None,
             exit_code=execution.exit_code,
             error=execution.stderr if execution.exit_code != 0 else None,
-            cache_read_tokens=cached_tokens,
-            num_turns=num_turns,
+            cache_read_tokens=cached_tokens if saw_usage and cache_complete else None,
+            num_turns=num_turns or None,
         )
         return _finalize_status(result, execution)
 
@@ -713,7 +810,7 @@ class AgentRunner:
         target_model = model
         if opencode_cfg.service == "go" or opencode_cfg.provider == "opencode-go":
             if target_model.startswith("opencode/"):
-                target_model = f"opencode-go/{target_model[len('opencode/'):]}"
+                target_model = f"opencode-go/{target_model[len('opencode/') :]}"
             elif "/" not in target_model:
                 target_model = f"opencode-go/{target_model}"
         elif "/" not in target_model and opencode_cfg.provider:
@@ -749,6 +846,8 @@ class AgentRunner:
         cache_read = 0
         cache_write = 0
         tool_calls = 0
+        saw_cost = saw_stream = False
+        saw_input = saw_output = saw_cache_read = saw_cache_write = False
 
         for line in stdout.splitlines():
             line = line.strip()
@@ -761,6 +860,12 @@ class AgentRunner:
             if not isinstance(item, dict):
                 continue
             item_type = str(item.get("type", ""))
+            saw_stream = saw_stream or item_type in {
+                "step_start",
+                "step_finish",
+                "step-start",
+                "step-finish",
+            }
             if "tool" in item_type or item.get("tool"):
                 tool_calls += 1
 
@@ -771,6 +876,10 @@ class AgentRunner:
                     response_texts.append(text)
                 tokens = part.get("tokens")
                 if isinstance(tokens, dict):
+                    saw_input = saw_input or "input" in tokens
+                    saw_output = saw_output or "output" in tokens
+                    saw_cache_read = saw_cache_read or "read" in (tokens.get("cache") or {})
+                    saw_cache_write = saw_cache_write or "write" in (tokens.get("cache") or {})
                     input_tokens += int(tokens.get("input") or 0)
                     output_tokens += int(tokens.get("output") or 0)
                     cache = tokens.get("cache")
@@ -780,12 +889,14 @@ class AgentRunner:
                 if "cost" in part:
                     try:
                         cost += float(part["cost"])
+                        saw_cost = True
                     except (ValueError, TypeError):
                         pass
 
             if "cost" in item:
                 try:
                     cost += float(item["cost"])
+                    saw_cost = True
                 except (ValueError, TypeError):
                     pass
 
@@ -797,14 +908,14 @@ class AgentRunner:
             response="\n".join(response_texts) if response_texts else stdout,
             transcript=f"STDOUT:\n{stdout}\n\nSTDERR:\n{execution.stderr}",
             duration=execution.duration,
-            cost=round(cost, 6),
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            tool_calls=tool_calls,
+            cost=round(cost, 6) if saw_cost else None,
+            input_tokens=input_tokens if saw_input else None,
+            output_tokens=output_tokens if saw_output else None,
+            tool_calls=tool_calls if saw_stream or tool_calls else None,
             exit_code=execution.exit_code,
             error=execution.stderr if execution.exit_code != 0 else None,
-            cache_read_tokens=cache_read,
-            cache_creation_tokens=cache_write,
+            cache_read_tokens=cache_read if saw_cache_read else None,
+            cache_creation_tokens=cache_write if saw_cache_write else None,
         )
         return _finalize_status(result, execution)
 
@@ -833,64 +944,54 @@ class AgentRunner:
         if antigravity_cfg.extra_args:
             cmd.extend(antigravity_cfg.extra_args)
 
-        max_attempts = 2
-        for attempt in range(max_attempts):
-            start_time = time.perf_counter()
-            try:
-                execution = self._exec(
-                    cmd,
-                    cwd,
-                    os.environ.copy(),
-                    timeout,
-                    isolation=isolation,
-                    container_image=container_image,
+        start_time = time.perf_counter()
+        try:
+            execution = self._exec(
+                cmd,
+                cwd,
+                os.environ.copy(),
+                timeout,
+                isolation=isolation,
+                container_image=container_image,
+            )
+        except Exception as exc:
+            return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
+
+        stdout = execution.stdout
+        exit_code = execution.exit_code
+        duration = execution.duration
+        response = stdout
+        cost = input_tokens = output_tokens = tool_calls = num_turns = None
+        cache_read_tokens = None
+        data = None
+        try:
+            data = json.loads(stdout)
+            if isinstance(data, dict):
+                response = data.get("response") or data.get("result") or stdout
+                raw_cost = data.get("total_cost_usd", data.get("cost"))
+                cost = float(raw_cost) if raw_cost is not None else None
+                usage = data.get("usage") or {}
+                input_tokens = (
+                    int(usage["input_tokens"]) if usage.get("input_tokens") is not None else None
                 )
-            except Exception as exc:
-                if attempt + 1 < max_attempts and _is_transient_error(str(exc), ""):
-                    _reset_cwd_workspace(cwd)
-                    time.sleep(2)
-                    continue
-                return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
-
-            stdout = execution.stdout
-            exit_code = execution.exit_code
-            duration = execution.duration
-            response = stdout
-            cost = 0.0
-            input_tokens = 0
-            output_tokens = 0
-            tool_calls = 0
-            num_turns = 0
-            data = None
-
-            try:
-                data = json.loads(stdout)
-                if isinstance(data, dict):
-                    response = data.get("response") or data.get("result") or stdout
-                    cost = float(data.get("total_cost_usd") or data.get("cost") or 0.0)
-                    if "duration_seconds" in data:
-                        try:
-                            duration = float(data["duration_seconds"])
-                        except (ValueError, TypeError):
-                            pass
-                    usage = data.get("usage") or {}
-                    input_tokens = int(usage.get("input_tokens", 0))
-                    output_tokens = int(usage.get("output_tokens", 0))
-                    cache_read_tokens = int(usage.get("cache_read_tokens", 0))
-                    num_turns = int(data.get("num_turns") or 0)
-                    raw_tool_calls = data.get("tool_calls_count")
-                    tool_calls = int(raw_tool_calls) if raw_tool_calls is not None else None
-                    if data.get("status") and data.get("status") != "SUCCESS" and exit_code == 0:
-                        exit_code = 1
-            except (json.JSONDecodeError, ValueError, TypeError):
-                cache_read_tokens = 0
-
-            is_transient = exit_code != 0 and _is_transient_error(execution.stderr, stdout, data)
-            if is_transient and attempt + 1 < max_attempts and not execution.timed_out:
-                _reset_cwd_workspace(cwd)
-                time.sleep(2)
-                continue
-            break
+                output_tokens = (
+                    int(usage["output_tokens"]) if usage.get("output_tokens") is not None else None
+                )
+                cache_read_tokens = (
+                    int(usage["cache_read_tokens"])
+                    if usage.get("cache_read_tokens") is not None
+                    else None
+                )
+                num_turns = int(data["num_turns"]) if data.get("num_turns") is not None else None
+                tool_calls = (
+                    int(data["tool_calls_count"])
+                    if data.get("tool_calls_count") is not None
+                    else None
+                )
+                if data.get("status") and data.get("status") != "SUCCESS" and exit_code == 0:
+                    exit_code = 1
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
 
         transcript = f"STDOUT:\n{stdout}\n\nSTDERR:\n{execution.stderr}"
         if isinstance(data, dict):
@@ -954,6 +1055,8 @@ class AgentRunner:
             cost=mock_cost,
             input_tokens=100,
             output_tokens=50,
+            cache_read_tokens=0,
+            cache_creation_tokens=0,
             tool_calls=1,
             exit_code=0,
             num_turns=1,
@@ -974,13 +1077,13 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     """Parse `claude -p --output-format stream-json` (or plain `json`) output."""
     parsed: dict[str, Any] = {
         "response": None,
-        "cost": 0.0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_read_tokens": 0,
-        "cache_creation_tokens": 0,
-        "tool_calls": 0,
-        "num_turns": 0,
+        "cost": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "cache_read_tokens": None,
+        "cache_creation_tokens": None,
+        "tool_calls": None,
+        "num_turns": None,
         "is_error": False,
         "error": None,
         "skill_invoked": False,
@@ -1015,6 +1118,8 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             if isinstance(skills, list):
                 parsed["skill_available"] = any(_skill_matches(s, skill_names) for s in skills)
         elif event_type == "assistant":
+            if parsed["tool_calls"] is None:
+                parsed["tool_calls"] = 0
             content = (event.get("message") or {}).get("content")
             if not isinstance(content, list):
                 continue
@@ -1036,13 +1141,19 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             saw_result = True
             result_text = event.get("result")
             parsed["response"] = result_text if isinstance(result_text, str) else last_text
-            parsed["cost"] = float(event.get("total_cost_usd") or event.get("cost") or 0.0)
+            raw_cost = event.get("total_cost_usd", event.get("cost"))
+            parsed["cost"] = float(raw_cost) if raw_cost is not None else None
             usage = event.get("usage") or {}
-            parsed["input_tokens"] = int(usage.get("input_tokens") or 0)
-            parsed["output_tokens"] = int(usage.get("output_tokens") or 0)
-            parsed["cache_read_tokens"] = int(usage.get("cache_read_input_tokens") or 0)
-            parsed["cache_creation_tokens"] = int(usage.get("cache_creation_input_tokens") or 0)
-            parsed["num_turns"] = int(event.get("num_turns") or 0)
+            for target, source in (
+                ("input_tokens", "input_tokens"),
+                ("output_tokens", "output_tokens"),
+                ("cache_read_tokens", "cache_read_input_tokens"),
+                ("cache_creation_tokens", "cache_creation_input_tokens"),
+            ):
+                parsed[target] = int(usage[source]) if usage.get(source) is not None else None
+            parsed["num_turns"] = (
+                int(event["num_turns"]) if event.get("num_turns") is not None else None
+            )
             subtype = str(event.get("subtype") or "")
             if event.get("is_error") or subtype.startswith("error"):
                 parsed["is_error"] = True
