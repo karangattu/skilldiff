@@ -143,12 +143,24 @@ def _get_turns(run: dict[str, Any]) -> Optional[float]:
         return None
 
 
+def _get_tool_calls(run: dict[str, Any]) -> Optional[float]:
+    if not usable_agent_run(run):
+        return None
+    if "tool_calls" not in run or run.get("tool_calls") is None:
+        return None
+    try:
+        return float(run.get("tool_calls"))
+    except (TypeError, ValueError):
+        return None
+
+
 METRICS: dict[str, Callable[[dict[str, Any]], Optional[float]]] = {
     "score": _get_score,
     "cost": _get_cost,
     "duration": _get_duration,
     "tokens": _total_tokens,
     "turns": _get_turns,
+    "tool_calls": _get_tool_calls,
 }
 
 

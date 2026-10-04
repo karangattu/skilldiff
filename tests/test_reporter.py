@@ -75,6 +75,77 @@ def test_render_report_table():
     assert "Models: 1    Tasks: 3    Runs per arm: 3" in table
 
 
+def test_render_report_table_with_tool_calls_and_turns():
+    c_metrics = {
+        "task_score": 0.70,
+        "success_count": 7,
+        "total_count": 10,
+        "median_cost": 0.40,
+        "median_time": 90.0,
+        "median_tool_calls": 8.0,
+        "median_turns": 4.0,
+    }
+    s_metrics = {
+        "task_score": 0.90,
+        "success_count": 9,
+        "total_count": 10,
+        "median_cost": 0.35,
+        "median_time": 80.0,
+        "median_tool_calls": 3.0,
+        "median_turns": 2.0,
+    }
+    paired = {
+        "pairs": 10,
+        "score": {"mean_diff": 0.20, "ci_low": 0.05, "ci_high": 0.35, "n": 10},
+        "success": {"control": 7, "treatment": 9, "n": 10},
+        "cost": {"mean_diff": -0.05, "ci_low": -0.08, "ci_high": -0.02, "n": 10},
+        "duration": {"mean_diff": -10.0, "ci_low": -15.0, "ci_high": -5.0, "n": 10},
+        "tool_calls": {"mean_diff": -5.0, "ci_low": -7.0, "ci_high": -3.0, "n": 10},
+        "turns": {"mean_diff": -2.0, "ci_low": -3.0, "ci_high": -1.0, "n": 10},
+    }
+    table = render_report_table(
+        experiment_name="tool-eval",
+        control_metrics=c_metrics,
+        skill_metrics=s_metrics,
+        models_count=1,
+        tasks_count=2,
+        runs_per_arm=5,
+        paired=paired,
+    )
+    assert "Tool calls (median)" in table
+    assert "8" in table
+    assert "3" in table
+    assert "-5.0 (mean)" in table
+    assert "Fewer tool calls" in table
+    assert "Turns (median)" in table
+    assert "4" in table
+    assert "2" in table
+    assert "-2.0 (mean)" in table
+    assert "Fewer turns" in table
+
+
+def test_metric_rows_includes_tool_calls():
+    from skilldiff.reporter import _metric_rows
+
+    control = {"median_tool_calls": 6.0, "median_turns": 3.0}
+    skill = {"median_tool_calls": 4.0, "median_turns": 2.0}
+    paired = {
+        "pairs": 5,
+        "tool_calls": {"mean_diff": -2.0, "ci_low": -3.0, "ci_high": -1.0, "n": 5},
+        "turns": {"mean_diff": -1.0, "ci_low": -2.0, "ci_high": 0.0, "n": 5},
+    }
+    rows = _metric_rows(control, skill, paired)
+    labels = [r[0] for r in rows]
+    assert "Tool calls (median)" in labels
+    assert "Turns (median)" in labels
+    tc_row = rows[labels.index("Tool calls (median)")]
+    assert tc_row[1] == "6"
+    assert tc_row[2] == "4"
+    assert tc_row[3][0] == "-2.0"
+    assert tc_row[5] == "Fewer tool calls"
+
+
+
 def test_build_quarto_report_shows_overall_models_and_tasks():
     results = {
         "name": "api-skill",
@@ -174,6 +245,8 @@ def test_calculate_metrics_computes_totals():
     assert m["total_input_tokens"] == 2500
     assert m["total_output_tokens"] == 500
     assert m["total_tool_calls"] == 8
+    assert m["median_tool_calls"] == 4.0
+    assert m["tool_calls_known_count"] == 2
 
 
 def test_format_checks_passed():
@@ -540,15 +613,19 @@ def test_evaluation_table_totals_by_app_and_arm():
     table = reporter.render_evaluation_table(results)
     assert (
         "| App | Arm | Score | Time | Input | Cached input | Output | Total tokens | "
-        "Tool calls | Skill loaded | API-equivalent cost |"
+        "Tool calls | Turns | Skill loaded | API-equivalent cost |"
     ) in table
     assert (
         "| t | Control | 75% | 20s | 200,000 | 4,020,000 | 40,000 | 4,260,000 | "
-        "6 | 0/2 | $2.48 |"
+        "6 | 8 | 0/2 | $2.48 |"
     ) in table
     assert (
         "| t | Skill | 100% | 20s | 100,000 | 2,000,000 | 20,000 | 2,120,000 | "
-        "4 | 2/2 | $1.20 |"
+        "4 | 8 | 2/2 | $1.20 |"
+    ) in table
+    assert (
+        "| t | Δ (Skill - Control) | +25 pp | 0s | -100,000 | -2,020,000 | -20,000 | "
+        "-2,140,000 | -2 | 0 |  | -$1.28 |"
     ) in table
     for build in (reporter.build_markdown_report, reporter.build_quarto_report):
         report = build(results)
@@ -560,10 +637,14 @@ def test_evaluation_table_totals_by_app_and_arm():
 def test_evaluation_table_preserves_unknown_metrics_and_cost():
     control = [{"task_id": "unknown", "arm": "control", "model": "m"}]
     table = reporter.render_evaluation_table(_results(control, [], pricing=_PRICING))
-    assert "| unknown | Control | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |" in table
-    control[0].update(input_tokens=0, output_tokens=0, tool_calls=0, skill_invoked=False)
+    assert (
+        "| unknown | Control | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |"
+    ) in table
+    control[0].update(
+        input_tokens=0, output_tokens=0, tool_calls=0, num_turns=0, skill_invoked=False
+    )
     table = reporter.render_evaluation_table(_results(control, []))
-    assert "| unknown | Control | N/A | N/A | 0 | 0 | 0 | 0 | 0 | no | N/A |" in table
+    assert "| unknown | Control | N/A | N/A | 0 | 0 | 0 | 0 | 0 | 0 | no | N/A |" in table
 
 
 def test_skill_summary_columns_match_rendered_evaluation_table():
@@ -601,11 +682,11 @@ def test_evaluation_table_does_not_present_partial_totals_as_complete():
     control[1]["skill_invoked"] = None
     table = reporter.render_evaluation_table(_results(control, [], pricing=pricing))
     assert "| t | Control | 100% | N/A |" in table
-    assert "| N/A | 0/1 (1 unknown) | N/A |" in table
+    assert "| N/A | 8 | 0/1 (1 unknown) | N/A |" in table
 
     control[1]["output_tokens"] = None
     table = reporter.render_evaluation_table(_results(control, [], pricing=_PRICING))
-    assert "| N/A | N/A | N/A | N/A | 0/1 (1 unknown) | N/A |" in table
+    assert "| N/A | N/A | N/A | 8 | 0/1 (1 unknown) | N/A |" in table
 
     control[1]["input_tokens"] = None
     control[1]["cache_read_tokens"] = None

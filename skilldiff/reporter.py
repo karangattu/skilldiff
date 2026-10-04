@@ -76,9 +76,12 @@ def calculate_metrics(runs_data: list[dict[str, Any]]) -> dict[str, Any]:
             "median_time": None,
             "median_tokens": None,
             "median_turns": None,
+            "median_tool_calls": None,
             "cost_known_count": 0,
             "time_known_count": 0,
             "tokens_known_count": 0,
+            "turns_known_count": 0,
+            "tool_calls_known_count": 0,
             "total_duration": None,
             "total_cost": None,
             "total_input_tokens": 0,
@@ -104,6 +107,11 @@ def calculate_metrics(runs_data: list[dict[str, Any]]) -> dict[str, Any]:
         for r in analyzed
         if "num_turns" in r and r.get("num_turns") is not None
     ]
+    tool_calls = [
+        int(r["tool_calls"])
+        for r in analyzed
+        if "tool_calls" in r and r.get("tool_calls") is not None
+    ]
     known = [r for r in analyzed if r.get("skill_invoked") is not None]
     grade_counts: dict[str, int] = {}
     for r in runs_data:
@@ -120,9 +128,12 @@ def calculate_metrics(runs_data: list[dict[str, Any]]) -> dict[str, Any]:
         "median_time": statistics.median(times) if times else None,
         "median_tokens": statistics.median(tokens) if tokens else None,
         "median_turns": statistics.median(turns) if turns else None,
+        "median_tool_calls": statistics.median(tool_calls) if tool_calls else None,
         "cost_known_count": len(costs),
         "time_known_count": len(times),
         "tokens_known_count": len(tokens),
+        "turns_known_count": len(turns),
+        "tool_calls_known_count": len(tool_calls),
         "total_duration": sum(times) if times else None,
         "total_cost": round(sum(costs), 4) if costs else None,
         "total_input_tokens": sum(int(r.get("input_tokens", 0) or 0) for r in analyzed),
@@ -175,6 +186,7 @@ def _paired_metric_runs(
         "tokens": _total_tokens_opt,
         "token_breakdown": complete_tokens,
         "turns": lambda run: _known_float(run, "num_turns"),
+        "tool_calls": lambda run: _known_float(run, "tool_calls"),
     }
     getter = getters[metric]
     pairs = [
@@ -204,7 +216,8 @@ def _paired_comparison_metrics(
             "total_input_tokens", "total_output_tokens", "total_cache_read_tokens",
             "total_cache_creation_tokens",
         ),
-        "turns": ("median_turns",),
+        "turns": ("median_turns", "turns_known_count"),
+        "tool_calls": ("median_tool_calls", "total_tool_calls", "tool_calls_known_count"),
     }
     for metric, names in fields.items():
         metric_control, metric_treatment = _paired_metric_runs(
@@ -248,6 +261,13 @@ def format_time_diff(diff_val: float) -> str:
     return f"{sign}{iv}s"
 
 
+def _fmt_count_delta(value: float) -> str:
+    value = float(value)
+    if abs(value) < 0.05:
+        return "0"
+    return f"{value:+.1f}" if abs(value) < 10 else f"{int(round(value)):+d}"
+
+
 def _fmt_tokens(value: float) -> str:
     value = float(value)
     if abs(value) >= 1_000_000:
@@ -281,6 +301,8 @@ def _fmt_ci(metric: dict[str, Any], kind: str, total_pairs: Optional[int] = None
         base = f"{format_cost_diff(lo)} to {format_cost_diff(hi)}"
     elif kind == "duration":
         base = f"{lo:+.0f}s to {hi:+.0f}s"
+    elif kind in ("turns", "tool_calls"):
+        base = f"{_fmt_count_delta(lo)} to {_fmt_count_delta(hi)}"
     else:
         base = f"{_signed_tokens(lo)} to {_signed_tokens(hi)}"
     return base + suffix
@@ -335,6 +357,15 @@ def _fmt_tokens_opt(val: Any) -> str:
         return "N/A"
 
 
+def _fmt_count_opt(val: Any) -> str:
+    if val is None:
+        return "N/A"
+    try:
+        return f"{float(val):g}"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
 def _paired_mean(paired: dict[str, Any], key: str) -> Optional[float]:
     m = (paired or {}).get(key) or {}
     v = m.get("mean_diff", None)
@@ -355,6 +386,7 @@ _READING_BETTER = {
     "duration": "Faster",
     "tokens": "Fewer tokens",
     "turns": "Fewer turns",
+    "tool_calls": "Fewer tool calls",
 }
 _READING_WORSE = {
     "score": "Skill loses",
@@ -363,6 +395,7 @@ _READING_WORSE = {
     "duration": "Slower",
     "tokens": "More tokens",
     "turns": "More turns",
+    "tool_calls": "More tool calls",
 }
 _READING_SAME = {
     "score": "No clear difference",
@@ -371,6 +404,7 @@ _READING_SAME = {
     "duration": "No clear difference",
     "tokens": "No clear difference",
     "turns": "No clear difference",
+    "tool_calls": "No clear difference",
 }
 
 
@@ -656,7 +690,7 @@ def render_report_table(
     title = f"{experiment_name} ({model_name})" if model_name else experiment_name
 
     def row(label: str, c: str, s: str, d: str, r: str = "") -> str:
-        return f"{label:<18} {c:>8} {s:>10} {d:>16} {r:<28}"
+        return f"{label:<20} {c:>8} {s:>10} {d:>16} {r:<28}"
 
     def _term_reading(
         key: str, kind: str, diff: Optional[float], hib: bool, fallback: Optional[float] = None
@@ -708,7 +742,7 @@ def render_report_table(
     lines = [
         title,
         "",
-        f"{'Metric':<18} {'Control':>8} {treatment_label:>10} "
+        f"{'Metric':<20} {'Control':>8} {treatment_label:>10} "
         f"{'Paired mean Δ':>16} {'Reading':<28}",
         row("Task score", c_score_txt, s_score_txt, diff_score_txt, score_reading),
         row("Success", c_succ, s_succ,
@@ -788,6 +822,30 @@ def render_report_table(
                         else None
                     ),
                 ),
+            )
+        )
+    for label, key, field in (
+        ("Tool calls (median)", "tool_calls", "median_tool_calls"),
+        ("Turns (median)", "turns", "median_turns"),
+    ):
+        c_val, s_val = control_metrics.get(field), skill_metrics.get(field)
+        if c_val is None and s_val is None and not ((paired or {}).get(key) or {}).get("n"):
+            continue
+        median_diff = (
+            float(s_val) - float(c_val) if c_val is not None and s_val is not None else None
+        )
+        paired_diff = _paired_mean(paired or {}, key)
+        if paired_diff is not None:
+            diff_txt = _fmt_count_delta(paired_diff) + " (mean)"
+        else:
+            diff_txt = _fmt_count_delta(median_diff) if median_diff is not None else "N/A"
+        lines.append(
+            row(
+                label,
+                _fmt_count_opt(c_val),
+                _fmt_count_opt(s_val),
+                diff_txt,
+                _term_reading(key, key, paired_diff, False, fallback=median_diff),
             )
         )
     if skill_metrics.get("skill_known_count"):
@@ -1169,8 +1227,8 @@ def _paired_diff_text(
     elif kind == "tokens":
         txt = _signed_tokens(mean_diff)
         tone = _tone(mean_diff, False, eps=0.5)
-    else:  # turns
-        txt = f"{mean_diff:+.1f}" if abs(mean_diff) < 10 else f"{int(round(mean_diff)):+d}"
+    else:
+        txt = _fmt_count_delta(mean_diff)
         tone = _tone(mean_diff, False)
     return txt, tone, _fmt_ci(metric, kind, total_pairs=total)
 
@@ -1185,6 +1243,7 @@ def _summary_fallbacks(
         "duration": None,
         "tokens": None,
         "turns": None,
+        "tool_calls": None,
     }
     if total_pairs:
         return out
@@ -1196,6 +1255,7 @@ def _summary_fallbacks(
         ("duration", "median_time", "median_time"),
         ("tokens", "median_tokens", "median_tokens"),
         ("turns", "median_turns", "median_turns"),
+        ("tool_calls", "median_tool_calls", "median_tool_calls"),
     ):
         c_val, s_val = control.get(c_key), skill.get(s_key)
         if c_val is not None and s_val is not None:
@@ -1240,6 +1300,7 @@ def _metric_rows(
     time_fallback = fb["duration"]
     tok_fallback = fb["tokens"]
     turn_fallback = fb["turns"]
+    tc_fallback = fb["tool_calls"]
 
     score_txt, score_tone, score_ci = _paired_diff_text(
         paired, "score", "score", fallback=score_fallback, higher_is_better=True
@@ -1249,6 +1310,9 @@ def _metric_rows(
         paired, "duration", "duration", fallback=time_fallback
     )
     tok_txt, tok_tone, tok_ci = _paired_diff_text(paired, "tokens", "tokens", fallback=tok_fallback)
+    tc_txt, tc_tone, tc_ci = _paired_diff_text(
+        paired, "tool_calls", "tool_calls", fallback=tc_fallback
+    )
     turn_txt, turn_tone, turn_ci = _paired_diff_text(
         paired, "turns", "turns", fallback=turn_fallback
     )
@@ -1262,6 +1326,7 @@ def _metric_rows(
     cost_reading = _metric_reading("cost", "cost", cost_fallback)
     time_reading = _metric_reading("duration", "duration", time_fallback)
     tok_reading = _metric_reading("tokens", "tokens", tok_fallback)
+    tc_reading = _metric_reading("tool_calls", "tool_calls", tc_fallback)
     turn_reading = _metric_reading("turns", "turns", turn_fallback)
 
     paired_success = paired.get("success") or {}
@@ -1358,18 +1423,21 @@ def _metric_rows(
                 tok_reading,
             ]
         )
-    if (
-        control.get("median_turns") is not None
-        or skill.get("median_turns") is not None
-        or ((paired or {}).get("turns") or {}).get("n")
+    for label, key, field, txt, tone, ci, reading in (
+        ("Tool calls (median)", "tool_calls", "median_tool_calls",
+         tc_txt, tc_tone, tc_ci, tc_reading),
+        ("Turns (median)", "turns", "median_turns",
+         turn_txt, turn_tone, turn_ci, turn_reading),
     ):
-        c_turn = (
-            f"{control['median_turns']:g}" if control.get("median_turns") is not None else "N/A"
-        )
-        s_turn = f"{skill['median_turns']:g}" if skill.get("median_turns") is not None else "N/A"
-        rows.append(
-            ["Turns (median)", c_turn, s_turn, (turn_txt, turn_tone), turn_ci, turn_reading]
-        )
+        if (
+            control.get(field) is not None
+            or skill.get(field) is not None
+            or ((paired or {}).get(key) or {}).get("n")
+        ):
+            rows.append([
+                label, _fmt_count_opt(control.get(field)), _fmt_count_opt(skill.get(field)),
+                (txt, tone), ci, reading,
+            ])
     if skill.get("skill_known_count") or control.get("skill_known_count"):
         rows.append(
             [
@@ -1463,6 +1531,22 @@ def _decision_rows(
             "tokens",
             "tokens",
             fb["tokens"],
+        ),
+        row(
+            "Tool calls (median)",
+            _fmt_count_opt(control.get("median_tool_calls")),
+            _fmt_count_opt(skill.get("median_tool_calls")),
+            "tool_calls",
+            "tool_calls",
+            fb["tool_calls"],
+        ),
+        row(
+            "Turns (median)",
+            _fmt_count_opt(control.get("median_turns")),
+            _fmt_count_opt(skill.get("median_turns")),
+            "turns",
+            "turns",
+            fb["turns"],
         ),
         [
             "Adoption (skill used)",
@@ -1964,18 +2048,52 @@ def _skill_cell(run: dict[str, Any]) -> Cell:
 
 _EVALUATION_HEADERS = [
     "App", "Arm", "Score", "Time", "Input", "Cached input", "Output",
-    "Total tokens", "Tool calls", "Skill loaded", "API-equivalent cost",
+    "Total tokens", "Tool calls", "Turns", "Skill loaded", "API-equivalent cost",
 ]
-_EVALUATION_ALIGN = ["l", "l", "r", "r", "r", "r", "r", "r", "r", "l", "r"]
+_EVALUATION_ALIGN = ["l", "l", "r", "r", "r", "r", "r", "r", "r", "r", "l", "r"]
 _EVALUATION_NOTE = (
     "App is the task ID (with the model when multiple models were evaluated). "
     "Control and skill scores use pairs graded on both sides. Time, tokens, and cost "
-    "use matched eligible pairs with those measurements; tool calls use matched "
-    "eligible agent runs. Excluded and unpaired attempts remain in Run details. "
+    "use matched eligible pairs with those measurements; tool calls and turns use matched "
+    "eligible agent runs. The Δ row is the second arm minus the first over those same "
+    "pairs. Excluded and unpaired attempts remain in Run details. "
     "Cached input includes cache reads and cache writes. Skill loaded covers all "
     "eligible runs, including unpaired runs. A lone arm and the optional baseline "
-    "show descriptive totals. N/A means a measurement or recorded pricing is missing."
+    "show descriptive totals. Tool calls and turns are counted by each harness "
+    "differently, so compare them within a run, not across harnesses. "
+    "N/A means a measurement or recorded pricing is missing."
 )
+
+
+def _fmt_int_opt(val: Optional[int]) -> str:
+    return "N/A" if val is None else f"{val:,}"
+
+
+def _fmt_int_delta(val: int) -> str:
+    return "0" if val == 0 else f"{val:+,}"
+
+
+def _evaluation_delta_row(
+    app: str, label: str, first: dict[str, Any], second: dict[str, Any], currency: str
+) -> list[Cell]:
+    def diff(key: str) -> Optional[float]:
+        a, b = first[key], second[key]
+        return None if a is None or b is None else b - a
+
+    score_diff = (
+        None if first["score"] is None or second["score"] is None
+        else second["score"] - first["score"]
+    )
+    cells: list[Cell] = [app, label, "N/A" if score_diff is None else format_pp_diff(score_diff)]
+    time_diff = diff("time")
+    cells.append("N/A" if time_diff is None else format_time_diff(time_diff))
+    for key in ("input", "cached", "output", "tokens", "tool_calls", "turns"):
+        value = diff(key)
+        cells.append("N/A" if value is None else _fmt_int_delta(int(value)))
+    cells.append("")
+    cost_diff = diff("cost")
+    cells.append(_fmt_money_diff(cost_diff, currency))
+    return cells
 
 
 def _evaluation_rows(
@@ -1983,7 +2101,7 @@ def _evaluation_rows(
     control_runs: list[dict[str, Any]],
     treatment_runs: list[dict[str, Any]],
 ) -> list[list[Cell]]:
-    """One row per task, model, and arm, using recorded pricing only."""
+    """One row per task, model, and arm, plus a Δ row, using recorded pricing only."""
     policy = (results.get("failure_policy") or (results.get("settings") or {}).get(
         "failure_policy") or {}).get("agent_failure", "exclude")
     baseline_runs = [
@@ -2004,8 +2122,10 @@ def _evaluation_rows(
     )
     default_labels = {"control": "Control", "treatment": treatment_label, "baseline": "Baseline"}
     pricing = results.get("pricing") or {}
+    currency = str(pricing.get("currency") or "USD")
     rows: list[list[Cell]] = []
     for task, model in keys:
+        app = f"{task} ({model})" if multi_model else task
         grouped = {
             arm: [
                 r for r in runs
@@ -2022,6 +2142,7 @@ def _evaluation_rows(
         token_control, token_treatment = _paired_metric_runs(
             grouped["control"], grouped["treatment"], "token_breakdown"
         )
+        values: dict[str, dict[str, Any]] = {}
         for arm in arms:
             group_all = grouped[arm]
             if not group_all:
@@ -2038,10 +2159,10 @@ def _evaluation_rows(
                 token_group = group
                 metrics = calculate_metrics(group)
 
-            def total(field: str, measured: list[dict[str, Any]]) -> str:
+            def total(field: str, measured: list[dict[str, Any]]) -> Optional[int]:
                 if not measured or any(r.get(field) is None for r in measured):
-                    return "N/A"
-                return f"{sum(int(r[field]) for r in measured):,}"
+                    return None
+                return sum(int(r[field]) for r in measured)
 
             tokens_known = bool(token_group) and all(
                 r.get("input_tokens") is not None
@@ -2051,16 +2172,7 @@ def _evaluation_rows(
                 for r in token_group
             )
             token_metrics = calculate_metrics(token_group)
-            cache_total = (
-                token_metrics["total_cache_read_tokens"]
-                + token_metrics["total_cache_creation_tokens"]
-            )
-            cached = (
-                f"{cache_total:,}"
-                if tokens_known else "N/A"
-            )
             api = _api_equivalent_summary(token_group, pricing)
-            cost = api["cost"] if tokens_known and api["priced_runs"] == len(token_group) else None
             used, known = metrics["skill_used_count"], metrics["skill_known_count"]
             eligible_count = calculate_metrics(group_all)["total_count"]
             loaded = ("yes" if used else "no") if eligible_count == known == 1 else (
@@ -2068,18 +2180,44 @@ def _evaluation_rows(
             )
             if known and known < eligible_count:
                 loaded += f" ({eligible_count - known} unknown)"
+            time_known = not standalone or metrics["time_known_count"] == len(group)
+            v: dict[str, Any] = {
+                "score": _score_percent(metrics),
+                "time": metrics["total_duration"] if time_known else None,
+                "input": total("input_tokens", token_group),
+                "cached": (
+                    token_metrics["total_cache_read_tokens"]
+                    + token_metrics["total_cache_creation_tokens"]
+                    if tokens_known else None
+                ),
+                "output": total("output_tokens", token_group),
+                "tokens": token_metrics["total_tokens"] if tokens_known else None,
+                "tool_calls": total("tool_calls", group),
+                "turns": total("num_turns", group),
+                "cost": (
+                    api["cost"]
+                    if tokens_known and api["priced_runs"] == len(token_group) else None
+                ),
+            }
+            values[arm] = v
             rows.append([
-                f"{task} ({model})" if multi_model else task,
+                app,
                 str(labels.get(arm) or default_labels[arm]),
-                _fmt_score_pct(metrics),
-                _fmt_time_opt(metrics["total_duration"])
-                if not standalone or metrics["time_known_count"] == len(group) else "N/A",
-                total("input_tokens", token_group), cached,
-                total("output_tokens", token_group),
-                f"{token_metrics['total_tokens']:,}" if tokens_known else "N/A",
-                total("tool_calls", group), loaded,
-                _fmt_money(cost, str(pricing.get("currency") or "USD")),
+                "N/A" if v["score"] is None else f"{v['score']}%",
+                _fmt_time_opt(v["time"]),
+                _fmt_int_opt(v["input"]), _fmt_int_opt(v["cached"]),
+                _fmt_int_opt(v["output"]), _fmt_int_opt(v["tokens"]),
+                _fmt_int_opt(v["tool_calls"]), _fmt_int_opt(v["turns"]),
+                loaded,
+                _fmt_money(v["cost"], currency),
             ])
+            if arm == "treatment" and "control" in values:
+                first_label = str(labels.get("control") or default_labels["control"])
+                second_label = str(labels.get("treatment") or default_labels["treatment"])
+                rows.append(_evaluation_delta_row(
+                    app, f"Δ ({second_label} - {first_label})",
+                    values["control"], v, currency,
+                ))
     return rows
 
 

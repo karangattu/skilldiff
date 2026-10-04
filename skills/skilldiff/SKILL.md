@@ -207,14 +207,15 @@ Read `report.md` (for pull requests) or `report.html`. Report these results:
    At the end of the evaluation summary, reproduce the report's **Evaluation
    results** table using these columns in this order:
 
-   | **App** | **Arm** | **Score** | **Time** | **Input** | **Cached input** | **Output** | **Total tokens** | **Tool calls** | **Skill loaded** | **API-equivalent cost** |
-   | ------- | ------- | --------- | -------- | --------- | ---------------- | ---------- | ---------------- | -------------- | ---------------- | ----------------------- |
+   | **App** | **Arm** | **Score** | **Time** | **Input** | **Cached input** | **Output** | **Total tokens** | **Tool calls** | **Turns** | **Skill loaded** | **API-equivalent cost** |
+   | ------- | ------- | --------- | -------- | --------- | ---------------- | ---------- | ---------------- | -------------- | --------- | ---------------- | ----------------------- |
 
-   Use one row per task, model, and arm, keeping the recorded arm labels and
-   including the baseline when present. App is the task ID; include the model
-   in the App cell when multiple models were evaluated. Score is the mean of
-   eligible graded runs. Time, token counts, tool calls, and API-equivalent
-   cost are totals across eligible repetitions. With `agent_failure: exclude`,
+   Use one row per task, model, and arm, plus a Δ row when both control and
+   treatment are present, keeping the recorded arm labels and including the
+   baseline when present. App is the task ID; include the model in the App
+   cell when multiple models were evaluated. Score is the mean of eligible
+   graded runs. Time, token counts, tool calls, turns, and API-equivalent cost
+   are totals across eligible repetitions. With `agent_failure: exclude`,
    a failed agent's partial grade and resource use stay in Run details but do
    not enter the comparison. With `zero`, a failed agent scores zero while its
    resource use remains in the comparison. Cached input includes cache reads and cache
@@ -225,7 +226,7 @@ Read `report.md` (for pull requests) or `report.html`. Report these results:
    older reports, derive the rows from `results.json` using these same rules.
 
    The report itself ends with a **Closing decision** table — score, cost, time,
-   tokens, and adoption, each with paired change, 95% CI, and one plain reading —
+   tokens, tool calls, turns, and adoption, each with paired change, 95% CI, and one plain reading —
    followed by the bottom line: SHIP, DO NOT SHIP, or NEEDS MORE RUNS, plus one
    sentence that states why. End your summary with that same bottom line and
    reason; do not invent a different verdict from the one the report computed.

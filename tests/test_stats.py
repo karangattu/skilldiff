@@ -51,7 +51,10 @@ def test_agent_error_partial_grade_is_excluded_unless_zero_policy():
 
     excluded = paired_comparison([control], [treatment])
     assert excluded["pairs"] == 1
-    assert all(excluded[key]["n"] == 0 for key in ("score", "cost", "duration", "tokens"))
+    assert all(
+        excluded[key]["n"] == 0
+        for key in ("score", "cost", "duration", "tokens", "tool_calls", "turns")
+    )
 
     zeroed = analysis_run(control, "zero")
     assert control["score"] == 1 / 11  # Raw grader evidence is unchanged.
@@ -62,3 +65,20 @@ def test_agent_error_partial_grade_is_excluded_unless_zero_policy():
 
     grader_error = analysis_run({**control, "grade_status": "error"}, "zero")
     assert paired_comparison([grader_error], [treatment])["score"]["n"] == 0
+
+
+def test_paired_comparison_tool_calls_and_turns():
+    control = [_run("control", i, 1.0) for i in range(1, 4)]
+    for r in control:
+        r.update({"tool_calls": 5, "num_turns": 3})
+    treatment = [_run("treatment", i, 1.0) for i in range(1, 4)]
+    for r in treatment:
+        r.update({"tool_calls": 2, "num_turns": 1})
+    res = paired_comparison(control, treatment)
+    assert res["tool_calls"]["mean_diff"] == -3.0
+    assert res["tool_calls"]["median_diff"] == -3.0
+    assert classify_effect(res["tool_calls"], higher_is_better=False) == "better"
+    assert res["turns"]["mean_diff"] == -2.0
+    assert res["turns"]["median_diff"] == -2.0
+    assert classify_effect(res["turns"], higher_is_better=False) == "better"
+

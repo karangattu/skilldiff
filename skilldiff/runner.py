@@ -878,7 +878,8 @@ class AgentRunner:
                     output_tokens = int(usage.get("output_tokens", 0))
                     cache_read_tokens = int(usage.get("cache_read_tokens", 0))
                     num_turns = int(data.get("num_turns") or 0)
-                    tool_calls = int(data.get("tool_calls_count") or num_turns)
+                    raw_tool_calls = data.get("tool_calls_count")
+                    tool_calls = int(raw_tool_calls) if raw_tool_calls is not None else None
                     if data.get("status") and data.get("status") != "SUCCESS" and exit_code == 0:
                         exit_code = 1
             except (json.JSONDecodeError, ValueError, TypeError):
