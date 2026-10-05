@@ -10,7 +10,13 @@ It works with Claude Code, Codex, OpenCode, and Antigravity. It tests one skill 
 
 You need Python 3.10+, Git, and a signed-in agent CLI.
 
-Run these commands to try the demo:
+Install the skill for your agent (replace `claude-code` with `codex`, `opencode`, or `antigravity`):
+
+```bash
+npx skills add karangattu/skilldiff -g -y -a claude-code
+```
+
+To run evaluations or try the CLI demo:
 
 ```bash
 uv tool install git+https://github.com/karangattu/skilldiff
