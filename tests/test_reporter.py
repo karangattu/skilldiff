@@ -653,7 +653,10 @@ def test_codex_evaluation_uses_known_tokens_when_cache_write_is_missing():
     table = reporter.render_evaluation_table(results)
 
     assert "| t | Control | 100% | 10s | 40,000 | 60,000 | 20,000 | 120,000 |" in table
-    assert "| t | Control | 100% | 10s | 40,000 | 60,000 | 20,000 | 120,000 | N/A | 4 | N/A | $0.44 |" in table
+    assert (
+        "| t | Control | 100% | 10s | 40,000 | 60,000 | 20,000 | 120,000 | "
+        "N/A | 4 | N/A | $0.44 |"
+    ) in table
 
 
 def test_evaluation_table_preserves_unknown_metrics_and_cost():
