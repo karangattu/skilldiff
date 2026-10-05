@@ -528,4 +528,4 @@ pip install -e ".[dev]"
 pytest && ruff check skilldiff tests
 ```
 
-See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.11.1.
+See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.11.2.

@@ -6,6 +6,8 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-04
+
 ### Changed
 
 - The skilldiff agent skill now lints the skill under test before scaffolding,
