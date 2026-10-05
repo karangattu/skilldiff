@@ -227,12 +227,13 @@ Only Claude Code gets the `/skilldiff:skilldiff` command. On Codex, OpenCode, an
 
 The agent then does the work:
 
-1. Reads the skill.
+1. Reads the skill and runs `skilldiff lint` on it.
 2. Runs `skilldiff init --skill <path>` outside the skill repo.
 3. Writes 2 to 5 tasks, fixtures, and graders.
 4. Runs `skilldiff check` until the output is clean.
 5. Runs a smoke test with `--runs 1`.
 6. Asks you before the full run and shows run count and max cost.
+7. Reads the finished run with `skilldiff diagnose` and the report, then summarizes.
 
 </details>
 

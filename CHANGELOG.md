@@ -6,6 +6,18 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- The skilldiff agent skill now lints the skill under test before scaffolding,
+  diagnoses finished runs, and fetches the PR ref before PR evaluations. It
+  documents blast-radius path assertions, scripted multi-turn tasks, decision
+  thresholds, and the worked csv-totals example, and its description triggers
+  on ship-it and regression-check phrasing.
+- The skill's reporting contract (API-equivalent cost, evaluation table,
+  closing decision) moved to `skills/skilldiff/references/reporting.md`, with a
+  contract test keeping the documented table columns, verdicts, and commands in
+  sync with the CLI.
+
 ## [0.11.1] - 2026-10-04
 
 ### Fixed

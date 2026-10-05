@@ -654,10 +654,12 @@ def test_evaluation_table_preserves_unknown_metrics_and_cost():
 
 
 def test_skill_summary_columns_match_rendered_evaluation_table():
-    skill = Path(__file__).resolve().parents[1] / "skills" / "skilldiff" / "SKILL.md"
+    skill_dir = Path(__file__).resolve().parents[1] / "skills" / "skilldiff"
+    docs = [skill_dir / "SKILL.md", *sorted((skill_dir / "references").glob("*.md"))]
     template_headers = [
         line.replace("**", "").strip()
-        for line in skill.read_text(encoding="utf-8").splitlines()
+        for doc in docs
+        for line in doc.read_text(encoding="utf-8").splitlines()
         if line.strip().startswith("| **App** |")
     ]
     table = reporter.render_evaluation_table(_results(_runs("control", [1.0], 0.5), []))

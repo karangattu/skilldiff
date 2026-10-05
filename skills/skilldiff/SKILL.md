@@ -1,6 +1,6 @@
 ---
 name: skilldiff
-description: Measure whether an Agent Skill actually helps. Use when the user wants to test, benchmark, evaluate, or A/B an agent skill (a SKILL.md folder, a package's skills/ directory, or a plugin skill), compare an agent with and without a skill, check if a skill is worth its token cost, or set up or read skilldiff experiments and reports.
+description: Measure whether an Agent Skill actually helps. Use when the user wants to test, benchmark, evaluate, or A/B an agent skill (a SKILL.md folder, a package's skills/ directory, or a plugin skill), compare an agent with and without a skill, decide whether to ship a skill or whether it is worth its token cost, run a skill regression check, or set up or read skilldiff experiments and reports.
 ---
 
 # Evaluate a skill with skilldiff
@@ -26,6 +26,16 @@ Don't run `pip install skilldiff`: that name on PyPI is a different project.
 Find the skill under test. This is a directory with `SKILL.md`, or a folder of skill
 directories, such as a package's `.claude/skills/` or `skills/`. Read its `SKILL.md`.
 Understand what the skill claims to improve before you write any task.
+
+Lint it before you spend anything:
+
+```bash
+skilldiff lint /abs/path/to/skill
+```
+
+`lint` checks the frontmatter, description length and trigger keywords, broken
+links, and the skill's estimated token footprint. Fix what it flags now: a weak
+description is the usual cause of the low adoption you will measure later.
 
 ## 2. Scaffold
 
@@ -56,6 +66,11 @@ You never install the skill into workspaces yourself. SkillDiff installs the
 right revision into each fresh workspace per harness (`.claude/skills` for
 Claude, `.codex/skills` plus `.agents/skills` for Codex, `.opencode/skills`
 plus `.agents/skills` for OpenCode, `.agents/skills` for Antigravity).
+
+A complete worked example — a skill, dev and held-out tasks, fixtures, a
+deterministic grader, and a committed sample report — lives in
+[examples/csv-totals](https://github.com/karangattu/skilldiff/tree/main/examples/csv-totals).
+Copy its shape whenever you are unsure how a piece fits together.
 
 ## 3. Design tasks (the important part)
 
@@ -89,6 +104,12 @@ Other rules:
 
 - **Don't mention the skill in the prompt.** Write the request the way a real user
   would write it. Adoption is part of what you measure.
+- **Contain the blast radius.** Set `allowed_paths` (and optionally
+  `forbidden_paths`) on each task. An edit outside scope is then reported as an
+  error — `N/A` with the path named — never as a wrong answer.
+- **Script multi-turn tasks with `prompts:`.** A list of prompts runs in order
+  in one workspace; tokens, cost, time, and turns sum across the turns, and one
+  timeout covers the whole script.
 - **Keep fixtures small and self-contained.** The fixture is copied into a fresh
   workspace for every run, without `.git` history. Escaping symlinks are rejected.
   Put graders in `graders/`, outside the fixture, and call them through
@@ -165,6 +186,11 @@ Fix the stopping rule before you look at results. Write it in `skilldiff.yaml`:
 runs: 5
 # seed: 1234   # recorded per run; balanced arm order is reproducible
 # failure_policy: {agent_failure: exclude, missing: exclude}
+# thresholds:   # the closing verdict applies these bounds; fix them before the run
+#   meaningful_score_gain_pp: 5
+#   acceptable_score_regression_pp: 5
+#   required_cost_reduction_pct: 10
+#   required_token_reduction_pct: 20
 # API-equivalent cost basis: look the rates up on the provider's own pricing
 # page BEFORE the run and record them here, so the saved run reproduces the
 # estimate and the report shows the API-equivalent cost per arm:
@@ -190,7 +216,12 @@ Claude and Codex container runs require API authentication; host login directori
 are not mounted. Run `skilldiff check` first. Resume also requires the same
 isolation mode and immutable container image identity.
 
-Read `report.md` (for pull requests) or `report.html`. Report these results:
+Read `report.md` (for pull requests) or `report.html`. Then run
+`skilldiff diagnose` on the run directory: it names the common failure modes —
+a skill that never triggered on intended tasks, one that triggered on
+irrelevant tasks, regressions, blast-radius violations, agent failures, and
+token bloat without score gains — each with a suggested fix. Check its findings
+against the report before you write your summary. Report these results:
 
 1. **Verdict with uncertainty.** Give the mean paired score difference and its 95% CI.
    If the CI includes zero, the effect is not established. Say so plainly.
@@ -203,49 +234,16 @@ Read `report.md` (for pull requests) or `report.html`. Report these results:
    means that the skill's `description` doesn't match how users ask for the task.
 3. **Efficiency.** Give the cost, time, and token changes, and say which ones are
    inside the noise. On subscription auth the real spend is $0 at the margin, so
-   the API-equivalent cost is the comparison that matters. If the run recorded
-   `pricing:` rates (source, date, and per-model rates per 1M tokens, written to
-   `skilldiff.yaml` before the run), the report includes an
-   **API-equivalent cost** table — recorded token breakdown per arm × those
-   rates — and regenerating the report reproduces the estimate exactly. Carry
-   those costs into the final evaluation table in your summary. If the run has
-   no recorded rates, look up the current per-token prices on the providers'
-   own pricing pages yourself,
-   multiply them by the token counts in the report, and show the API-equivalent
-   cost per arm, naming the price source and date next to the table. Label costs
-   computed with newly looked-up rates as estimates; do not present them as the
-   run's recorded pricing.
+   the API-equivalent cost is the comparison that matters. The report ends with
+   a **Closing decision** table and one bottom line: SHIP, DO NOT SHIP, or
+   NEEDS MORE RUNS. End your summary with that same bottom line and reason; do
+   not invent a different verdict from the one the report computed.
 
-   At the end of the evaluation summary, reproduce the report's **Evaluation
-   results** table using these columns in this order:
-
-   | **App** | **Arm** | **Score** | **Time** | **Input** | **Cached input** | **Output** | **Total tokens** | **Tool calls** | **Turns** | **Skill loaded** | **API-equivalent cost** |
-   | ------- | ------- | --------- | -------- | --------- | ---------------- | ---------- | ---------------- | -------------- | --------- | ---------------- | ----------------------- |
-
-   Use one row per task, model, and arm, plus a Δ row when both control and
-   treatment are present, keeping the recorded arm labels and including the
-   baseline when present. App is the task ID; include the model in the App
-   cell when multiple models were evaluated. Score is the mean of eligible
-   graded runs. Time, token counts, tool calls, turns, and API-equivalent cost
-   are totals across eligible repetitions. With `agent_failure: exclude`,
-   a failed agent's partial grade and resource use stay in Run details but do
-   not enter the comparison. With `zero`, a failed agent scores zero while its
-   resource use remains in the comparison. Cached input includes cache reads and cache
-   writes; total tokens include input, cached input, and output. Skill loaded
-   is yes/no for one run or loaded/known runs for repetitions, with unknown
-   runs noted separately. Show missing measurements or unavailable pricing
-   as `N/A`, never zero. Use the saved table directly when available; for
-   older reports, derive the rows from `results.json` using these same rules.
-   A multi-turn task has one overall timeout and reports unknown aggregate
-   measurements as `N/A`. Agent sessions are not automatically retried.
-   The skill-context tax is a text-size estimate assuming text is carried each
-   turn, not measured prompt injection or spend.
-
-   The report itself ends with a **Closing decision** table — score, cost, time,
-   tokens, tool calls, turns, and adoption, each with paired change, 95% CI, and one plain reading —
-   followed by the bottom line: SHIP, DO NOT SHIP, or NEEDS MORE RUNS, plus one
-   sentence that states why. End your summary with that same bottom line and
-   reason; do not invent a different verdict from the one the report computed.
+   Before you write the final summary, read
+   [references/reporting.md](references/reporting.md) (next to this file). It
+   specifies the API-equivalent cost procedure, the **Evaluation results** table
+   you must reproduce (exact columns, row rules, `N/A` handling, failure-policy
+   effects), and the closing-decision contract.
 4. **Warnings.** Report agent errors or timeouts, control contamination, tasks without
    graders, and ceiling effects. The report's **Evaluation completeness** row counts
    planned/completed pairs, usable score pairs, agent failures, and grader errors in
@@ -297,6 +295,8 @@ Pick the revisions:
 - **`pair: base-merge`**: base tip vs synthetic merge of head into base (integration).
 
 ```bash
+# fetch the PR ref first, so the repo holds the head revision
+git -C ~/code/pkg fetch origin refs/pull/42/head:refs/pull/42/head
 skilldiff init --pr 42 --repo ~/code/pkg --base origin/main --dir ./pr-42-eval
 # add --pr-mode correctness --pr-pair base-merge as needed
 ```
