@@ -235,6 +235,30 @@ def test_agent_runner_dispatches_codex(tmp_path: Path):
         assert "--json" in call_args
 
 
+def test_codex_missing_cache_write_count_is_zero_for_cost_accounting(tmp_path: Path):
+    runner = AgentRunner(codex_bin="codex-mock")
+    cfg = CodexConfig()
+    mock_stdout = json.dumps({
+        "type": "turn.completed",
+        "usage": {
+            "input_tokens": 100,
+            "cached_input_tokens": 60,
+            "output_tokens": 20,
+        },
+    })
+
+    with patch.object(AgentRunner, "_exec") as mock_subproc:
+        mock_subproc.return_value = ExecResult(
+            stdout=mock_stdout, stderr="", exit_code=0, duration=1.0
+        )
+        res = runner.run("Do task", tmp_path, "gpt-6-luna", cfg)
+
+    assert res.input_tokens == 40
+    assert res.cache_read_tokens == 60
+    assert res.cache_creation_tokens == 0
+    assert res.output_tokens == 20
+
+
 def test_agent_runner_dispatches_opencode(tmp_path: Path):
     runner = AgentRunner(opencode_bin="opencode-mock")
     cfg = OpenCodeConfig(
@@ -518,4 +542,3 @@ def test_antigravity_non_transient_no_retry(tmp_path: Path):
 
         assert mock_exec.call_count == 1
         assert res.status == "error"
-

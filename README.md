@@ -90,6 +90,7 @@ How to read the table:
 - `N/A` means the value is unknown, not zero.
 - `n=X/Y` shows how many pairs gave a value.
 - Cost is the harness-reported price. On subscription auth the real spend is $0 at the margin. Record provider rates in `skilldiff.yaml` (`pricing:` with source, date, and per-model rates per 1M tokens) before the run; the report then prices the saved token breakdown itself, and regenerating the report reproduces the estimate.
+- If Codex omits `cache_write_input_tokens`, skilldiff calculates totals and API-equivalent cost from reported input, cache-read, and output counts; any unreported cache-write usage is excluded.
 
 <details>
 <summary>Tips for clear results</summary>

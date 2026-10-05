@@ -640,6 +640,22 @@ def test_evaluation_table_totals_by_app_and_arm():
     assert "<th class=\"r\">Cached input</th>" in reporter.build_html_report(results)
 
 
+def test_codex_evaluation_uses_known_tokens_when_cache_write_is_missing():
+    control = _runs("control", [1.0], 1.0)
+    control[0].update(
+        input_tokens=40_000,
+        cache_read_tokens=60_000,
+        cache_creation_tokens=None,
+        output_tokens=20_000,
+    )
+    results = _results(control, [], harness="codex", pricing=_PRICING)
+
+    table = reporter.render_evaluation_table(results)
+
+    assert "| t | Control | 100% | 10s | 40,000 | 60,000 | 20,000 | 120,000 |" in table
+    assert "| t | Control | 100% | 10s | 40,000 | 60,000 | 20,000 | 120,000 | N/A | 4 | N/A | $0.44 |" in table
+
+
 def test_evaluation_table_preserves_unknown_metrics_and_cost():
     control = [{"task_id": "unknown", "arm": "control", "model": "m"}]
     table = reporter.render_evaluation_table(_results(control, [], pricing=_PRICING))

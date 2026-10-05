@@ -17,6 +17,12 @@ and show the API-equivalent cost per arm, naming the price source and date
 next to the table. Label costs computed with newly looked-up rates as
 estimates; do not present them as the run's recorded pricing.
 
+For Codex runs, if usage includes input and output counts but omits
+`cache_write_input_tokens`, calculate totals and API-equivalent cost from the
+reported input, cache-read, and output counts, treating the unreported
+cache-write component as zero. This keeps the available usage comparable; the
+cost excludes any cache-write usage Codex did not report.
+
 ## Evaluation results table
 
 At the end of the evaluation summary, reproduce the report's **Evaluation
@@ -37,7 +43,8 @@ resource use remains in the comparison. Cached input includes cache reads and ca
 writes; total tokens include input, cached input, and output. Skill loaded
 is yes/no for one run or loaded/known runs for repetitions, with unknown
 runs noted separately. Show missing measurements or unavailable pricing
-as `N/A`, never zero. Use the saved table directly when available; for
+as `N/A`, never zero, except for the Codex cache-write fallback described
+above. Use the saved table directly when available; for
 older reports, derive the rows from `results.json` using these same rules.
 A multi-turn task has one overall timeout and reports unknown aggregate
 measurements as `N/A`. Agent sessions are not automatically retried.

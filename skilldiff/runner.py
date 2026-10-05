@@ -704,11 +704,14 @@ class AgentRunner:
         cost = 0.0
         input_tokens = 0
         cached_tokens = 0
+        cache_write_tokens = 0
         output_tokens = 0
         tool_calls = 0
         num_turns = 0
         saw_usage = saw_cost = False
         input_complete = output_complete = cache_complete = True
+        cache_write_complete = True
+        saw_cache_write = False
 
         for line in stdout.splitlines():
             line = line.strip()
@@ -754,6 +757,12 @@ class AgentRunner:
                     input_tokens += int(usage.get("input_tokens") or 0)
                     cached_tokens += int(usage.get("cached_input_tokens") or 0)
                     output_tokens += int(usage.get("output_tokens") or 0)
+                    cache_write_complete = cache_write_complete and (
+                        "cache_write_input_tokens" in usage
+                    )
+                    if "cache_write_input_tokens" in usage:
+                        saw_cache_write = True
+                        cache_write_tokens += int(usage.get("cache_write_input_tokens") or 0)
                 else:
                     input_tokens = int(
                         usage.get("input_tokens") or usage.get("prompt_tokens") or input_tokens
@@ -792,6 +801,14 @@ class AgentRunner:
             exit_code=execution.exit_code,
             error=execution.stderr if execution.exit_code != 0 else None,
             cache_read_tokens=cached_tokens if saw_usage and cache_complete else None,
+            # The Codex stream can omit cache-write usage while still reporting
+            # input, cached-input, and output counts. Keep those token and cost
+            # calculations usable; the missing write component contributes 0.
+            cache_creation_tokens=(
+                cache_write_tokens if saw_cache_write and cache_write_complete
+                else 0 if saw_usage and input_complete and output_complete and not saw_cache_write
+                else None
+            ),
             num_turns=num_turns or None,
         )
         return _finalize_status(result, execution)

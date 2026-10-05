@@ -520,14 +520,17 @@ def _cost_basis_note(results: dict[str, Any]) -> str:
             "margin; the API-equivalent cost section converts the recorded token "
             f"breakdown with rates from {pricing.get('source')} "
             f"(checked {pricing.get('date')}), so regenerated reports reproduce "
-            "the estimate."
+            "the estimate. For Codex, an omitted cache-write count is treated as "
+            "zero for accounting, so any unreported cache-write usage is excluded."
         )
     return (
         "Tokens include cached input where the harness reports it. Cost is the "
         "harness-reported price. On subscription auth the spend is $0 at the "
         "margin. No pricing rates were recorded with this run; record them in "
         "`skilldiff.yaml` (`pricing:` with source, date, and per-model rates per "
-        "1M tokens) to get a reproducible API-equivalent cost table."
+        "1M tokens) to get a reproducible API-equivalent cost table. For Codex, "
+        "an omitted cache-write count is treated as zero for accounting, so any "
+        "unreported cache-write usage is excluded."
     )
 
 
@@ -2022,7 +2025,8 @@ def _load_runs_for_report(
         c = results["runs"].get("control", [])
         t = results["runs"].get("treatment", [])
         if c or t:
-            return {"control": list(c), "treatment": list(t)}
+            loaded = {"control": list(c), "treatment": list(t)}
+            return _apply_codex_cache_write_fallback(loaded, results)
 
     search_dirs: list[Path] = []
     if run_root and run_root.exists():
@@ -2046,9 +2050,29 @@ def _load_runs_for_report(
             elif d.get("arm") in {"treatment", "skill"}:
                 t_runs.append(d)
         if c_runs or t_runs:
-            return {"control": c_runs, "treatment": t_runs}
+            return _apply_codex_cache_write_fallback(
+                {"control": c_runs, "treatment": t_runs}, results
+            )
 
     return {"control": [], "treatment": []}
+
+
+def _apply_codex_cache_write_fallback(
+    runs: dict[str, list[dict[str, Any]]], results: dict[str, Any]
+) -> dict[str, list[dict[str, Any]]]:
+    """Treat omitted Codex cache-write usage as zero so known counts remain usable."""
+    if results.get("harness") != "codex":
+        return runs
+    normalized = {arm: [dict(run) for run in records] for arm, records in runs.items()}
+    for records in normalized.values():
+        for run in records:
+            if (
+                run.get("cache_creation_tokens") is None
+                and run.get("input_tokens") is not None
+                and run.get("output_tokens") is not None
+            ):
+                run["cache_creation_tokens"] = 0
+    return normalized
 
 
 def _run_status(run: dict[str, Any]) -> Cell:
