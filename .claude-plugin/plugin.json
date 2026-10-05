@@ -1,6 +1,6 @@
 {
   "name": "skilldiff",
-  "version": "0.11.2",
+  "version": "0.12.0",
   "description": "Measure whether an Agent Skill actually helps: A/B tests with and without the skill, with graded tasks, cost, time, tokens, and adoption.",
   "author": { "name": "Karan Gathani" },
   "homepage": "https://github.com/karangattu/skilldiff",

@@ -6,6 +6,14 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-05
+
+### Fixed
+
+- Codex reports now calculate token totals and API-equivalent costs when the
+  CLI omits cache-write counts, using the available input, cache-read, and
+  output counts. Any unreported cache-write usage is excluded from the estimate.
+
 ## [0.11.2] - 2026-10-04
 
 ### Fixed
