@@ -8,6 +8,11 @@ This project uses semantic versioning.
 
 ## [0.11.2] - 2026-10-04
 
+### Fixed
+
+- The release-notes subprocess test derives its tag from the current package
+  version instead of a hardcoded one, so version bumps no longer fail CI.
+
 ### Changed
 
 - The skilldiff agent skill now lints the skill under test before scaffolding,

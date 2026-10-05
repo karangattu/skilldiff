@@ -95,11 +95,13 @@ def test_cli_success(tmp_path, monkeypatch):
 
 def test_cli_subprocess(tmp_path):
     root = Path(__file__).resolve().parent.parent
+    version = get_pyproject_version((root / "pyproject.toml").read_text(encoding="utf-8"))
     res = subprocess.run(
-        [sys.executable, "-m", "skilldiff.release", "--tag", "v0.11.1", "--check-version"],
+        [sys.executable, "-m", "skilldiff.release", "--tag", f"v{version}", "--check-version"],
         cwd=root,
         capture_output=True,
         text=True,
     )
     assert res.returncode == 0
-    assert "### Fixed" in res.stdout
+    expected = extract_release_notes((root / "CHANGELOG.md").read_text(encoding="utf-8"), version)
+    assert res.stdout.strip() == expected
