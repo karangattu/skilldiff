@@ -16,6 +16,12 @@ Install the skill for your agent (replace `claude-code` with `codex`, `opencode`
 npx skills add karangattu/skilldiff -g -y -a claude-code
 ```
 
+To upgrade installed skills to the latest version:
+
+```bash
+npx skills update skilldiff -g
+```
+
 To run evaluations or try the CLI demo:
 
 ```bash
@@ -187,7 +193,7 @@ Install the skilldiff skill once. One command covers every supported agent (need
 npx skills add karangattu/skilldiff -g -y -a claude-code
 ```
 
-This is the [`skills` CLI](https://github.com/vercel-labs/skills). `-g` installs at user level so the skill is available in every project; without it the skill lands in the current folder, which is usually not what you want. `-a` names the agent to install into, so set it to the one you actually use. Run `npx skills update` later to refresh.
+This is the [`skills` CLI](https://github.com/vercel-labs/skills). `-g` installs at user level so the skill is available in every project; without it the skill lands in the current folder, which is usually not what you want. `-a` names the agent to install into, so set it to the one you actually use. Run `npx skills update skilldiff -g` later to refresh.
 
 Always pass `-a`. With no `-a` the CLI auto-detects your agents, and when it detects none it installs the skill into every agent it knows about, about sixty directories at once. Passing `-a` keeps the install to a single location.
 
