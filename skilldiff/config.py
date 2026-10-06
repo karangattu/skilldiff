@@ -67,6 +67,7 @@ OPENCODE_KEYS = frozenset(
         "subscription",  # older name for service
         "provider",
         "dangerously_skip_permissions",
+        "isolate",
         "variant",
         "bin_path",
         "extra_args",
@@ -284,6 +285,10 @@ class OpenCodeConfig:
     service: str = "go"
     provider: str = "opencode-go"
     dangerously_skip_permissions: bool = True
+    # Run each session in a private server (`--standalone`) so a sandbox around
+    # the CLI also governs tool execution; the shared background server would
+    # otherwise run tools unsandboxed. No-op when the CLI lacks the flag.
+    isolate: bool = True
     variant: Optional[str] = None
     bin_path: Optional[str] = None
     extra_args: list[str] = field(default_factory=list)
@@ -855,6 +860,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         service=service,
         provider=provider,
         dangerously_skip_permissions=opencode_data.get("dangerously_skip_permissions", True),
+        isolate=opencode_data.get("isolate", True),
         variant=opencode_data.get("variant"),
         bin_path=opencode_data.get("bin_path"),
         extra_args=opencode_data.get("extra_args", []),

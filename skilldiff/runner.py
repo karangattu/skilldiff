@@ -167,6 +167,71 @@ def detect_skill_reference(text: str, skill_names: list[str]) -> bool:
     return False
 
 
+def detect_opencode_skill_load(transcript: str, skill_names: list[str]) -> bool:
+    """Structured adoption check for OpenCode's JSON stream.
+
+    A loaded skill shows up either as the harness's own skill tool call
+    (``"tool":"skill"`` with ``input.id`` equal to the skill name) or as the
+    injected ``<skill_content name="...">`` payload. Reading the structured
+    events is more reliable than regexing a filesystem path out of the text.
+    """
+    if not skill_names:
+        return False
+    for line in transcript.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(item, dict):
+            continue
+        part = item.get("part")
+        candidates: list[Any] = [item, part if isinstance(part, dict) else {}]
+        for candidate in candidates:
+            tool = str(candidate.get("tool") or "")
+            tool_input = candidate.get("input")
+            if isinstance(tool_input, dict):
+                skill_id = tool_input.get("id") or tool_input.get("skill")
+                if skill_id and _skill_matches(skill_id, skill_names):
+                    return True
+            if tool in {"skill", "Skill"}:
+                return True
+    return any(
+        re.search(rf'<skill_content\s+name=["\']{re.escape(name)}["\']', transcript)
+        for name in skill_names
+    )
+
+
+def _opencode_error_message(stdout: str, stderr: str) -> Optional[str]:
+    """Extract OpenCode's structured error message from a run's output."""
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(item, dict) or item.get("type") != "error":
+            continue
+        error = item.get("error")
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("data")
+        else:
+            message = item.get("message") or error
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    return stderr.strip() or None
+
+
+def _opencode_unrecognized_flags(stdout: str, stderr: str) -> list[str]:
+    """Flags OpenCode rejected, e.g. "Unrecognized flag: --dir in command ..."."""
+    text = f"{stdout}\n{stderr}"
+    return sorted(set(re.findall(r"Unrecognized flag:\s*(--[A-Za-z0-9-]+)", text)))
+
+
 def _failed_result(prompt: str, exc: Exception, duration: float) -> RunResult:
     return RunResult(
         prompt=prompt,
@@ -231,6 +296,34 @@ class AgentRunner:
         self._active: set[subprocess.Popen] = set()
         self._active_lock = threading.Lock()
         self._cancelled = False
+        # Cache of `opencode run --help` flags per binary, so capability
+        # detection happens once per process instead of per session.
+        self._opencode_flags: dict[str, set[str]] = {}
+
+    def opencode_run_flags(self, bin_path: str) -> set[str]:
+        """Long flags `opencode run` advertises, or an empty set if unknown.
+
+        Empty means "could not probe" — callers must then avoid optional flags
+        rather than guess, because the same CLI rejects unknown flags outright.
+        """
+        cached = self._opencode_flags.get(bin_path)
+        if cached is not None:
+            return cached
+        flags: set[str] = set()
+        try:
+            proc = subprocess.run(
+                [bin_path, "run", "--help"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                stdin=subprocess.DEVNULL,
+            )
+            text = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            flags = set(re.findall(r"--[a-z][a-z0-9-]+", text))
+        except (OSError, subprocess.SubprocessError):
+            flags = set()
+        self._opencode_flags[bin_path] = flags
+        return flags
 
     def terminate_all(self) -> None:
         """Kill running agent sessions and refuse new ones (used on Ctrl-C)."""
@@ -279,6 +372,10 @@ class AgentRunner:
 
         exec_cmd = list(cmd)
         env = dict(env)
+        # Keep PWD consistent with the working directory we actually launch in.
+        # Harnesses that resolve their project directory from PWD (Bun/OpenCode,
+        # for example) otherwise operate on the caller's directory.
+        env["PWD"] = str(cwd.resolve())
         container_name = None
         runtime = None
         if sys.platform == "darwin" and isolation == "local" and shutil.which("caffeinate"):
@@ -566,6 +663,7 @@ class AgentRunner:
                 timeout,
                 isolation=isolation,
                 container_image=container_image,
+                skill_names=names,
             )
         elif active_harness in {"antigravity", "agy"}:
             result = self._run_antigravity(
@@ -830,6 +928,7 @@ class AgentRunner:
         timeout: Optional[float] = None,
         isolation: str = "local",
         container_image: Optional[str] = None,
+        skill_names: Optional[list[str]] = None,
     ) -> RunResult:
         bin_path = opencode_cfg.bin_path or self.opencode_bin
         target_model = model
@@ -841,27 +940,69 @@ class AgentRunner:
         elif "/" not in target_model and opencode_cfg.provider:
             target_model = f"{opencode_cfg.provider}/{target_model}"
 
-        cmd = [bin_path, "run", "--dir", str(cwd), "--format", "json", "-m", target_model]
-        if opencode_cfg.dangerously_skip_permissions:
-            cmd.append("--dangerously-skip-permissions")
-        if opencode_cfg.variant:
-            cmd.extend(["--variant", str(opencode_cfg.variant)])
-        if opencode_cfg.extra_args:
-            cmd.extend(opencode_cfg.extra_args)
-        cmd.append(prompt)
+        # Probe the installed CLI once and build only flags it advertises.
+        # `--dir` is deliberately never passed: skilldiff already launches the
+        # process in `cwd` (and pins PWD), and OpenCode v2 rejects `--dir`.
+        probed = self.opencode_run_flags(bin_path)
+
+        def build_cmd(skip: set[str]) -> list[str]:
+            target = target_model
+            cmd = [bin_path, "run"]
+            if "--format" not in skip:
+                cmd.extend(["--format", "json"])
+            if (
+                opencode_cfg.dangerously_skip_permissions
+                and "--dangerously-skip-permissions" not in skip
+            ):
+                cmd.append("--dangerously-skip-permissions")
+            if opencode_cfg.variant:
+                if "--variant" in skip or (probed and "--variant" not in probed):
+                    # v2 carries the variant in the model id instead of a flag.
+                    target = f"{target}#{opencode_cfg.variant}"
+                else:
+                    cmd.extend(["--variant", str(opencode_cfg.variant)])
+            if opencode_cfg.isolate and "--standalone" in probed and "--standalone" not in skip:
+                cmd.append("--standalone")
+            cmd.extend(arg for arg in opencode_cfg.extra_args if arg not in skip)
+            cmd.extend(["-m", target, prompt])
+            return cmd
+
+        cmd = build_cmd(set())
+        env = os.environ.copy()
 
         start_time = time.perf_counter()
         try:
             execution = self._exec(
                 cmd,
                 cwd,
-                os.environ.copy(),
+                env,
                 timeout,
                 isolation=isolation,
                 container_image=container_image,
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
+
+        # Self-heal a flag the installed CLI rejects ("Unrecognized flag: --x"):
+        # drop it and retry once so a single version drift cannot kill a run.
+        rejected = _opencode_unrecognized_flags(execution.stdout, execution.stderr)
+        if execution.exit_code != 0 and rejected:
+            retry_cmd = build_cmd(set(rejected))
+            if retry_cmd != cmd:
+                try:
+                    execution = self._exec(
+                        retry_cmd,
+                        cwd,
+                        env,
+                        timeout,
+                        isolation=isolation,
+                        container_image=container_image,
+                    )
+                    cmd = retry_cmd
+                except Exception as exc:
+                    return _failed_result(
+                        prompt, exc, round(time.perf_counter() - start_time, 2)
+                    )
 
         stdout = execution.stdout
         response_texts: list[str] = []
@@ -928,6 +1069,14 @@ class AgentRunner:
             if "text" in item and isinstance(item["text"], str):
                 response_texts.append(item["text"])
 
+        # OpenCode reports invocation failures as a structured error event.
+        # Surface the message instead of a bare exit code, and force a non-ok
+        # exit so it is classified as a harness error, not a low score.
+        error_message = _opencode_error_message(stdout, execution.stderr)
+        exit_code = execution.exit_code
+        if error_message and exit_code == 0:
+            exit_code = 1
+
         result = RunResult(
             prompt=prompt,
             response="\n".join(response_texts) if response_texts else stdout,
@@ -937,10 +1086,13 @@ class AgentRunner:
             input_tokens=input_tokens if saw_input else None,
             output_tokens=output_tokens if saw_output else None,
             tool_calls=tool_calls if saw_stream or tool_calls else None,
-            exit_code=execution.exit_code,
-            error=execution.stderr if execution.exit_code != 0 else None,
+            exit_code=exit_code,
+            error=error_message if exit_code != 0 else None,
             cache_read_tokens=cache_read if saw_cache_read else None,
             cache_creation_tokens=cache_write if saw_cache_write else None,
+            skill_invoked=(
+                detect_opencode_skill_load(stdout, skill_names) if skill_names else None
+            ),
         )
         return _finalize_status(result, execution)
 

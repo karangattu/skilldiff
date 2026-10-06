@@ -286,3 +286,18 @@ def test_exec_caffeinate_on_darwin(tmp_path: Path):
 
         called_cmd = mock_popen.call_args[0][0]
         assert called_cmd == ["caffeinate", "-i", "echo", "hello"]
+
+
+def test_exec_pins_pwd_to_cwd(tmp_path: Path):
+    """PWD must match the launch directory: Bun/OpenCode resolve cwd from it."""
+    from unittest.mock import MagicMock, patch
+
+    runner = AgentRunner()
+    with patch("subprocess.Popen") as mock_popen, patch("skilldiff.runner._kill_group"):
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        runner._exec(["echo", "hi"], cwd=tmp_path, env={}, timeout=5.0, isolation="local")
+
+        assert mock_popen.call_args.kwargs["env"]["PWD"] == str(tmp_path.resolve())

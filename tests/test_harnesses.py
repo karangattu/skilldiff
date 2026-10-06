@@ -291,8 +291,9 @@ def test_agent_runner_dispatches_opencode(tmp_path: Path):
         call_args = mock_subproc.call_args[0][0]
         assert "opencode-mock" in call_args
         assert "run" in call_args
-        assert "--dir" in call_args
-        assert str(tmp_path) in call_args
+        # OpenCode v2 rejects --dir; skilldiff launches in cwd and pins PWD.
+        assert "--dir" not in call_args
+        assert str(tmp_path) not in call_args
         assert "--format" in call_args
         assert "json" in call_args
         assert "--dangerously-skip-permissions" in call_args
@@ -542,3 +543,134 @@ def test_antigravity_non_transient_no_retry(tmp_path: Path):
 
         assert mock_exec.call_count == 1
         assert res.status == "error"
+
+
+def test_opencode_v2_uses_cwd_and_model_variant(tmp_path: Path):
+    """OpenCode v2 rejects --dir and --variant; use cwd and model#variant."""
+    runner = AgentRunner(opencode_bin="opencode-mock")
+    cfg = OpenCodeConfig(variant="high", isolate=True)
+
+    with patch.object(
+        AgentRunner,
+        "opencode_run_flags",
+        return_value={"--format", "--standalone", "--model", "--dangerously-skip-permissions"},
+    ), patch.object(AgentRunner, "_exec") as mock_exec:
+        mock_exec.return_value = ExecResult(
+            stdout='{"type":"text","part":{"text":"ok"}}\n',
+            stderr="",
+            exit_code=0,
+            duration=1.0,
+        )
+
+        res = runner.run(
+            prompt="Test",
+            cwd=tmp_path,
+            model="opencode-go/deepseek-v4.1-flash",
+            config=cfg,
+        )
+
+        assert res.status == "ok"
+        call_args = mock_exec.call_args[0][0]
+        assert "--dir" not in call_args
+        assert "--variant" not in call_args
+        assert "--standalone" in call_args
+        model_idx = call_args.index("-m") + 1
+        assert call_args[model_idx] == "opencode-go/deepseek-v4.1-flash#high"
+
+
+def test_opencode_recovers_from_rejected_flag(tmp_path: Path):
+    """A single version-drift flag must not kill the run: drop it and retry."""
+    runner = AgentRunner(opencode_bin="opencode-mock")
+    cfg = OpenCodeConfig(variant="high")
+
+    rejected = ExecResult(
+        stdout=(
+            '{"type":"error","error":{"message":'
+            '"Unrecognized flag: --variant in command opencode run"}}\n'
+        ),
+        stderr="",
+        exit_code=1,
+        duration=0.2,
+    )
+    ok = ExecResult(
+        stdout='{"type":"text","part":{"text":"done"}}\n',
+        stderr="",
+        exit_code=0,
+        duration=1.0,
+    )
+
+    with patch.object(AgentRunner, "opencode_run_flags", return_value=set()), patch.object(
+        AgentRunner, "_exec", side_effect=[rejected, ok]
+    ) as mock_exec:
+        res = runner.run(prompt="Test", cwd=tmp_path, model="m", config=cfg)
+
+        assert res.status == "ok"
+        assert mock_exec.call_count == 2
+        retry_args = mock_exec.call_args_list[1][0][0]
+        assert "--variant" not in retry_args
+        assert retry_args[retry_args.index("-m") + 1] == "opencode-go/m#high"
+
+
+def test_opencode_error_event_is_harness_failure(tmp_path: Path):
+    runner = AgentRunner(opencode_bin="opencode-mock")
+    cfg = OpenCodeConfig()
+
+    error = ExecResult(
+        stdout='{"type":"error","error":{"message":"Failed to change directory to /x"}}\n',
+        stderr="",
+        exit_code=0,
+        duration=0.5,
+    )
+
+    with patch.object(AgentRunner, "opencode_run_flags", return_value=set()), patch.object(
+        AgentRunner, "_exec", return_value=error
+    ):
+        res = runner.run(prompt="Test", cwd=tmp_path, model="m", config=cfg)
+
+        assert res.status == "error"
+        assert res.failure_kind == "harness_error"
+        assert "Failed to change directory" in res.error
+
+
+def test_opencode_structured_skill_adoption(tmp_path: Path):
+    runner = AgentRunner(opencode_bin="opencode-mock")
+    cfg = OpenCodeConfig()
+    stdout = (
+        json.dumps(
+            {
+                "type": "tool_use",
+                "part": {"type": "tool", "tool": "skill", "input": {"id": "my-skill"}},
+            }
+        )
+        + "\n"
+    )
+
+    with patch.object(AgentRunner, "opencode_run_flags", return_value=set()), patch.object(
+        AgentRunner,
+        "_exec",
+        return_value=ExecResult(stdout=stdout, stderr="", exit_code=0, duration=1.0),
+    ):
+        res = runner.run(
+            prompt="p", cwd=tmp_path, model="m", config=cfg, skill_names=["my-skill"]
+        )
+
+        assert res.skill_invoked is True
+
+
+def test_load_experiment_opencode_isolate_default_and_override(mock_exp_dir: Path):
+    exp_default = mock_exp_dir / "exp_iso_default.yaml"
+    exp_default.write_text(
+        "name: t\nskill: ./skills/sample-skill\nmodels: [m]\ntasks: [./tasks/*.yaml]\n",
+        encoding="utf-8",
+    )
+    cfg_default, _ = load_experiment(exp_default)
+    assert cfg_default.opencode.isolate is True
+
+    exp_off = mock_exp_dir / "exp_iso_off.yaml"
+    exp_off.write_text(
+        "name: t\nskill: ./skills/sample-skill\nmodels: [m]\ntasks: [./tasks/*.yaml]\n"
+        "opencode:\n  isolate: false\n",
+        encoding="utf-8",
+    )
+    cfg_off, _ = load_experiment(exp_off)
+    assert cfg_off.opencode.isolate is False
