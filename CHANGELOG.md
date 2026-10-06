@@ -6,6 +6,38 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-05
+
+### Added
+
+- Harness failures are classified (`failure_kind`: `harness_error` or `timeout`) and
+  never graded. A session whose CLI could not run leaves the arm N/A with the partial
+  grader output kept as diagnostic evidence, and a pair where every arm failed aborts
+  the run instead of consuming the remaining matrix.
+- `check` probes `opencode run --help` and reports whether `--dir` is supported, and
+  warns about host-level harness instructions, plugins, and memory that can leak into
+  both arms.
+- `opencode.isolate` (default on) runs each OpenCode session with `--standalone` so an
+  external sandbox around the CLI also governs tool execution.
+
+### Fixed
+
+- OpenCode v2 compatibility: skilldiff no longer passes `--dir` (it launches in the
+  process cwd) or `--variant` (the variant is carried as `model#variant` when the flag
+  is unsupported). A flag the CLI rejects as `Unrecognized flag: --x` is dropped and
+  the session retried once instead of failing every run.
+- `_exec` pins `PWD` to the launch directory, so harnesses that resolve their project
+  directory from `PWD` (Bun/OpenCode) no longer operate on the caller's directory.
+- OpenCode structured error events surface as the run error instead of a bare exit
+  code, and skill adoption is detected from structured tool events rather than a
+  transcript path regex.
+
+### Changed
+
+- The skilldiff skill installs only when missing and always runs `uv tool upgrade
+  skilldiff`, so a git install pinned to an older commit is refreshed. The README
+  documents the same.
+
 ## [0.12.0] - 2026-10-05
 
 ### Fixed
