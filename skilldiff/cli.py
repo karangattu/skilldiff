@@ -19,7 +19,11 @@ from skilldiff.config import (
     validate_integer,
     validate_string_list,
 )
-from skilldiff.experiment import ExperimentRunner, find_user_level_installs
+from skilldiff.experiment import (
+    ExperimentRunner,
+    find_harness_inheritance,
+    find_user_level_installs,
+)
 from skilldiff.grader import Grader
 from skilldiff.persistence import atomic_json, read_json, run_lock
 from skilldiff.reporter import (
@@ -686,6 +690,19 @@ def cmd_check(args: argparse.Namespace) -> int:
                 )
             else:
                 ok(f"{cfg.harness} CLI: {resolved} {version}".rstrip())
+        if cfg.harness == "opencode":
+            # Cheap capability probe: catches a missing/renamed `run` subcommand
+            # and records which flags the installed version actually accepts.
+            flags = runner.opencode_run_flags(resolved)
+            if not flags:
+                warn(
+                    "could not probe `opencode run --help`; optional flags are "
+                    "omitted and a rejected flag is recovered at run time"
+                )
+            elif "--dir" not in flags:
+                ok("opencode run probe: no --dir; skilldiff launches in cwd instead")
+            else:
+                ok("opencode run probe: --dir supported")
 
     if cfg.harness == "claude":
         if cfg.claude.auth == "subscription" and os.environ.get("ANTHROPIC_API_KEY"):
@@ -713,6 +730,15 @@ def cmd_check(args: argparse.Namespace) -> int:
                 "skill is installed at user level, so control can load it too: "
                 + ", ".join(installs)
             )
+
+    # Instructions/plugins/memory can leak into both arms even when the skill
+    # itself is project-local. Report the harness inheritance paths up front.
+    inheritance = find_harness_inheritance(cfg.skill_names, cfg.harness)
+    if inheritance:
+        warn(
+            "harness inheritance outside skills may leak into both arms: "
+            + ", ".join(inheritance)
+        )
 
     # Failure policy is pre-registered, not decided after seeing results.
     fp = dict(getattr(cfg, "failure_policy", {}) or {})
