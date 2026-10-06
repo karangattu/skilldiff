@@ -31,6 +31,11 @@ skilldiff check
 skilldiff run --runs 1
 ```
 
+> [!NOTE]
+> A git install is pinned to the commit resolved at install time, so an existing
+> `skilldiff` will not pick up later fixes on its own. Run `uv tool upgrade skilldiff`
+> to refresh it.
+
 > [!IMPORTANT]
 > Install from GitHub as shown above. The `skilldiff` package on PyPI is a different project.
 

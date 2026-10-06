@@ -16,12 +16,18 @@ any other words as extra instructions, such as the models or harness to use.
 
 ## 1. Install and locate
 
+A git install is pinned to the commit that was current when it was installed, so an
+existing `skilldiff` will not pick up later fixes on its own. Install it if missing and
+refresh it otherwise:
+
 ```bash
-skilldiff --version || uv tool install git+https://github.com/karangattu/skilldiff
+command -v skilldiff >/dev/null || uv tool install git+https://github.com/karangattu/skilldiff
+uv tool upgrade skilldiff
 ```
 
-If `uv` is not available, use `pipx install git+https://github.com/karangattu/skilldiff`.
-Don't run `pip install skilldiff`: that name on PyPI is a different project.
+If `uv` is not available, use `pipx install git+https://github.com/karangattu/skilldiff`
+and `pipx upgrade skilldiff`. Don't run `pip install skilldiff`: that name on PyPI is a
+different project.
 
 Find the skill under test. This is a directory with `SKILL.md`, or a folder of skill
 directories, such as a package's `.claude/skills/` or `skills/`. Read its `SKILL.md`.
