@@ -1,7 +1,15 @@
 import json
 from pathlib import Path
 
-from skilldiff.config import ClaudeConfig, ExperimentConfig, GraderConfig, TaskConfig
+import pytest
+
+from skilldiff.config import (
+    ClaudeConfig,
+    ExperimentConfig,
+    GraderConfig,
+    OpenCodeConfig,
+    TaskConfig,
+)
 from skilldiff.experiment import ExperimentRunner
 from skilldiff.runner import AgentRunner
 
@@ -190,3 +198,50 @@ def test_experiment_saves_pricing_basis_and_report_reproduces_it(tmp_path: Path,
 
     rebuilt = build_markdown_report(saved, run_root=run_dir)
     assert "| Control | 200 | 0 | 0 | 100 | $4.00 |" in rebuilt
+
+
+def test_experiment_aborts_when_harness_cannot_run(tmp_path: Path, monkeypatch):
+    """A dead harness must abort the matrix, not score untouched fixtures."""
+    fake = tmp_path / "opencode"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "run" ] && [ "$2" = "--help" ]; then\n'
+        '  echo "Usage: opencode run"; exit 0\n'
+        "fi\n"
+        "printf '%s\\n' "
+        "'{\"type\":\"error\",\"error\":{\"message\":\"Unrecognized flag: --dir\"}}'\n"
+        "exit 1\n"
+    )
+    fake.chmod(0o755)
+
+    skill_dir = tmp_path / "skills" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: my-skill\ndescription: d\n---\n")
+    task_file = tmp_path / "task.yaml"
+    task_file.write_text("id: t1\n")
+    task = TaskConfig(
+        id="t1",
+        prompt="Fix it",
+        grader=GraderConfig(type="command", command="exit 0"),
+        source_path=task_file,
+    )
+
+    cfg = ExperimentConfig(
+        name="broken-harness",
+        skill=skill_dir,
+        models=["m"],
+        tasks_patterns=["task.yaml"],
+        runs=1,
+        harness="opencode",
+        opencode=OpenCodeConfig(bin_path=str(fake)),
+        claude=ClaudeConfig(),
+    )
+    runner = ExperimentRunner(
+        cfg,
+        [task],
+        output_dir=tmp_path / "runs",
+        agent_runner=AgentRunner(opencode_bin=str(fake)),
+    )
+
+    with pytest.raises(RuntimeError, match="could not run any session"):
+        runner.run()

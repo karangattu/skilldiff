@@ -1114,6 +1114,7 @@ class ExperimentRunner:
                     "attempt": 1,
                     "retries": [],
                     "status": res.status,
+                    "failure_kind": res.failure_kind,
                     "error": (res.error or "")[:MAX_STORED_ERROR] or None,
                     "prompt": res.prompt,
                     "response": res.response,
@@ -1151,6 +1152,15 @@ class ExperimentRunner:
                         records[arm]["skill_path"] = str(self.config.skill_b)
                 if arm in ("control", "baseline") and workspaces[arm].removed_from_control:
                     records[arm]["removed_from_fixture"] = workspaces[arm].removed_from_control
+                # A harness invocation failure means the agent CLI never ran, so
+                # the grader only measured the untouched fixture. Keep that score
+                # as diagnostic evidence, but never as a graded datapoint.
+                if res.failure_kind == "harness_error":
+                    records[arm]["partial_score"] = records[arm].get("score")
+                    records[arm]["score"] = None
+                    records[arm]["success"] = False
+                    records[arm]["grade_status"] = "ungraded"
+                    records[arm]["analysis_excluded"] = True
                 # Preserve the partial grader output for audit, but do not
                 # count an infrastructure failure as a completed repair.
                 fp = dict(getattr(self.config, "failure_policy", {}) or {})
@@ -1179,6 +1189,23 @@ class ExperimentRunner:
                                 "cost": records["baseline"].get("cost"),
                             }
                         )
+
+        # If the harness could not run a single arm of this pair, every later
+        # session will fail the same way. Abort now instead of burning the
+        # whole matrix and reporting meaningless scores.
+        if records and all(
+            r.get("failure_kind") == "harness_error" for r in records.values()
+        ):
+            sample = next(
+                (r.get("error") for r in records.values() if r.get("error")),
+                "agent CLI failed to start",
+            )
+            raise RuntimeError(
+                f"Harness '{execution.harness}' could not run any session for task "
+                f"'{task.id}' (rep {pair.repetition}): "
+                f"{str(sample).strip().splitlines()[0][:300]}. "
+                "Aborting before running the remaining pairs."
+            )
 
         return records["control"], records["treatment"]
 
@@ -1537,15 +1564,23 @@ def _run_warnings(
         ]
         if failed:
             kinds = sorted({str(r.get("status")) for r in failed})
+            fkinds = sorted(
+                {str(r.get("failure_kind")) for r in failed if r.get("failure_kind")}
+            )
             sample = next((r.get("error") for r in failed if r.get("error")), None)
-            # Distinguish infrastructure failures (agent error/timeout) from
-            # agent failures (low scores on completed runs). Failed sessions
-            # were still graded on partial work when possible.
+            # Distinguish infrastructure failures (the agent CLI did not run)
+            # from agent failures (low scores on completed runs). Harness
+            # failures are ungraded, never scored as a partial result.
             graded = sum(1 for r in failed if r.get("grade_status") == "graded")
             ungraded = len(failed) - graded
+            what = (
+                "harness errors (the agent CLI did not run)"
+                if fkinds == ["harness_error"]
+                else " or ".join(kinds)
+            )
             msg = (
                 f"{len(failed)} of {len(runs)} {arm_name} runs ended with "
-                f"{' or '.join(kinds)} (agent infrastructure failure, not a low score)"
+                f"{what}, not a low score"
             )
             if graded:
                 msg += f"; {graded} were still graded on partial work"
@@ -1554,6 +1589,8 @@ def _run_warnings(
             msg += "."
             if sample:
                 msg += f" First error: {str(sample).strip().splitlines()[0][:200]}"
+            if len(failed) == len(runs):
+                msg += " Every run failed, so this arm has no usable evidence."
             warnings.append(msg)
         grade_failed = [r for r in runs if r.get("grade_status") in ("timeout", "error")]
         if grade_failed:

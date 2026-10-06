@@ -45,6 +45,11 @@ class RunResult:
     skill_available: Optional[bool] = None
     # "ok", "error", or "timeout".
     status: str = "ok"
+    # Why a non-ok status happened. "harness_error" means the agent CLI could
+    # not be invoked (bad flags, missing binary, auth); "timeout" is a deadline.
+    # None on ok runs. Kept separate from status so the reporter can refuse to
+    # treat "the tool would not start" as a low agent score.
+    failure_kind: Optional[str] = None
 
 
 @dataclass
@@ -178,17 +183,20 @@ def _failed_result(prompt: str, exc: Exception, duration: float) -> RunResult:
         cache_read_tokens=None,
         cache_creation_tokens=None,
         num_turns=None,
+        failure_kind="harness_error",
     )
 
 
 def _finalize_status(result: RunResult, execution: ExecResult) -> RunResult:
     if execution.timed_out:
         result.status = "timeout"
+        result.failure_kind = result.failure_kind or "timeout"
         result.error = result.error or f"Agent timed out after {execution.duration:.0f}s"
         if result.exit_code == 0:
             result.exit_code = -1
     elif result.exit_code != 0:
         result.status = "error"
+        result.failure_kind = result.failure_kind or "harness_error"
         result.error = result.error or execution.stderr.strip() or f"exit code {result.exit_code}"
     return result
 
