@@ -26,9 +26,6 @@ To run evaluations or try the CLI demo:
 
 ```bash
 uv tool install git+https://github.com/karangattu/skilldiff
-skilldiff init
-skilldiff check
-skilldiff run --runs 1
 ```
 
 > [!NOTE]
