@@ -389,6 +389,7 @@ class AgentRunner:
         container_image: Optional[str] = None,
         readonly_mounts: Optional[list[tuple[Path, str]]] = None,
         forward_env: Optional[list[str]] = None,
+        temp_dir: Optional[Path] = None,
     ) -> ExecResult:
         """Run an agent CLI without a stdin pipe, with a timeout, and clean up its children.
 
@@ -409,6 +410,9 @@ class AgentRunner:
         # Harnesses that resolve their project directory from PWD (Bun/OpenCode,
         # for example) otherwise operate on the caller's directory.
         env["PWD"] = str(cwd.resolve())
+        if temp_dir is not None:
+            for key in ("TMPDIR", "TMP", "TEMP"):
+                env[key] = str(temp_dir.resolve())
         container_name = None
         runtime = None
         if sys.platform == "darwin" and isolation == "local" and shutil.which("caffeinate"):
@@ -425,7 +429,10 @@ class AgentRunner:
                 return ExecResult("", "Container image inspection timed out", -1,
                                   round(time.monotonic() - started, 2), True)
             container_name = "skilldiff-" + uuid.uuid4().hex
-            mappings = [(cwd.resolve(), "/workspace"), *(readonly_mounts or [])]
+            mounts = list(readonly_mounts or [])
+            mappings = [(cwd.resolve(), "/workspace"), *mounts]
+            if temp_dir is not None:
+                mappings.append((temp_dir.resolve(), "/session-tmp"))
 
             def translate(value: str) -> str:
                 for source, target in mappings:
@@ -446,15 +453,25 @@ class AgentRunner:
                 "-w",
                 "/workspace",
             ]
-            for source, target in readonly_mounts or []:
+            if temp_dir is not None:
+                exec_cmd.extend(["-v", f"{temp_dir.resolve()}:/session-tmp"])
+            for source, target in mounts:
                 exec_cmd.extend(["-v", f"{source.resolve()}:{target}:ro"])
             container_env = {
-                key: env[key] for key in (*CONTAINER_AUTH_VARS, *(forward_env or [])) if key in env
+                key: env[key]
+                for key in (*CONTAINER_AUTH_VARS, *(forward_env or []),
+                            *(("TMPDIR", "TMP", "TEMP") if temp_dir is not None else ()))
+                if key in env
             }
             # Pass values through the client's environment, keeping credentials out of argv.
             for key, value in container_env.items():
-                env[key] = translate(value)
-                exec_cmd.extend(["-e", key])
+                if temp_dir is not None and key in {"TMPDIR", "TMP", "TEMP"}:
+                    # These paths are not secrets. Keep the runtime client's temp
+                    # directory usable on the host, and set the container path explicitly.
+                    exec_cmd.extend(["-e", f"{key}={translate(value)}"])
+                else:
+                    env[key] = translate(value)
+                    exec_cmd.extend(["-e", key])
             exec_cmd.extend([img, *container_cmd])
 
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
@@ -521,6 +538,7 @@ class AgentRunner:
         harness: Optional[str] = None,
         skill_names: Optional[list[str]] = None,
         timeout: Optional[float] = None,
+        temp_dir: Optional[Path] = None,
     ) -> RunResult:
         started = time.monotonic()
         deadline = started + timeout if timeout is not None else None
@@ -547,7 +565,10 @@ class AgentRunner:
                     last_res.exit_code = -1
                     last_res.error = "Task timeout exhausted before the next turn"
                 break
-            res = self.run(turn_prompt, cwd, model, config, harness, skill_names, turn_timeout)
+            res = self._run_session(
+                turn_prompt, cwd, model, config, harness, skill_names, turn_timeout,
+                temp_dir=temp_dir,
+            )
             last_res = res
             for metric in metrics:
                 value = getattr(res, metric)
@@ -598,6 +619,25 @@ class AgentRunner:
         skill_names: Optional[list[str]] = None,
         timeout: Optional[float] = None,
     ) -> RunResult:
+        # Workspaces already have private roots. Keep temporary files outside
+        # the fixture/diff, reuse them across turns, and never mutate os.environ.
+        with tempfile.TemporaryDirectory(prefix="tmp-", dir=cwd.resolve().parent) as tmp:
+            return self._run_session(
+                prompt, cwd, model, config, harness, skill_names, timeout,
+                temp_dir=Path(tmp),
+            )
+
+    def _run_session(
+        self,
+        prompt: str | list[str],
+        cwd: Path,
+        model: str,
+        config: ExperimentConfig | ClaudeConfig | Any,
+        harness: Optional[str] = None,
+        skill_names: Optional[list[str]] = None,
+        timeout: Optional[float] = None,
+        temp_dir: Optional[Path] = None,
+    ) -> RunResult:
         timeout = timeout if timeout is not None else getattr(config, "timeout_seconds", None)
         if isinstance(config, ExperimentConfig):
             validate_container_auth(config)
@@ -612,7 +652,7 @@ class AgentRunner:
                 prompt = prompt[0]
             else:
                 return self._run_multi_turn(
-                    prompt, cwd, model, config, harness, skill_names, timeout
+                    prompt, cwd, model, config, harness, skill_names, timeout, temp_dir
                 )
 
         if os.environ.get("SKILLDIFF_MOCK_RUNNER"):
@@ -686,6 +726,7 @@ class AgentRunner:
                 timeout,
                 isolation=isolation,
                 container_image=container_image,
+                temp_dir=temp_dir,
             )
         elif active_harness == "opencode":
             result = self._run_opencode(
@@ -696,6 +737,7 @@ class AgentRunner:
                 timeout,
                 isolation=isolation,
                 container_image=container_image,
+                temp_dir=temp_dir,
                 skill_names=names,
             )
         elif active_harness in {"antigravity", "agy"}:
@@ -707,6 +749,7 @@ class AgentRunner:
                 timeout,
                 isolation=isolation,
                 container_image=container_image,
+                temp_dir=temp_dir,
             )
         else:
             result = self._run_claude(
@@ -718,6 +761,7 @@ class AgentRunner:
                 names,
                 isolation=isolation,
                 container_image=container_image,
+                temp_dir=temp_dir,
             )
 
         if result.skill_invoked is None and names and result.transcript:
@@ -787,6 +831,7 @@ class AgentRunner:
         skill_names: Optional[list[str]] = None,
         isolation: str = "local",
         container_image: Optional[str] = None,
+        temp_dir: Optional[Path] = None,
     ) -> RunResult:
         cmd = self.claude_command(prompt, model, claude_cfg)
         env = os.environ.copy()
@@ -799,7 +844,8 @@ class AgentRunner:
         start_time = time.perf_counter()
         try:
             execution = self._exec(
-                cmd, cwd, env, timeout, isolation=isolation, container_image=container_image
+                cmd, cwd, env, timeout, isolation=isolation, container_image=container_image,
+                temp_dir=temp_dir,
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
@@ -841,6 +887,7 @@ class AgentRunner:
         timeout: Optional[float] = None,
         isolation: str = "local",
         container_image: Optional[str] = None,
+        temp_dir: Optional[Path] = None,
     ) -> RunResult:
         bin_path = codex_cfg.bin_path or self.codex_bin
         cmd = [bin_path, "exec", prompt, "-m", model, "--json"]
@@ -859,7 +906,8 @@ class AgentRunner:
         start_time = time.perf_counter()
         try:
             execution = self._exec(
-                cmd, cwd, env, timeout, isolation=isolation, container_image=container_image
+                cmd, cwd, env, timeout, isolation=isolation, container_image=container_image,
+                temp_dir=temp_dir,
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
@@ -987,6 +1035,7 @@ class AgentRunner:
         timeout: Optional[float] = None,
         isolation: str = "local",
         container_image: Optional[str] = None,
+        temp_dir: Optional[Path] = None,
         skill_names: Optional[list[str]] = None,
     ) -> RunResult:
         bin_path = opencode_cfg.bin_path or self.opencode_bin
@@ -1038,6 +1087,7 @@ class AgentRunner:
                 timeout,
                 isolation=isolation,
                 container_image=container_image,
+                temp_dir=temp_dir,
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
@@ -1056,6 +1106,7 @@ class AgentRunner:
                         timeout,
                         isolation=isolation,
                         container_image=container_image,
+                        temp_dir=temp_dir,
                     )
                     cmd = retry_cmd
                 except Exception as exc:
@@ -1164,6 +1215,7 @@ class AgentRunner:
         timeout: Optional[float] = None,
         isolation: str = "local",
         container_image: Optional[str] = None,
+        temp_dir: Optional[Path] = None,
     ) -> RunResult:
         bin_path = antigravity_cfg.bin_path or self.antigravity_bin
         cmd = [bin_path, "-p", prompt, "--output-format", "json", "--add-dir", str(cwd)]
@@ -1189,6 +1241,7 @@ class AgentRunner:
                 timeout,
                 isolation=isolation,
                 container_image=container_image,
+                temp_dir=temp_dir,
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))

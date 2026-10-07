@@ -6,6 +6,19 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Local `check` and run reports warn about possible skill exposure through live
+  sources and saved run copies, separately from detected control contamination.
+  `check --scan-home` optionally performs a bounded scan for matching copies and
+  reports its coverage limits. Unmounted host files do not trigger container warnings.
+
+### Changed
+
+- Each agent run gets private `TMPDIR`, `TMP`, and `TEMP` paths outside its workspace,
+  shared across scripted turns and cleaned up when the run ends. Agent containers
+  mount only that run's temporary directory at `/session-tmp`.
+
 ## [0.14.0] - 2026-10-07
 
 ### Added

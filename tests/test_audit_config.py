@@ -317,11 +317,14 @@ def test_check_versions_image_binary_and_grades_inside_container(
     )
     monkeypatch.setattr("skilldiff.cli.find_user_level_installs",
                         lambda *args: ["skill installed at user level"])
+    monkeypatch.setattr("skilldiff.cli.find_harness_inheritance",
+                        lambda *args: ["host instructions that are not mounted"])
     assert cmd_check(Namespace(config=str(config), no_grade=False)) == 0
     output = capsys.readouterr().out
     assert "image-agent 9.9.9" in output
     assert "untouched fixture scores 0%" in output
     assert "skill is installed at user level" not in output
+    assert "host instructions that are not mounted" not in output
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     runs = [call for call in calls if call[0] == "run"]
     assert len(runs) == 2

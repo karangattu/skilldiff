@@ -89,6 +89,33 @@ def test_runtime_receives_translated_paths_selected_env_and_identity(tmp_path, m
     assert ["rm", "-f", name] in calls
 
 
+@pytest.mark.parametrize("isolation", ["docker", "podman"])
+def test_agent_container_mounts_only_its_session_temp(tmp_path, monkeypatch, isolation):
+    runtime = tmp_path / isolation
+    runtime.write_text(
+        "#!/usr/bin/env python3\nimport json,os,sys\n"
+        "if sys.argv[1]=='run':\n"
+        " print(json.dumps({'args':sys.argv[1:],"
+        "'temp':[os.getenv(k) for k in ('TMPDIR','TMP','TEMP')]}))\n"
+    )
+    runtime.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_temp = tmp_path / "private-temp"
+    session_temp.mkdir()
+    result = AgentRunner()._exec(
+        ["agent"], workspace, dict(os.environ, TMPDIR="/host/shared"), 2,
+        isolation=isolation, container_image="sha256:fixture-image", temp_dir=session_temp,
+    )
+    assert result.exit_code == 0
+    evidence = json.loads(result.stdout)
+    assert evidence["temp"] == [str(session_temp.resolve())] * 3
+    assert all(f"{key}=/session-tmp" in evidence["args"] for key in ("TMPDIR", "TMP", "TEMP"))
+    assert f"{session_temp.resolve()}:/session-tmp" in evidence["args"]
+    assert "/host/shared" not in evidence["args"]
+
+
 def test_container_provenance_uses_image_cli_version(tmp_path, monkeypatch):
     runtime = tmp_path / "docker"
     runtime.write_text(
@@ -161,11 +188,19 @@ def test_real_container_paths_env_grader_and_cleanup(tmp_path, monkeypatch, runt
     runtime_name, image = runtime
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    session_temp = tmp_path / "session-temp"
+    session_temp.mkdir()
+    sibling = tmp_path / "other-session"
+    sibling.mkdir()
+    (sibling / "skill.txt").write_text("must not be mounted")
     agent = workspace / "fake-agent"
     agent.write_text(
-        "#!/usr/bin/env python3\nimport json,os,pathlib,sys\n"
+        "#!/usr/bin/env python3\nimport json,os,pathlib,sys,tempfile\n"
+        "pathlib.Path(tempfile.gettempdir(),'agent-temp.txt').write_text('private')\n"
         "pathlib.Path('evidence.json').write_text(json.dumps({'cwd':os.getcwd(),"
         "'path':sys.argv[1],'auth':os.getenv('OPENAI_API_KEY'),"
+        "'temp':tempfile.gettempdir(),'sibling_visible':pathlib.Path("
+        + repr(str(sibling / "skill.txt")) + ").exists(),"
         "'secret':os.getenv('UNRELATED_HOST_SECRET'),'host_home':os.getenv('HOME')}))\n"
     )
     agent.chmod(0o755)
@@ -179,6 +214,7 @@ def test_real_container_paths_env_grader_and_cleanup(tmp_path, monkeypatch, runt
         20,
         isolation=runtime_name,
         container_image=image,
+        temp_dir=session_temp,
     )
     assert result.exit_code == 0, result.stderr
     evidence = json.loads((workspace / "evidence.json").read_text())
@@ -187,6 +223,9 @@ def test_real_container_paths_env_grader_and_cleanup(tmp_path, monkeypatch, runt
     assert evidence["auth"] == "fixture-api-key"
     assert evidence["secret"] is None
     assert evidence["host_home"] != str(Path.home())
+    assert evidence["temp"] == "/session-tmp"
+    assert evidence["sibling_visible"] is False
+    assert (session_temp / "agent-temp.txt").read_text() == "private"
 
     task_dir = tmp_path / "tasks" / "dev"
     task_dir.mkdir(parents=True)

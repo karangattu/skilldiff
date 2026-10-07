@@ -164,7 +164,7 @@ trustworthy are bookkeeping that is easy to skip and hard to notice you skipped.
 
 What keeps it fair:
 
-- **Isolation.** If the control arm can reach the skill, there is no clean baseline. SkillDiff checks for this and marks the run INVALID rather than printing a number you would misread. For Claude the default blocks user skills and plugins from both arms.
+- **Isolation.** SkillDiff marks detected control-arm skill loading or workspace contamination INVALID. For Claude the default excludes user settings from automatic loading. Local agents may still read skill sources or saved snapshots elsewhere on the host; exposure warnings are advisory and do not prove contamination. Use container execution or an enforced read sandbox to block those paths.
 - **Blind grading.** Graders see anonymous work, with names and arm labels removed.
 - **Balanced order.** Each task and model alternates which arm runs first, from a recorded seed, so no arm keeps the warm cache every time.
 - **Adoption.** The usual way a skill "fails" is that it never loaded. The report counts how many skill runs actually used the skill.
@@ -233,7 +233,7 @@ The agent then does the work:
 1. Reads the skill and runs `skilldiff lint` on it.
 2. Runs `skilldiff init --skill <path>` outside the skill repo.
 3. Writes 2 to 5 tasks, fixtures, and graders.
-4. Runs `skilldiff check` until the output is clean.
+4. Runs `skilldiff check`, fixes failures, and assesses exposure warnings before running.
 5. Runs a smoke test with `--runs 1`.
 6. Asks you before the full run and shows run count and max cost.
 7. Reads the finished run with `skilldiff diagnose` and the report, then summarizes.
@@ -254,7 +254,7 @@ Before each treatment run, skilldiff copies the skill under test into the fresh 
 
 The control arm gets none of these. In A/B mode both arms carry a skill and the other revision is stripped from the fixture. See [Why SkillDiff, and how it stays fair](#why-skilldiff).
 
-SkillDiff also scans these user-level paths for contamination, and `check` reports anything it finds there as a contamination warning:
+For local runs, SkillDiff also checks these user-level paths for possible harness inheritance:
 
 | Harness | User-level paths watched |
 |---|---|
@@ -264,6 +264,22 @@ SkillDiff also scans these user-level paths for contamination, and `check` repor
 | `antigravity` | `~/.gemini/skills`, `~/.agents/skills`, `~/.gemini/GEMINI.md`, `~/.gemini/memory` |
 
 Antigravity's own docs have moved its global location between releases (`~/.gemini/config/skills/` now, `~/.gemini/antigravity/skills/` and `~/.gemini/skills/` earlier), and the `skills` CLI writes `~/.agents/skills`, which every current Antigravity surface reads. SkillDiff watches `~/.gemini/skills` and `~/.agents/skills`, and `isolate: true` keeps user-level skills out of both arms regardless.
+
+`check` and `run` also warn about the live skill sources and matching copies in the
+experiment's `runs/` directory, including frozen `inputs/` snapshots. Runs record
+these warnings in `results.json`, the terminal summary, and every report format.
+The source warning is expected for local skill evaluations, even with automatic
+user-level skill loading disabled. It does not mark a result INVALID.
+
+Use `skilldiff check --scan-home` to look for additional copies under `$HOME`.
+Copies match a skill's directory name, frontmatter name, or identical `SKILL.md`
+contents, including both revisions in A/B mode and skills in a pack. Each scan
+stops after 20000 entries, 5 seconds, or 20 matches. It reports skipped and
+unreadable paths. It does not follow symlinks, scan `.git`, `.venv`, `venv`,
+`node_modules`, `__pycache__`, or `.cache`, or read `SKILL.md` files over 1 MiB.
+No matches cannot certify a clean host: renamed, changed, or otherwise unscanned
+copies may still exist. Container runs skip host exposure checks because those
+host paths are not mounted into agent containers; the image itself must be clean.
 
 </details>
 
@@ -493,7 +509,7 @@ Keep the entire run directory, including `inputs/`, for recovery. A small siblin
 | `skilldiff init [--skill PATH] [--harness H] [--dir D]` | Make a demo or a template for your skill |
 | `skilldiff init --skill-a A --skill-b B [--include-baseline] [--preset revision\|compression] [--dir D]` | Make a skill A/B test with paired results |
 | `skilldiff init --pr N --repo PATH [--base REF] [--pr-mode M] [--pr-pair P]` | Make a PR test from local refs |
-| `skilldiff check [-c CONFIG] [--no-probe]` | Check the config, the CLI, the skill, isolation, and the graders (Claude: one tiny authenticated call confirms the login; `--no-probe` skips it) |
+| `skilldiff check [-c CONFIG] [--no-probe] [--no-grade] [--scan-home]` | Check config, CLI, skill exposure, and graders; optionally scan HOME for copies. `--no-probe` skips the Claude login call; `--no-grade` skips graders. |
 | `skilldiff run [-c CONFIG] [--runs N] [-j N] [-m MODEL] [-t TASK] [--resume \| --resume-from DIR] [--seed N]` | Run the test (resume reuses pairs only when hashes match) |
 | `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run |
 | `skilldiff report [RUN_DIR]` | Rebuild reports for a run |
@@ -516,6 +532,13 @@ Antigravity. Short names expand to full models. `gemini-3.8` becomes `gemini-3.8
 
 Sign in with each CLI's normal login before you run. Each harness accepts `bin_path` and `extra_args`. You can also set `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, or `AGY_BIN`.
 
+Each agent run uses a private temporary directory beside its workspace, with
+`TMPDIR`, `TMP`, and `TEMP` set only in the child process. Scripted turns share
+that directory; other arms and repetitions get separate directories. Temporary
+files are cleaned up when the run ends, including on failure or timeout, and are
+kept out of the workspace diff. This prevents accidental sharing by programs
+that honor these variables; directory layout does not restrict filesystem reads.
+
 By default runs are on the host. Set `isolation: docker` (or `podman`) and
 `container_image` in `skilldiff.yaml` to run agents and graders inside a container.
 The runtime must be on `PATH`, its daemon must be running, and the image must
@@ -526,7 +549,8 @@ Use an image containing the harness CLI, grader programs, and their dependencies
 The default `python:3.11` image only supplies Python; it is not a ready-to-run
 agent image. An explicit harness `bin_path` refers to a path inside the image.
 Automatically discovered host CLIs use their executable name inside the image.
-Workspace arguments are translated to `/workspace`. Graders also receive
+Workspace arguments are translated to `/workspace`; agents receive their own
+temporary directory at `/session-tmp`. Graders also receive
 read-only mounts of task inputs and candidate artifacts.
 
 Only selected authentication variables and grader `SKILLDIFF_*` variables are

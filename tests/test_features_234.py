@@ -1,6 +1,6 @@
 import json
+import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -14,7 +14,7 @@ from skilldiff.diagnose import diagnose_run
 from skilldiff.grader import Grader, check_blast_radius
 from skilldiff.linter import lint_skill
 from skilldiff.profiler import compute_context_tax, measure_skill_footprint
-from skilldiff.runner import AgentRunner, RunResult
+from skilldiff.runner import AgentRunner
 
 
 def test_check_blast_radius_allowed_and_forbidden():
@@ -196,61 +196,40 @@ def test_harnesses_key_is_rejected(tmp_path: Path):
         load_experiment(exp_file)
 
 
-def test_runner_multi_turn(tmp_path: Path):
-    runner = AgentRunner()
-    prompts = ["Step 1: Create file", "Step 2: Modify file"]
-
-    with patch.object(runner, "run") as mock_run:
-        mock_run.side_effect = [
-            RunResult(
-                prompt="Step 1: Create file",
-                response="Created file",
-                transcript="turn 1 transcript",
-                duration=1.2,
-                cost=0.01,
-                input_tokens=100,
-                output_tokens=50,
-                tool_calls=1,
-                exit_code=0,
-                status="ok",
-                skill_invoked=True,
-            ),
-            RunResult(
-                prompt="Step 2: Modify file",
-                response="Modified file",
-                transcript="turn 2 transcript",
-                duration=1.8,
-                cost=0.02,
-                input_tokens=150,
-                output_tokens=80,
-                tool_calls=1,
-                exit_code=0,
-                status="ok",
-                skill_invoked=False,
-            ),
-        ]
-
-        exp_config = ExperimentConfig(
-            name="test",
-            skill=tmp_path,
-            models=["sonnet"],
-            tasks_patterns=["*.yaml"],
-        )
-        res = runner._run_multi_turn(
-            prompts=prompts,
-            cwd=tmp_path,
-            model="test-model",
-            config=exp_config,
-        )
-
-        assert res.status == "ok"
-        assert res.skill_invoked is True
-        assert res.cost == 0.03
-        assert res.input_tokens == 250
-        assert res.output_tokens == 130
-        assert "TURN 1" in res.transcript
-        assert "TURN 2" in res.transcript
-
+def test_runner_multi_turn(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("SKILLDIFF_MOCK_RUNNER", raising=False)
+    agent = tmp_path / "agent"
+    agent.write_text(
+        f"#!{sys.executable}\n"
+        "import json,pathlib\n"
+        "state=pathlib.Path('turn.txt')\n"
+        "turn=int(state.read_text())+1 if state.exists() else 1\n"
+        "state.write_text(str(turn))\n"
+        "if turn==1:\n"
+        " print(json.dumps({'type':'assistant','message':{'content':[{"
+        "'type':'tool_use','name':'Skill','input':{'skill':'my-skill'}}]}}))\n"
+        "print(json.dumps({'type':'result','result':'Created' if turn==1 else 'Modified',"
+        "'total_cost_usd':0.01 if turn==1 else 0.02,'num_turns':1,"
+        "'usage':{'input_tokens':100 if turn==1 else 150,"
+        "'output_tokens':50 if turn==1 else 80}}))\n",
+        encoding="utf-8",
+    )
+    agent.chmod(0o755)
+    config = ExperimentConfig(name="test", skill=None, models=["sonnet"], tasks_patterns=[])
+    config.claude.bin_path = str(agent)
+    result = AgentRunner().run(
+        ["Step 1: Create file", "Step 2: Modify file"], tmp_path, "test-model", config,
+        skill_names=["my-skill"],
+    )
+    assert result.status == "ok"
+    assert result.skill_invoked is True
+    assert result.cost == 0.03
+    assert result.input_tokens == 250
+    assert result.output_tokens == 130
+    assert result.num_turns == 2
+    assert result.response == "Modified"
+    assert "TURN 1" in result.transcript
+    assert "TURN 2" in result.transcript
 
 
 def test_measure_skill_footprint(tmp_path: Path):

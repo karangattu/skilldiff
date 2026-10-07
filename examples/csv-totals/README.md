@@ -41,6 +41,7 @@ The numbers in `sample/` are synthetic. Do not quote them as findings.
 ## Run it for real
 
 ```bash
+skilldiff check -c skilldiff.yaml --scan-home # advisory host exposure check
 skilldiff run -c skilldiff.yaml          # full run (paid agent sessions)
 skilldiff run -c skilldiff.yaml --runs 1 # cheap smoke test
 cp -R sample /tmp/csv-totals-report      # preserve the historical sample
@@ -50,6 +51,14 @@ skilldiff report /tmp/csv-totals-report  # inspect the current report format
 `skilldiff run` needs the harness CLI (Claude by default) and network access.
 Tasks use `$SKILLDIFF_TASK_DIR` to reach the grader, so the layout is portable;
 move the folder anywhere and it still works.
+
+For local runs, a warning about this example's live skill source is expected.
+Read exposure warnings before trusting the result; they do not prove contamination
+or mark a run INVALID. Separate workspaces and private temporary directories do
+not block host reads. Use container execution or an enforced read sandbox when
+the control arm must be unable to read the skill elsewhere. `--scan-home` is
+bounded and reports skipped or unreadable paths; no matches cannot certify a
+clean host. The committed historical sample retains its original warnings.
 
 ## Regenerate the sample report
 

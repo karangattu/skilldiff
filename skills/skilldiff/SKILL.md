@@ -125,7 +125,11 @@ Other rules:
   workspace for every run, without `.git` history. Escaping symlinks are rejected.
   Put graders in `graders/`, outside the fixture, and call them through
   `$SKILLDIFF_TASK_DIR`. Outside the fixture is not isolation by itself: confine
-  agents with the harness sandbox so they cannot read parent paths.
+  agents with an enforced read sandbox or container so they cannot read parent paths.
+  Each agent run has its own temporary directory outside the workspace;
+  `TMPDIR`, `TMP`, and `TEMP` point there, scripted turns share it, and it is
+  cleaned up after the run. This reduces accidental sharing, but does not block
+  reads of sibling sessions or host files.
 - **Grade outcomes deterministically.** Run tests or parse files with `ast` or regex.
   Print `{"score": 0.0-1.0, "success": bool, "checks": [...]}` as the last line.
   Accept every valid solution, not only the one that the skill suggests. A grader that
@@ -154,8 +158,9 @@ If the skill runs CLI commands, allow-list them per harness so both arms get the
 same permissions. For Claude use `claude.allowed_tools` (for example
 `["Bash(mytool *)"]`); for Codex use `codex.sandbox` (default
 `workspace-write`); for OpenCode and Antigravity use
-`dangerously_skip_permissions`. Keep agents confined to the workspace so they
-cannot read grader files through parent paths.
+`dangerously_skip_permissions`. Tool permissions and write sandboxes alone do
+not establish read isolation. Use `isolation: docker`/`podman` or an enforced read
+sandbox to keep agents from reading grader files or skills outside the workspace.
 
 ## 4. Validate, then smoke-test
 
@@ -163,7 +168,20 @@ cannot read grader files through parent paths.
 skilldiff check -c skill-eval/skilldiff.yaml
 ```
 
-Fix every `FAIL` and read every `warn`. When `check` is clean, run one pair per task:
+Fix every `FAIL` and assess every `warn` before running one pair per task. Local
+checks warn about live skill sources and matching copies in `runs/`, including
+input snapshots, even when automatic user-level loading is disabled. These are
+possible exposure paths, not proof of contamination; they do not make a run
+INVALID. Runs save exposure warnings in results and reports.
+
+For a broader advisory check, use `skilldiff check --scan-home`. It matches
+directory/frontmatter names or identical `SKILL.md` contents. Scans stop after
+20000 entries, 5 seconds, or 20 matches, report skipped/unreadable paths, exclude
+`.git`, `.venv`, `venv`, `node_modules`, `__pycache__`, and `.cache`, skip files
+over 1 MiB, and do not follow symlinks. No matches cannot certify a clean host.
+Host checks are skipped for agent containers, whose image must also be clean.
+
+Then run one pair per task:
 
 ```bash
 skilldiff run -c skill-eval/skilldiff.yaml --runs 1

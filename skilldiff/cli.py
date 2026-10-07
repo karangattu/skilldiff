@@ -25,6 +25,7 @@ from skilldiff.experiment import (
     find_user_level_installs,
 )
 from skilldiff.grader import Grader
+from skilldiff.host_exposure import host_exposure_warnings
 from skilldiff.persistence import atomic_json, read_json, run_lock
 from skilldiff.reporter import (
     _paired_comparison_metrics,
@@ -756,12 +757,22 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     # Instructions/plugins/memory can leak into both arms even when the skill
     # itself is project-local. Report the harness inheritance paths up front.
-    inheritance = find_harness_inheritance(cfg.skill_names, cfg.harness)
+    inheritance = (
+        find_harness_inheritance(cfg.skill_names, cfg.harness)
+        if cfg.isolation == "local" else []
+    )
     if inheritance:
         warn(
             "harness inheritance outside skills may leak into both arms: "
             + ", ".join(inheritance)
         )
+
+    for message in host_exposure_warnings(
+        cfg, config_path.resolve().parent / "runs", scan_home=getattr(args, "scan_home", False)
+    ):
+        warn(message)
+    if getattr(args, "scan_home", False) and cfg.isolation != "local":
+        ok("host scan skipped: host HOME and run snapshots are not mounted into agent containers")
 
     # Failure policy is pre-registered, not decided after seeing results.
     fp = dict(getattr(cfg, "failure_policy", {}) or {})
@@ -1474,6 +1485,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check_parser.add_argument(
         "--no-grade", action="store_true", help="Skip running graders on the untouched fixtures"
+    )
+    check_parser.add_argument(
+        "--scan-home", action="store_true",
+        help="Also scan HOME for possible skill copies (bounded, advisory; local runs only)",
     )
     check_parser.set_defaults(func=cmd_check)
 

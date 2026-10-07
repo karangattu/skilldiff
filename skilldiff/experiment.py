@@ -18,6 +18,7 @@ from typing import Any, Callable, Optional
 from skilldiff import __version__
 from skilldiff.config import ExperimentConfig, TaskConfig
 from skilldiff.grader import Candidate, Grader
+from skilldiff.host_exposure import host_exposure_warnings
 from skilldiff.persistence import atomic_json, atomic_write, read_json, run_lock
 from skilldiff.reporter import calculate_metrics, create_reports
 from skilldiff.revisions import resolve_comparison
@@ -376,7 +377,10 @@ class ExperimentRunner:
     # ------------------------------------------------------------------ setup
 
     def preflight_warnings(self) -> list[str]:
-        warnings: list[str] = []
+        warnings = host_exposure_warnings(
+            self.config, self.output_dir,
+            snapshot_skills=(self._execution_config.skill_dirs if self._snapshot_paths else []),
+        )
         installs = (
             find_user_level_installs(self.config.skill_names, self.config.harness)
             if self.config.isolation == "local" else []
