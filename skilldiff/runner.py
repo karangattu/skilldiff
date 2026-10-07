@@ -232,6 +232,32 @@ def _opencode_unrecognized_flags(stdout: str, stderr: str) -> list[str]:
     return sorted(set(re.findall(r"Unrecognized flag:\s*(--[A-Za-z0-9-]+)", text)))
 
 
+AUTH_ERROR_MARKERS = (
+    "failed to authenticate",
+    "oauth",
+    "not logged in",
+    "please run /login",
+    "invalid api key",
+    "authentication_error",
+    "401 unauthorized",
+    "api error: 401",
+)
+
+
+def looks_like_auth_error(text: object) -> bool:
+    """True when a harness error message points at expired or missing credentials."""
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in AUTH_ERROR_MARKERS)
+
+
+def auth_login_hint(harness: str) -> str:
+    return {
+        "claude": "Sign in with `claude auth login`",
+        "codex": "Sign in with `codex login`",
+        "opencode": "Sign in with `opencode providers login`",
+    }.get(harness, f"Sign in to the {harness} CLI")
+
+
 def _failed_result(prompt: str, exc: Exception, duration: float) -> RunResult:
     return RunResult(
         prompt=prompt,
@@ -690,6 +716,32 @@ class AgentRunner:
         if result.skill_invoked is None and names and result.transcript:
             result.skill_invoked = detect_skill_reference(result.transcript, names)
         return result
+
+    def probe_claude_auth(
+        self, model: str, claude_cfg: ClaudeConfig, timeout: float = 90
+    ) -> tuple[bool, str]:
+        """Make one tiny authenticated call so expired credentials fail before a run.
+
+        Returns (ok, detail). Uses a single turn, no tools, and a small budget cap.
+        """
+        import dataclasses
+
+        probe_cfg = dataclasses.replace(
+            claude_cfg,
+            max_turns=1,
+            max_budget_usd=0.05,
+            allowed_tools=[],
+            effort=None,
+            permission_mode=None,
+        )
+        with tempfile.TemporaryDirectory(prefix="skilldiff-auth-probe-") as tmp:
+            result = self._run_claude(
+                "Reply with the single word OK.", Path(tmp), model, probe_cfg, timeout=timeout
+            )
+        if result.status == "ok" and not result.error:
+            return True, "authenticated call succeeded"
+        detail = (result.error or result.status or "unknown failure").strip().splitlines()
+        return False, (detail[0] if detail else "unknown failure")[:300]
 
     def claude_command(self, prompt: str, model: str, claude_cfg: ClaudeConfig) -> list[str]:
         cmd = [

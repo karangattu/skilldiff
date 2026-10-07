@@ -1,9 +1,9 @@
-import fnmatch
 import json
 import math
 import os
 import random
 import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -12,6 +12,11 @@ from typing import Optional
 
 from skilldiff.config import GraderConfig
 from skilldiff.runner import AgentRunner
+from skilldiff.scope import (
+    BLAST_RADIUS_PREFIX,
+    filter_diff,
+    path_matches,
+)
 
 # Environment variables share the OS argument-size limit, so large responses and diffs
 # are truncated there. Graders that need the full text should read the *_FILE paths.
@@ -23,27 +28,19 @@ def check_blast_radius(
     changed_files: list[str],
     allowed_paths: list[str],
     forbidden_paths: list[str],
+    ignore_paths: Optional[list[str]] = None,
 ) -> Optional[str]:
     for file_path in changed_files:
-        norm_path = file_path.replace("\\", "/").lstrip("./")
-        for pattern in forbidden_paths:
-            norm_pattern = pattern.replace("\\", "/").lstrip("./")
-            if fnmatch.fnmatch(norm_path, norm_pattern) or fnmatch.fnmatch(
-                norm_path, f"*/{norm_pattern}"
-            ):
-                return (
-                    f"Blast radius violation: modified forbidden path '{file_path}' "
-                    f"(matches '{pattern}')"
-                )
-        if allowed_paths:
-            allowed = False
-            for pattern in allowed_paths:
-                np = pattern.replace("\\", "/").lstrip("./")
-                if fnmatch.fnmatch(norm_path, np) or fnmatch.fnmatch(norm_path, f"*/{np}"):
-                    allowed = True
-                    break
-            if not allowed:
-                return f"Blast radius violation: modified path '{file_path}' outside allowed paths"
+        if ignore_paths and path_matches(file_path, ignore_paths):
+            continue
+        if path_matches(file_path, forbidden_paths):
+            pattern = next(p for p in forbidden_paths if path_matches(file_path, [p]))
+            return (
+                f"{BLAST_RADIUS_PREFIX}: modified forbidden path '{file_path}' "
+                f"(matches '{pattern}')"
+            )
+        if allowed_paths and not path_matches(file_path, allowed_paths):
+            return f"{BLAST_RADIUS_PREFIX}: modified path '{file_path}' outside allowed paths"
     return None
 
 
@@ -91,6 +88,7 @@ class Grader:
         isolation: str = "local",
         container_image: Optional[str] = None,
         inputs_root: Optional[Path] = None,
+        grader_ignore: Optional[list[str]] = None,
     ):
         self.config = config
         self.skill_names = [skill_name] if isinstance(skill_name, str) else list(skill_name)
@@ -103,6 +101,7 @@ class Grader:
         self.isolation = isolation
         self.container_image = container_image
         self.inputs_root = inputs_root
+        self.grader_ignore = list(grader_ignore or [])
 
     def grade_pair(
         self,
@@ -225,7 +224,10 @@ class Grader:
     def _evaluate_candidate(self, cand: Candidate) -> GradeResult:
         if self.allowed_paths or self.forbidden_paths:
             violation = check_blast_radius(
-                cand.changed_files, self.allowed_paths, self.forbidden_paths
+                cand.changed_files,
+                self.allowed_paths,
+                self.forbidden_paths,
+                self.grader_ignore,
             )
             if violation:
                 return GradeResult(
@@ -258,21 +260,57 @@ class Grader:
             )
 
         with tempfile.TemporaryDirectory(prefix="skilldiff-grade-") as tmp:
+            visible_files = [
+                f for f in cand.changed_files if not path_matches(f, self.grader_ignore)
+            ]
+            diff_text = filter_diff(cand.diff, self.grader_ignore)
+            workspace_dir = cand.workspace_dir
+            if self.grader_ignore:
+                # Graders see the workspace without grader_ignore paths, so files
+                # the agent wrote for its own audit trail cannot change the grade.
+                workspace_dir = Path(tmp) / "workspace"
+                self._copy_visible(cand.workspace_dir, workspace_dir)
             response_file = Path(tmp) / "response.txt"
             diff_file = Path(tmp) / "diff.patch"
+            files_file = Path(tmp) / "changed_files.txt"
             response_file.write_text(cand.response, encoding="utf-8")
-            diff_file.write_text(cand.diff, encoding="utf-8")
+            diff_file.write_text(diff_text, encoding="utf-8")
+            files_file.write_text("\n".join(visible_files), encoding="utf-8")
 
             env = os.environ.copy()
             env["SKILLDIFF_CANDIDATE_LABEL"] = cand.label
-            env["SKILLDIFF_CANDIDATE_DIR"] = str(cand.workspace_dir)
+            env["SKILLDIFF_CANDIDATE_DIR"] = str(workspace_dir)
             env["SKILLDIFF_RESPONSE"] = cand.response[:MAX_ENV_TEXT]
-            env["SKILLDIFF_DIFF"] = cand.diff[:MAX_ENV_TEXT]
+            env["SKILLDIFF_DIFF"] = diff_text[:MAX_ENV_TEXT]
             env["SKILLDIFF_RESPONSE_FILE"] = str(response_file)
             env["SKILLDIFF_DIFF_FILE"] = str(diff_file)
+            env["SKILLDIFF_CHANGED_FILES_FILE"] = str(files_file)
             if self.task_dir:
                 env["SKILLDIFF_TASK_DIR"] = str(self.task_dir)
-            return self._run_command(cand, env)
+            view = Candidate(
+                cand.label, cand.arm, workspace_dir, cand.response, diff_text,
+                cand.transcript, visible_files,
+            )
+            return self._run_command(view, env)
+
+    def _copy_visible(self, source: Path, destination: Path) -> None:
+        root = source.resolve()
+
+        def skip(directory: str, names: list[str]) -> list[str]:
+            rel_dir = Path(directory).resolve().relative_to(root)
+            hidden = []
+            for name in names:
+                rel = (rel_dir / name).as_posix()
+                # A pattern such as `outputs/*` means "everything under outputs", so
+                # the directory itself is hidden too, not left behind empty.
+                if path_matches(rel, self.grader_ignore) or (
+                    (Path(directory) / name).is_dir()
+                    and path_matches(f"{rel}/x", self.grader_ignore)
+                ):
+                    hidden.append(name)
+            return hidden
+
+        shutil.copytree(source, destination, symlinks=True, ignore=skip)
 
     def _run_command(self, cand: Candidate, env: dict[str, str]) -> GradeResult:
         assert self.config and self.config.command
@@ -482,6 +520,13 @@ def validate_grader_payload(data: object) -> Optional[str]:
             return f"grader score {score!r} out of range [0, 1]"
     if "success" in data and not isinstance(data["success"], bool):
         return "grader success must be a boolean"
+    if "notes" in data:
+        notes = data["notes"]
+        if isinstance(notes, list):
+            if not all(isinstance(n, str) for n in notes):
+                return "grader notes must be a string, a list of strings, or a mapping"
+        elif not isinstance(notes, (str, dict)):
+            return "grader notes must be a string, a list of strings, or a mapping"
     if "checks" in data:
         checks = data["checks"]
         if not isinstance(checks, (list, dict)):
@@ -549,13 +594,16 @@ def grader_isolation_note(task_dir: Path | None, fixture: Path | None) -> Option
 def validate_grader_against_directories(
     grader: "Grader",
     untouched_dir: Path,
-    good_dir: Path | None = None,
+    good_dir: "Path | list[Path] | None" = None,
     broken_dirs: list[Path] | None = None,
 ) -> dict[str, object]:
     """Grade untouched, known-good, and deliberately broken workspaces.
 
     Checking only that the untouched fixture fails is insufficient: a broken
-    grader can fail everything. Returns a report with scores and a verdict.
+    grader can fail everything. `good_dir` may be one workspace or a list of
+    different valid solutions; a grader that rejects any of them is too strict,
+    which would otherwise show up as a false skill improvement.
+    Returns a report with scores and a verdict.
     """
     report: dict[str, object] = {"checks": []}
     checks: list[str] = report["checks"]  # type: ignore
@@ -577,21 +625,28 @@ def validate_grader_against_directories(
     else:
         checks.append(f"untouched scores {round((untouched.score or 0) * 100)}% (must be <100%)")
 
-    if good_dir is not None:
-        good = grader.grade_workspace(good_dir)
-        report["good"] = {"score": good.score, "grade_status": good.grade_status}
+    good_dirs: list[Path] = (
+        [] if good_dir is None else [good_dir] if isinstance(good_dir, Path) else list(good_dir)
+    )
+    for i, directory in enumerate(good_dirs):
+        label = "known-good solution" if len(good_dirs) == 1 else f"known-good solution {i}"
+        good = grader.grade_workspace(directory)
+        report["good" if len(good_dirs) == 1 else f"good_{i}"] = {
+            "score": good.score,
+            "grade_status": good.grade_status,
+        }
         if good.grade_status != "graded" or good.score is None or not math.isfinite(good.score):
-            checks.append("known-good solution could not be graded")
+            checks.append(f"{label} could not be graded")
             report["verdict"] = "grader-broken"
             return report
         if good.score < 0.99:
             checks.append(
-                f"known-good solution scores only {round(good.score * 100)}% "
+                f"{label} scores only {round(good.score * 100)}% "
                 "(grader rejects valid work)"
             )
             report["verdict"] = "grader-too-strict"
             return report
-        checks.append("known-good solution scores 100%")
+        checks.append(f"{label} scores 100%")
 
     for i, bad in enumerate(broken_dirs or []):
         broken = grader.grade_workspace(bad)

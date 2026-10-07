@@ -97,6 +97,7 @@ TASK_KEYS = frozenset(
         "validation",
         "allowed_paths",
         "forbidden_paths",
+        "grader_ignore",
     }
 )
 GRADER_KEYS = frozenset({"type", "command", "rubric", "prompt", "model"})
@@ -322,6 +323,9 @@ class TaskConfig:
     validation: dict[str, Any] = field(default_factory=dict)
     allowed_paths: list[str] = field(default_factory=list)
     forbidden_paths: list[str] = field(default_factory=list)
+    # Globs hidden from graders and skipped by the blast-radius check, e.g. the
+    # audit files an agent writes under outputs/.
+    grader_ignore: list[str] = field(default_factory=list)
     prompts: list[str] = field(default_factory=list)
 
 
@@ -660,6 +664,8 @@ def load_task(task_path: Path) -> TaskConfig:
     forbidden_paths = data.get("forbidden_paths", [])
     validate_string_list(allowed_paths, f"{context}.allowed_paths")
     validate_string_list(forbidden_paths, f"{context}.forbidden_paths")
+    grader_ignore = data.get("grader_ignore", [])
+    validate_string_list(grader_ignore, f"{context}.grader_ignore")
     if "repo" in data:
         validate_string(data["repo"], f"{context}.repo", nullable=True)
 
@@ -679,7 +685,7 @@ def load_task(task_path: Path) -> TaskConfig:
     for key, value in validation.items():
         if value is None:
             continue
-        if key == "good" or isinstance(value, str):
+        if isinstance(value, str):
             validate_string(value, f"{context}.validation.{key}")
         else:
             validate_string_list(value, f"{context}.validation.{key}")
@@ -695,6 +701,7 @@ def load_task(task_path: Path) -> TaskConfig:
         validation=dict(validation or {}),
         allowed_paths=allowed_paths,
         forbidden_paths=forbidden_paths,
+        grader_ignore=grader_ignore,
         prompts=prompts,
     )
 

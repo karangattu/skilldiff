@@ -3,6 +3,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from skilldiff.scope import is_blast_violation
 from skilldiff.stats import METRICS, analysis_run, pair_runs, usable_agent_run
 
 
@@ -116,7 +117,11 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
                         "error": record.get("error"),
                     }
                 )
-            if record.get("grade_status") in {"error", "timeout"}:
+            feedback = str(record.get("feedback") or "")
+            blast = record.get("grade_error_kind") == "blast_radius" or is_blast_violation(feedback)
+            if blast:
+                blast_violations.append(identity | {"violation": feedback})
+            elif record.get("grade_status") in {"error", "timeout"}:
                 grader_failures.append(
                     identity
                     | {
@@ -124,9 +129,6 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
                         "feedback": record.get("feedback"),
                     }
                 )
-            feedback = str(record.get("feedback") or "")
-            if "Blast radius violation" in feedback:
-                blast_violations.append(identity | {"violation": feedback})
             if is_pr or arm not in skill_arms or failed:
                 continue
             category = task_details.get(identity["task_id"], {}).get(
@@ -282,8 +284,11 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
     if blast_violations:
         tasks_list = sorted({item["task_id"] for item in blast_violations})
         recommendations.append(
-            f"Blast radius: agent modified out-of-scope files on {', '.join(tasks_list)}. "
-            "Add explicit path instructions in the skill body to keep edits confined."
+            f"Blast radius: runs on {', '.join(tasks_list)} edited paths outside the task's "
+            "allowed_paths/forbidden_paths and scored N/A. First check the task scope: "
+            "files the work legitimately writes (such as outputs/) belong in allowed_paths "
+            "or grader_ignore, and a forbidden pattern like 'data/*' also matches nested "
+            "copies. Only if the edits are truly out of scope, tighten the prompt or skill."
         )
 
     if regressions:

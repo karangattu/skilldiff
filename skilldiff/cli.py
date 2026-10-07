@@ -34,7 +34,14 @@ from skilldiff.reporter import (
     render_report_table,
 )
 from skilldiff.revisions import resolve_comparison
-from skilldiff.runner import AgentRunner, resolve_container_image, validate_container_auth
+from skilldiff.runner import (
+    AgentRunner,
+    auth_login_hint,
+    looks_like_auth_error,
+    resolve_container_image,
+    validate_container_auth,
+)
+from skilldiff.scope import scope_pattern_warnings
 from skilldiff.stats import analysis_run, paired_comparison
 from skilldiff.workspace import Workspace
 
@@ -712,6 +719,22 @@ def cmd_check(args: argparse.Namespace) -> int:
             fail("claude.auth is api_key but ANTHROPIC_API_KEY is not set")
         if cfg.claude.permission_mode == "bypassPermissions":
             warn("bypassPermissions lets agents run any command outside the workspace")
+        if (
+            resolved
+            and cfg.isolation == "local"
+            and not getattr(args, "no_probe", False)
+            and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
+        ):
+            probe_ok, detail = runner.probe_claude_auth(cfg.models[0], cfg.claude)
+            if probe_ok:
+                ok(f"claude auth probe: {detail}")
+            elif looks_like_auth_error(detail):
+                fail(
+                    f"claude auth probe failed ({detail}). "
+                    f"{auth_login_hint('claude')} and rerun `skilldiff check`."
+                )
+            else:
+                warn(f"claude auth probe could not confirm a working session: {detail}")
 
     installs = [] if image_id else find_user_level_installs(cfg.skill_names, cfg.harness)
     if installs:
@@ -785,6 +808,12 @@ def cmd_check(args: argparse.Namespace) -> int:
                     )
             except Exception:
                 pass
+        for message in scope_pattern_warnings(
+            task.id,
+            getattr(task, "forbidden_paths", None) or [],
+            getattr(task, "grader_ignore", None) or [],
+        ):
+            warn(message)
         if not (task.grader and (task.grader.command or task.grader.type in {"llm", "rubric"})):
             warn(f"task {task.id}: no grader, so every run scores N/A (only cost/time compared)")
             continue
@@ -819,6 +848,7 @@ def cmd_check(args: argparse.Namespace) -> int:
                 task_dir=task_dir,
                 allowed_paths=getattr(task, "allowed_paths", None),
                 forbidden_paths=getattr(task, "forbidden_paths", None),
+                grader_ignore=getattr(task, "grader_ignore", None),
                 task_prompt=task.prompt,
                 isolation=cfg.isolation,
                 container_image=image_id,
@@ -832,20 +862,25 @@ def cmd_check(args: argparse.Namespace) -> int:
                 from skilldiff.grader import validate_grader_against_directories as _validate
 
                 good = validation.get("good")
+                goods = [good] if isinstance(good, str) else list(good or [])
                 broken = validation.get("broken") or validation.get("bad") or []
                 if isinstance(broken, str):
                     broken = [broken]
-                good_dir = (task_dir / good).resolve() if good else None
+                good_dirs = [(task_dir / g).resolve() for g in goods]
                 broken_dirs = [(task_dir / b).resolve() for b in (broken or [])]
-                missing = [
-                    str(d)
-                    for d in ([good_dir] if good_dir else []) + broken_dirs
-                    if not d.exists()
-                ]
+                missing = [str(d) for d in good_dirs + broken_dirs if not d.exists()]
                 if missing:
                     fail(f"task {task.id}: validation paths not found: {', '.join(missing)}")
                     continue
-                report = _validate(grader, ws.root, good_dir, broken_dirs)
+                if len(good_dirs) == 1:
+                    warn(
+                        f"task {task.id}: only one validation.good solution; a grader that "
+                        "accepts your solution but rejects an equivalent one (another API "
+                        "call, an alias, a different structure) would show up as a false "
+                        "skill improvement. List a second, differently-shaped valid "
+                        "solution under `good:`"
+                    )
+                report = _validate(grader, ws.root, good_dirs or None, broken_dirs)
                 verdict = report.get("verdict")
                 if verdict != "ok":
                     fail(
@@ -976,7 +1011,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("Resume enabled: completed pairs reuse only when input hashes match.", flush=True)
     try:
         results = runner.run(resume=resume)
-    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+    except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"Experiment error: {exc}", file=sys.stderr)
         return 1
 
@@ -1058,6 +1093,67 @@ def cmd_report(args: argparse.Namespace) -> int:
     except (ValueError, OSError) as exc:
         print(f"Report error: {exc}", file=sys.stderr)
         return 1
+    _print_report_paths(results)
+    return 0
+
+
+def _format_score(score: object, status: object) -> str:
+    if score is None:
+        return f"N/A ({status})"
+    return f"{round(float(score) * 100)}%"
+
+
+def cmd_regrade(args: argparse.Namespace) -> int:
+    run_dir = _resolve_run_dir(args)
+    if not run_dir or not (run_dir / "results.json").exists():
+        print("No experiment run with results.json found.", file=sys.stderr)
+        return 1
+    run_dir = run_dir.resolve()
+    config_path = Path(args.config) if args.config else Path("skilldiff.yaml")
+    if not args.config and not config_path.exists():
+        config_path = run_dir.parent.parent / "skilldiff.yaml"
+    if not config_path.exists():
+        print(
+            f"Error: configuration file '{config_path}' not found. Pass --config.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        exp_config, tasks = load_experiment(config_path)
+    except Exception as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 1
+    runner = ExperimentRunner(exp_config, tasks, progress=lambda msg: print(msg, flush=True))
+    try:
+        with run_lock(run_dir):
+            summary = runner.regrade(
+                run_dir,
+                task_ids=set(args.task) if args.task else None,
+                dry_run=args.dry_run,
+            )
+    except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f"Regrade error: {exc}", file=sys.stderr)
+        return 1
+
+    verb = "would change" if args.dry_run else "changed"
+    print(
+        f"Regraded {summary['runs_regraded']} run(s) for task(s) "
+        f"{', '.join(summary['tasks'])}; {verb} {summary['runs_changed']}."
+    )
+    for change in summary["changes"]:
+        print(
+            f"  {change['model']} · {change['task_id']} · rep {change['repetition']} · "
+            f"{change['arm']}: "
+            f"{_format_score(change['previous_score'], change['previous_grade_status'])} -> "
+            f"{_format_score(change['score'], change['grade_status'])}"
+        )
+    for item in summary["skipped"]:
+        print(f"  skipped {item}", file=sys.stderr)
+    if args.dry_run:
+        print("Dry run: nothing was written.")
+        return 0
+    results = summary["results"]
+    print("\n" + _format_results(results))
     _print_report_paths(results)
     return 0
 
@@ -1372,6 +1468,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check_parser.add_argument("--config", "-c", default="skilldiff.yaml")
     check_parser.add_argument(
+        "--no-probe",
+        action="store_true",
+        help="Skip the one-turn authenticated call that verifies the harness login",
+    )
+    check_parser.add_argument(
         "--no-grade", action="store_true", help="Skip running graders on the untouched fixtures"
     )
     check_parser.set_defaults(func=cmd_check)
@@ -1417,6 +1518,22 @@ def build_parser() -> argparse.ArgumentParser:
     report_parser.add_argument("run_dir", nargs="?", help="Path to specific run directory")
     report_parser.add_argument("--config", "-c", help="Look for runs next to this config")
     report_parser.set_defaults(func=cmd_report)
+
+    regrade_parser = subparsers.add_parser(
+        "regrade",
+        help="Re-run the current graders on a finished run (no agent sessions)",
+    )
+    regrade_parser.add_argument("run_dir", nargs="?", help="Path to specific run directory")
+    regrade_parser.add_argument(
+        "--config", "-c", help="Experiment config whose tasks and graders to use"
+    )
+    regrade_parser.add_argument(
+        "--task", "-t", action="append", help="Only regrade this task id (repeatable)"
+    )
+    regrade_parser.add_argument(
+        "--dry-run", action="store_true", help="Show which scores would change; write nothing"
+    )
+    regrade_parser.set_defaults(func=cmd_regrade)
 
     compare_parser = subparsers.add_parser(
         "compare", help="Compare two runs (skill revisions): score, adoption, efficiency, checks"

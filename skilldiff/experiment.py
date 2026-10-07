@@ -24,9 +24,12 @@ from skilldiff.revisions import resolve_comparison
 from skilldiff.runner import (
     AgentRunner,
     RunResult,
+    auth_login_hint,
+    looks_like_auth_error,
     resolve_container_image,
     validate_container_auth,
 )
+from skilldiff.scope import is_blast_violation
 from skilldiff.snapshots import (
     SNAPSHOT_VERSION,
     create_snapshots,
@@ -282,6 +285,8 @@ def collect_provenance(config: ExperimentConfig, tasks: list[TaskConfig]) -> dic
             "fixture": fixture_info or None,
             "validation": getattr(t, "validation", {}) or None,
         }
+        if getattr(t, "grader_ignore", None):
+            entry["grader_ignore"] = list(t.grader_ignore)
         task_entries.append(entry)
         tasks_combined.update(prompt_sha.encode())
         tasks_combined.update(str(t.grader.command if t.grader else "").encode())
@@ -895,6 +900,56 @@ class ExperimentRunner:
         atomic_json(run_root / "results.json", results)
         return results
 
+    def _make_grader(
+        self,
+        task: TaskConfig,
+        model: str,
+        execution: ExperimentConfig,
+        grader_names: list[str],
+    ) -> Grader:
+        task_dir = task.source_path.parent if task.source_path else None
+        return Grader(
+            task.grader,
+            grader_names,
+            model,
+            task_dir=task_dir,
+            allowed_paths=getattr(task, "allowed_paths", None),
+            forbidden_paths=getattr(task, "forbidden_paths", None),
+            grader_ignore=getattr(task, "grader_ignore", None),
+            task_prompt=task.prompt,
+            isolation=execution.isolation,
+            container_image=execution.container_image,
+            inputs_root=self.config.config_path.parent if self.config.config_path else None,
+        )
+
+    def _grader_names(self, execution: ExperimentConfig) -> list[str]:
+        # Skill names differ per mode: A/B uses per-arm names for blind grading.
+        if self.config.is_skill_comparison:
+            return list(dict.fromkeys(execution.skill_a_names + execution.skill_b_names))
+        return execution.skill_names
+
+    def _postprocess_grade(self, record: dict[str, Any]) -> None:
+        """Apply harness-failure and failure-policy rules to a freshly graded record."""
+        # A harness invocation failure means the agent CLI never ran, so
+        # the grader only measured the untouched fixture. Keep that score
+        # as diagnostic evidence, but never as a graded datapoint.
+        if record.get("failure_kind") == "harness_error":
+            record["partial_score"] = record.get("score")
+            record["score"] = None
+            record["success"] = False
+            record["grade_status"] = "ungraded"
+            record["analysis_excluded"] = True
+        # Preserve the partial grader output for audit, but do not
+        # count an infrastructure failure as a completed repair.
+        fp = dict(getattr(self.config, "failure_policy", {}) or {})
+        if record.get("status") not in (None, "ok", "correctness"):
+            if (fp.get("agent_failure") == "zero"
+                    and record.get("grade_status") not in ("timeout", "error")):
+                record["partial_score"] = record.get("score")
+                record.update(analysis_run(record, "zero"))
+            else:
+                record["analysis_excluded"] = True
+
     def _run_pair(self, pair: _Pair, run_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         self._ensure_running()
         self.progress(
@@ -903,29 +958,10 @@ class ExperimentRunner:
         task = pair.task
         model = pair.model
         execution = self._execution_config
-        task_dir = task.source_path.parent if task.source_path else None
         fixture_repo = (
             self.config.pr.repo if self.config.pr else self._fixture_snapshots.get(task.id)
         )
-        # Skill names differ per mode: A/B uses per-arm names for blind grading.
-        if self.config.is_skill_comparison:
-            grader_names = list(
-                dict.fromkeys(execution.skill_a_names + execution.skill_b_names)
-            )
-        else:
-            grader_names = execution.skill_names
-        grader = Grader(
-            task.grader,
-            grader_names,
-            model,
-            task_dir=task_dir,
-            allowed_paths=getattr(task, "allowed_paths", None),
-            forbidden_paths=getattr(task, "forbidden_paths", None),
-            task_prompt=task.prompt,
-            isolation=execution.isolation,
-            container_image=execution.container_image,
-            inputs_root=self.config.config_path.parent if self.config.config_path else None,
-        )
+        grader = self._make_grader(task, model, execution, self._grader_names(execution))
 
         rep_str = f"{pair.repetition:03d}"
         model_dir = safe_path_component(model)
@@ -1138,6 +1174,8 @@ class ExperimentRunner:
                     "artifacts": str(arm_dir.relative_to(run_root)),
                     "isolation_issues": workspaces[arm].isolation_issues or [],
                 }
+                if is_blast_violation(grade.feedback):
+                    records[arm]["grade_error_kind"] = "blast_radius"
                 if self.comparison:
                     records[arm]["source_commit"] = self.comparison[f"{arm}_commit"]
                     records[arm]["pr_mode"] = pr_mode
@@ -1152,25 +1190,7 @@ class ExperimentRunner:
                         records[arm]["skill_path"] = str(self.config.skill_b)
                 if arm in ("control", "baseline") and workspaces[arm].removed_from_control:
                     records[arm]["removed_from_fixture"] = workspaces[arm].removed_from_control
-                # A harness invocation failure means the agent CLI never ran, so
-                # the grader only measured the untouched fixture. Keep that score
-                # as diagnostic evidence, but never as a graded datapoint.
-                if res.failure_kind == "harness_error":
-                    records[arm]["partial_score"] = records[arm].get("score")
-                    records[arm]["score"] = None
-                    records[arm]["success"] = False
-                    records[arm]["grade_status"] = "ungraded"
-                    records[arm]["analysis_excluded"] = True
-                # Preserve the partial grader output for audit, but do not
-                # count an infrastructure failure as a completed repair.
-                fp = dict(getattr(self.config, "failure_policy", {}) or {})
-                if records[arm].get("status") not in (None, "ok", "correctness"):
-                    if (fp.get("agent_failure") == "zero"
-                            and records[arm].get("grade_status") not in ("timeout", "error")):
-                        records[arm]["partial_score"] = records[arm].get("score")
-                        records[arm].update(analysis_run(records[arm], "zero"))
-                    else:
-                        records[arm]["analysis_excluded"] = True
+                self._postprocess_grade(records[arm])
                 self._save_run_artifacts(arm_dir, records[arm], res.transcript, diff_text)
 
             if "baseline" in records:
@@ -1200,14 +1220,223 @@ class ExperimentRunner:
                 (r.get("error") for r in records.values() if r.get("error")),
                 "agent CLI failed to start",
             )
+            hint = (
+                f" {auth_login_hint(execution.harness)}, then rerun with --resume."
+                if looks_like_auth_error(sample)
+                else ""
+            )
             raise RuntimeError(
                 f"Harness '{execution.harness}' could not run any session for task "
                 f"'{task.id}' (rep {pair.repetition}): "
                 f"{str(sample).strip().splitlines()[0][:300]}. "
-                "Aborting before running the remaining pairs."
+                f"Aborting before running the remaining pairs.{hint}"
             )
 
         return records["control"], records["treatment"]
+
+    # ---------------------------------------------------------------- regrade
+
+    def regrade(
+        self,
+        run_root: Path,
+        task_ids: Optional[set[str]] = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Re-run the current graders on a finished run, without rerunning any agent.
+
+        Each arm's workspace is rebuilt as the run's frozen fixture plus the saved
+        `diff.patch`, graded again, and the run's scores and aggregates are rewritten.
+        Every regraded record keeps its previous grade, and the report gets a visible
+        warning, so a grader fix after the fact stays auditable.
+        """
+        if self.config.pr:
+            raise ValueError("regrade does not support PR experiments (revisions are not frozen)")
+        run_root = run_root.resolve()
+        old_results = read_json(run_root / "results.json")
+        checkpoint = read_json(run_root / "checkpoint.json")
+        manifest = read_json(run_root / "inputs/manifest.json")
+        if checkpoint.get("version") != 1 or not isinstance(checkpoint.get("record_hashes"), dict):
+            raise ValueError("Cannot regrade: run has no versioned checkpoint")
+        for entry in manifest.get("sources", []):
+            if tree_contents(run_root / entry["path"]) != entry.get("contents"):
+                raise ValueError(f"Cannot regrade: frozen input changed: {entry['path']}")
+        paths = {Path(e["source"]).resolve(): run_root / e["path"] for e in manifest["sources"]}
+        fixtures: dict[str, Path] = {}
+        for task in self.tasks:
+            if not (task.source_path and task.repo):
+                continue
+            source = (task.source_path.parent / task.repo).resolve()
+            if source not in paths:
+                # The experiment directory may have moved since the run: fall back
+                # to a unique frozen input with the same directory name.
+                same_name = [path for src, path in paths.items() if src.name == source.name]
+                if len(same_name) == 1:
+                    fixtures[task.id] = same_name[0]
+                    continue
+                raise ValueError(
+                    f"Cannot regrade: task '{task.id}' fixture {source} is not among the "
+                    "run's frozen inputs (was the config or fixture path changed?)"
+                )
+            fixtures[task.id] = paths[source]
+        self._execution_config = deepcopy(self.config)
+        self._baseline_runs = []
+        self.comparison = None
+        self._seed = int(old_results.get("seed") or 0)
+        arms = self._arms()
+        in_scope = [t for t in self.tasks if not task_ids or t.id in task_ids]
+        if not in_scope:
+            raise ValueError("No tasks selected for regrade")
+        grader_names = self._grader_names(self._execution_config)
+        completed = [tuple(k) for k in checkpoint.get("completed", [])]
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        raw: dict[str, list[dict[str, Any]]] = {arm: [] for arm in arms}
+        changes: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        regraded = 0
+        new_records: dict[Path, dict[str, Any]] = {}
+
+        for model in self.config.models:
+            for task in self.tasks:
+                for rep in range(1, self.config.runs + 1):
+                    key = (model, task.id, rep)
+                    if key not in completed:
+                        continue
+                    dirs = {arm: self._arm_directory(run_root, key, arm) for arm in arms}
+                    records = {arm: read_json(dirs[arm] / "run.json") for arm in arms}
+                    if task not in in_scope:
+                        for arm in arms:
+                            raw[arm].append(records[arm])
+                        continue
+                    grader = self._make_grader(
+                        task, model, self._execution_config, grader_names
+                    )
+                    with tempfile.TemporaryDirectory(prefix="skilldiff-regrade-") as tmp:
+                        candidates: list[Candidate] = []
+                        failure: Optional[str] = None
+                        for arm in arms:
+                            workspace = Path(tmp) / arm / "workspace"
+                            diff_text = (dirs[arm] / "diff.patch").read_text(encoding="utf-8")
+                            try:
+                                _rebuild_workspace(fixtures.get(task.id), diff_text, workspace)
+                            except ValueError as exc:
+                                failure = f"{arm}: {exc}"
+                                break
+                            candidates.append(
+                                Candidate(
+                                    "", arm, workspace,
+                                    str(records[arm].get("response") or ""),
+                                    diff_text,
+                                    (dirs[arm] / "transcript.txt").read_text(encoding="utf-8"),
+                                    list(records[arm].get("files_changed") or []),
+                                )
+                            )
+                        if failure:
+                            skipped.append(f"{model}/{task.id}/rep {rep}: {failure}")
+                            for arm in arms:
+                                raw[arm].append(records[arm])
+                            continue
+                        grades = grader.grade_candidates(candidates)
+                    for arm in arms:
+                        old = records[arm]
+                        new = {
+                            k: v for k, v in old.items()
+                            if k not in {
+                                "partial_score", "analysis_excluded", "failure_scored_zero",
+                                "grade_error_kind",
+                            }
+                        }
+                        grade = grades[arm]
+                        new.update(
+                            score=grade.score,
+                            success=grade.success,
+                            grade_status=getattr(grade, "grade_status", "graded"),
+                            blind_label=grade.label,
+                            feedback=grade.feedback,
+                        )
+                        if is_blast_violation(grade.feedback):
+                            new["grade_error_kind"] = "blast_radius"
+                        self._postprocess_grade(new)
+                        history = list(old.get("regrade_history") or [])
+                        history.append(
+                            {
+                                "at": now,
+                                "score": old.get("score"),
+                                "success": old.get("success"),
+                                "grade_status": old.get("grade_status"),
+                                "feedback": old.get("feedback"),
+                            }
+                        )
+                        new["regrade_history"] = history
+                        regraded += 1
+                        if (old.get("score"), old.get("grade_status")) != (
+                            new.get("score"), new.get("grade_status")
+                        ):
+                            changes.append(
+                                {
+                                    "model": model, "task_id": task.id, "repetition": rep,
+                                    "arm": arm,
+                                    "previous_score": old.get("score"),
+                                    "previous_grade_status": old.get("grade_status"),
+                                    "score": new.get("score"),
+                                    "grade_status": new.get("grade_status"),
+                                }
+                            )
+                        new_records[dirs[arm]] = new
+                        raw[arm].append(new)
+
+        summary = {
+            "at": now,
+            "tasks": [t.id for t in in_scope],
+            "runs_regraded": regraded,
+            "runs_changed": len(changes),
+            "changes": changes,
+            "skipped": skipped,
+        }
+        if dry_run:
+            return summary | {"dry_run": True}
+
+        current = collect_provenance(self.config, self.tasks)
+        summary["tasks_hash_before"] = (old_results.get("provenance") or {}).get("tasks_hash")
+        summary["tasks_hash_after"] = current.get("tasks_hash")
+        record_hashes = dict(checkpoint["record_hashes"])
+        for directory, record in new_records.items():
+            atomic_json(directory / "run.json", record)
+            record_hashes[str((directory / "run.json").relative_to(run_root))] = file_hash(
+                directory / "run.json"
+            )
+        checkpoint["record_hashes"] = record_hashes
+        atomic_json(run_root / "checkpoint.json", checkpoint)
+
+        self._baseline_runs = raw.get("baseline", [])
+        warnings = list(old_results.get("warnings") or [])
+        if regraded:
+            warnings.append(
+                f"Regraded {regraded} run(s) on {now} for task(s) "
+                f"{', '.join(summary['tasks'])} with updated graders; {len(changes)} run(s) "
+                "scored differently than in the original run. Previous grades are kept in "
+                "each run record under regrade_history."
+            )
+        results = self._aggregate(
+            run_root, old_results.get("timestamp", ""), raw["control"], raw["treatment"],
+            warnings, bool(old_results.get("interrupted")),
+            provenance_snapshot=old_results.get("provenance"),
+        )
+        # Only grade-dependent aggregates are recomputed; run metadata stays as recorded.
+        for key in (
+            "name", "skilldiff_version", "preset", "arm_labels", "harness", "skill",
+            "skill_a", "skill_b", "skill_comparison", "comparison", "skill_names",
+            "timestamp", "run_dir", "models", "tasks", "task_categories", "task_details",
+            "tasks_count", "runs_per_arm", "seed", "failure_policy", "settings",
+            "thresholds", "pricing", "provenance", "context_tax", "retries",
+        ):
+            if key in old_results:
+                results[key] = old_results[key]
+        results["regrades"] = list(old_results.get("regrades") or []) + [summary]
+        report_paths = create_reports(results, run_root)
+        results["report"] = {k: (str(v) if v else None) for k, v in report_paths.items()}
+        atomic_json(run_root / "results.json", results)
+        summary["results"] = results
+        return summary
 
     def _ensure_running(self) -> None:
         if self._stopped.is_set():
@@ -1467,6 +1696,26 @@ class ExperimentRunner:
             name: file_hash(arm_dir / name) for name in ("transcript.txt", "diff.patch")
         }
         atomic_json(arm_dir / "run.json", record)
+
+
+def _rebuild_workspace(fixture: Path | None, diff_text: str, destination: Path) -> None:
+    """Recreate an arm's final files: the frozen fixture with the saved diff applied."""
+    if fixture is not None:
+        shutil.copytree(fixture, destination, symlinks=True)
+    else:
+        destination.mkdir(parents=True)
+    if not diff_text.strip():
+        return
+    proc = subprocess.run(
+        ["git", "apply", "--whitespace=nowarn", "-"],
+        input=diff_text, cwd=destination, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        raise ValueError(
+            "could not apply the saved diff (binary or excluded files cannot be "
+            f"rebuilt): {detail[0] if detail else 'git apply failed'}"
+        )
 
 
 def _arm_labels(config: ExperimentConfig, comparison: dict[str, Any] | None) -> dict[str, str]:

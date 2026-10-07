@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from skilldiff.persistence import atomic_write
+from skilldiff.scope import is_blast_violation
 from skilldiff.stats import (
     analysis_run,
     classify_effect,
@@ -1575,7 +1576,12 @@ def _decision_rows(
 
 
 def _completeness_reading(
-    planned: int, completed: int, usable: int, agent_failures: int, grader_errors: int
+    planned: int,
+    completed: int,
+    usable: int,
+    agent_failures: int,
+    grader_errors: int,
+    blast_errors: int = 0,
 ) -> str:
     """Plain-language verdict for the evaluation-completeness row."""
     if planned and not completed:
@@ -1589,6 +1595,8 @@ def _completeness_reading(
         gaps.append(f"{agent_failures} agent failure(s)")
     if grader_errors:
         gaps.append(f"{grader_errors} grader error(s)")
+    if blast_errors:
+        gaps.append(f"{blast_errors} blast-radius exclusion(s)")
     if usable < completed:
         gaps.append(f"{completed - usable} pair(s) ungraded")
     return "Complete" if not gaps else "Partial — " + ", ".join(gaps)
@@ -1921,6 +1929,21 @@ def extract_checks(run: dict[str, Any]) -> list[tuple[str, Optional[bool]]]:
     return out
 
 
+def extract_notes(run: dict[str, Any]) -> list[str]:
+    """Free-text grader diagnostics from a `notes` key; never counted as checks."""
+    data = _parse_feedback_data(run.get("feedback"))
+    if not isinstance(data, dict):
+        return []
+    notes = data.get("notes")
+    if isinstance(notes, str):
+        return [notes] if notes.strip() else []
+    if isinstance(notes, list):
+        return [str(n) for n in notes if str(n).strip()]
+    if isinstance(notes, dict):
+        return [f"{k}: {v}" for k, v in notes.items()]
+    return []
+
+
 def _format_checks_passed(run: dict[str, Any]) -> str:
     checks = extract_checks(run)
     if checks:
@@ -2080,6 +2103,13 @@ def _run_status(run: dict[str, Any]) -> Cell:
     return ("ok", None) if status == "ok" else (status, "bad")
 
 
+def _is_blast_run(run: dict[str, Any]) -> bool:
+    """A run scored N/A because it edited paths outside the task's allowed scope."""
+    return run.get("grade_error_kind") == "blast_radius" or is_blast_violation(
+        run.get("feedback")
+    )
+
+
 def _score_cell(run: dict[str, Any]) -> str:
     if not usable_agent_run(run):
         return "N/A (agent failure)"
@@ -2088,6 +2118,8 @@ def _score_cell(run: dict[str, Any]) -> str:
     gs = run.get("grade_status")
     if gs in ("ungraded", "timeout", "error"):
         label = {"ungraded": "ungraded", "timeout": "grader timeout", "error": "grader error"}[gs]
+        if _is_blast_run(run):
+            label = "blast radius"
         return f"N/A ({label})"
     if "score" not in run or run.get("score") is None:
         return "N/A"
@@ -2531,9 +2563,20 @@ def _key_takeaways(
         )
     # Grading validity note (infra vs agent failures).
     grade_issues = 0
+    blast_issues = 0
     for r in control_runs + treatment_runs:
         if r.get("grade_status") in ("timeout", "error"):
-            grade_issues += 1
+            if _is_blast_run(r):
+                blast_issues += 1
+            else:
+                grade_issues += 1
+    if blast_issues:
+        bullets.append(
+            f"**Blast radius.** {blast_issues} run(s) edited paths outside the task's "
+            "`allowed_paths`/`forbidden_paths`; their scores are N/A. Check that the "
+            "task scope allows files the work legitimately needs (for example "
+            "`outputs/`, or add it to `grader_ignore`) before blaming the agent or skill."
+        )
     if grade_issues:
         bullets.append(
             f"**Grading.** {grade_issues} run(s) have grader timeouts/errors; "
@@ -2697,8 +2740,9 @@ def build_report_blocks(
         grader_errors = sum(
             1
             for r in control_runs + treatment_runs
-            if r.get("grade_status") in ("timeout", "error")
+            if r.get("grade_status") in ("timeout", "error") and not _is_blast_run(r)
         )
+        blast_errors = sum(1 for r in control_runs + treatment_runs if _is_blast_run(r))
         if not planned:
             planned = completed
         blocks.append(("h", 2, "Evaluation completeness"))
@@ -2721,7 +2765,8 @@ def build_report_blocks(
                         f"{agent_failures}",
                         f"{grader_errors}",
                         _completeness_reading(
-                            planned, completed, usable, agent_failures, grader_errors
+                            planned, completed, usable, agent_failures, grader_errors,
+                            blast_errors,
                         ),
                     ]
                 ],
@@ -3146,6 +3191,29 @@ def build_report_blocks(
         blocks.append(("p", run_note))
         align = ["r" if h in _NUMERIC_RUN_COLUMNS else "l" for h in headers]
         blocks.append(("table", headers, run_rows, align))
+
+        note_rows = [
+            [
+                str(run.get("task_id", "")),
+                str(run.get("repetition", "")),
+                str(run.get("arm", "")),
+                "; ".join(extract_notes(run)),
+            ]
+            for run in control_runs + treatment_runs
+            if extract_notes(run)
+        ]
+        if note_rows:
+            blocks.append(("h", 2, "Grader notes"))
+            blocks.append(
+                (
+                    "p",
+                    "Diagnostics the graders reported under `notes`. They are not scored "
+                    "checks and do not enter the By check table.",
+                )
+            )
+            blocks.append(
+                ("table", ["Task", "Run", "Arm", "Notes"], note_rows, ["l", "r", "l", "l"])
+            )
 
     blocks.append(("h", 2, "Setup"))
     preset_setup = results.get("preset") or (results.get("settings") or {}).get("preset")
