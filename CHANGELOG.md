@@ -6,6 +6,8 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-07
+
 ### Added
 
 - Local `check` and run reports warn about possible skill exposure through live
@@ -18,6 +20,11 @@ This project uses semantic versioning.
 - Each agent run gets private `TMPDIR`, `TMP`, and `TEMP` paths outside its workspace,
   shared across scripted turns and cleaned up when the run ends. Agent containers
   mount only that run's temporary directory at `/session-tmp`.
+
+### Fixed
+
+- OpenCode adoption detection counts only the skill under test. Loading an unrelated
+  skill no longer counts as adoption or marks a control session as contaminated.
 
 ## [0.14.0] - 2026-10-07
 
