@@ -112,7 +112,12 @@ Other rules:
   would write it. Adoption is part of what you measure.
 - **Contain the blast radius.** Set `allowed_paths` (and optionally
   `forbidden_paths`) on each task. An edit outside scope is then reported as an
-  error — `N/A` with the path named — never as a wrong answer.
+  error — `N/A (blast radius)` with the path named — never as a wrong answer.
+  Patterns match at any depth, so `data/*` also matches a saved copy under
+  `outputs/measurements/…/data/`. If the skill under test asks agents to save
+  measurements or copies, add `grader_ignore: ["outputs/*"]` to the task: those
+  paths are hidden from the grader and skipped by the scope check. `check` warns
+  when a forbidden pattern would match nested copies.
 - **Script multi-turn tasks with `prompts:`.** A list of prompts runs in order
   in one workspace; tokens, cost, time, and turns sum across the turns, and one
   timeout covers the whole script.
@@ -124,11 +129,17 @@ Other rules:
 - **Grade outcomes deterministically.** Run tests or parse files with `ast` or regex.
   Print `{"score": 0.0-1.0, "success": bool, "checks": [...]}` as the last line.
   Accept every valid solution, not only the one that the skill suggests. A grader that
-  rejects an equivalent API call creates a false "improvement".
+  rejects an equivalent API call creates a false "improvement". Parse code instead of
+  searching raw text: a comment such as `# instead of renderUI()` fails a text search
+  on a correct solution, and an alias (`result = task.result`) fails a search for a
+  literal call. Print free-text diagnostics under `notes` (string, list, or mapping)
+  rather than as fake checks; notes are shown in the report but never scored.
 - **Test the grader three ways.** The untouched fixture must score below 100%, a
   known-good solution must score 100%, and deliberately broken solutions must fail.
   Add them as `validation: {good: ..., broken: [...]}` in the task file so `check`
-  grades all three. A grader that fails everything is broken, not strict. Crashing
+  grades all three. `good` takes a list: give two differently shaped valid solutions
+  (another API call, an alias, a different structure) so `check` can tell a strict
+  grader from a correct one; it warns when there is only one. A grader that fails everything is broken, not strict. Crashing
   graders report `error` (N/A), never a plain zero.
   A broken fixture that crashes or times out does not validate the grader: fix
   the infrastructure until it returns a graded failing result. For an LLM/rubric
@@ -136,7 +147,8 @@ Other rules:
 
 Graders run with the workspace as the working directory. They also get these
 environment variables: `SKILLDIFF_RESPONSE_FILE` (the agent's final message),
-`SKILLDIFF_DIFF_FILE` (the agent's git diff), and `SKILLDIFF_TASK_DIR`.
+`SKILLDIFF_DIFF_FILE` (the agent's git diff), `SKILLDIFF_CHANGED_FILES_FILE` (the
+changed paths, one per line, without `grader_ignore` paths), and `SKILLDIFF_TASK_DIR`.
 
 If the skill runs CLI commands, allow-list them per harness so both arms get the
 same permissions. For Claude use `claude.allowed_tools` (for example
@@ -178,6 +190,8 @@ points in mind:
   fail with auth or connection errors. The report lists them as errors. Don't retry
   in a loop. Give the user the exact `skilldiff run ...` command to run in their own
   terminal, then read the results with `skilldiff results`.
+- For Claude, `check` makes one tiny authenticated call (`--no-probe` skips it) and
+  fails with the login hint when the session has expired, before any run starts.
 - If `check` reports that the harness CLI is missing, or a smoke run fails with "Not
   logged in", ask the user to sign in with that harness's normal login (for example
   `claude auth login` or `opencode providers login`). Never ask for or handle their
@@ -253,13 +267,23 @@ against the report before you write your summary. Report these results:
 4. **Warnings.** Report agent errors or timeouts, control contamination, tasks without
    graders, and ceiling effects. The report's **Evaluation completeness** row counts
    planned/completed pairs, usable score pairs, agent failures, and grader errors in
-   one place; quote it when results are partial.
+   one place; quote it when results are partial. Blast-radius exclusions are named
+   apart from grader errors: check the task's `allowed_paths`/`forbidden_paths`
+   before blaming the agent or the skill.
 5. **Next step.** Suggest harder tasks, a sharper skill description, or more
    repetitions, depending on the result.
 
 Don't overstate the result. "Faster in 3 runs" is an anecdote, not a finding. Useful
 commands: `skilldiff results --markdown` prints a Markdown summary for a PR, and
 `skilldiff report` rebuilds the reports for an old run.
+
+**Before you trust a surprising per-run difference, read the diff.** Open the
+`diff.patch` of any run that scored below its pair and confirm the grader judged real
+work. If the grader was wrong, fix it, run `skilldiff regrade <run> --dry-run`, then
+`skilldiff regrade <run>`: it re-runs the current graders on the saved diffs without
+any agent session, keeps the previous grades under `regrade_history`, and adds a
+visible warning to the report. Report the regrade openly and do not hand-compute
+replacement scores. Say which grader change you made and why.
 
 ## 6. Compare skill revisions (A/B)
 

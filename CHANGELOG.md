@@ -6,6 +6,33 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- `skilldiff regrade [RUN_DIR]` re-runs the current graders on a finished run from its
+  frozen fixture and saved `diff.patch`, without any agent session. Scores and
+  aggregates are rewritten, earlier grades are kept in `regrade_history`, `results.json`
+  records a `regrades` entry, and the report warns that the run was regraded.
+  `--dry-run` lists which scores would change first.
+- `validation.good` accepts a list of known-good solutions; `check` fails a grader that
+  rejects any of them and warns when only one is given.
+- Task field `grader_ignore`: globs the grader never sees (it runs in a copy of the
+  workspace without them, `SKILLDIFF_DIFF_FILE` omits their hunks) and the scope check
+  skips. `SKILLDIFF_CHANGED_FILES_FILE` lists the changed paths without them.
+  `check` warns when a `forbidden_paths` pattern would also match nested copies such as
+  `outputs/measurements/.../data/x`.
+- Grader JSON may carry `notes` (string, list, or mapping). Notes appear in a Grader
+  notes report section and are never scored or counted as checks.
+- `check` makes one tiny authenticated Claude call and fails with the login hint when
+  the session has expired; `--no-probe` skips it.
+
+### Changed
+
+- Blast-radius violations are labelled `N/A (blast radius)`, counted apart from grader
+  errors in the report and in `diagnose`, and `diagnose` now points at the task scope
+  before blaming the agent or skill.
+- `skilldiff run` reports a harness abort (for example an expired login) as a clean
+  `Experiment error` with a login hint and `--resume` advice instead of a traceback.
+
 ## [0.13.0] - 2026-10-05
 
 ### Added

@@ -281,6 +281,7 @@ prompt: |
   Fix the parser so that it accepts empty input. Keep all tests green.
 allowed_paths: [parser.py, "tests/**"]   # edits outside these are reported as errors
 forbidden_paths: ["**/*.lock"]
+grader_ignore: ["outputs/*"]            # hidden from the grader, skipped by the scope check
 grader:
   type: command
   command: python3 "$SKILLDIFF_TASK_DIR/../graders/fix_parser.py"
@@ -300,6 +301,17 @@ named, never as `0%`, so a stray edit cannot look like a wrong answer.
 Saved diffs and changed paths compare final work against the initial fixture,
 including changes the agent stages or commits. Baseline arms use the same
 grader inputs and integrity assertions as both skill arms.
+
+Patterns match at the root and at any depth, so `data/*` also matches a copy such
+as `outputs/measurements/baseline/data/orders.csv`. Skills that ask agents to save
+measurements or audit copies under `outputs/` would trip that pattern even though
+the agent changed nothing out of scope. `grader_ignore` lists globs (for example
+`["outputs/*"]`) that the grader never sees: the grader runs in a copy of the
+workspace without them, `$SKILLDIFF_DIFF_FILE` omits their hunks, and the
+scope check skips them. `check` warns when a `forbidden_paths` pattern would also
+match nested copies. A run that edits out-of-scope paths is labelled
+`N/A (blast radius)` in the report, counted apart from grader errors, and
+`diagnose` points at the task scope before it blames the agent or skill.
 
 Categories:
 
@@ -321,6 +333,9 @@ A grader runs in the workspace after the agent stops:
 - Exit 0 with no JSON passes. Exit non-zero with no JSON fails, unless the output shows a crash.
 - For part scores, print JSON with a `score` from 0 to 1.
 - For named checks, print `checks` as a list of `{"name": ..., "passed": ...}`. Bare booleans also work.
+- For diagnostics that are not checks (counts, timings, an error message), print `notes` as a string, a list of strings, or a mapping. Notes appear in a Grader notes section of the report and never enter the By check table or the score.
+- Environment: `SKILLDIFF_RESPONSE_FILE`, `SKILLDIFF_DIFF_FILE`, `SKILLDIFF_CHANGED_FILES_FILE` (one changed path per line, `grader_ignore` paths removed), and `SKILLDIFF_TASK_DIR`.
+- Check structure by parsing, not by searching raw text: a comment that mentions the old API (`# instead of renderUI()`) fails a text search on a correct solution.
 - The JSON can be the full output or the last line. Bad shapes report `error`, not a score.
 - A crashing grader (traceback, missing file, bad exit) shows `N/A`, not `0%`. Test failure shows `0%`.
 - Keep graders outside the fixture. Outside is not isolation by itself: confine agents so they cannot read parent paths.
@@ -345,11 +360,15 @@ Validate the grader three ways in the task file:
 
 ```yaml
 validation:
-  good: ../validation/fix-parser-good
+  good: [../validation/fix-parser-good, ../validation/fix-parser-alias]
   broken: [../validation/fix-parser-bad]
 ```
 
-`check` then grades untouched (must be below 100%), known-good (must be 100%), and broken (must fail).
+`check` then grades untouched (must be below 100%), every known-good solution (must be 100%), and broken (must fail).
+`good` takes one directory or a list. List a second, differently shaped valid
+solution (another API call, an alias, a different structure): a grader that accepts
+your solution but rejects an equivalent one scores the equivalent as a failure, which
+looks like a skill improvement. `check` warns when there is only one.
 Every supplied validation fixture must produce a graded result. A crash, timeout,
 or missing grade on a broken example fails validation. Timed-out grader processes
 and their children are terminated before evaluation continues.
@@ -474,13 +493,16 @@ Keep the entire run directory, including `inputs/`, for recovery. A small siblin
 | `skilldiff init [--skill PATH] [--harness H] [--dir D]` | Make a demo or a template for your skill |
 | `skilldiff init --skill-a A --skill-b B [--include-baseline] [--preset revision\|compression] [--dir D]` | Make a skill A/B test with paired results |
 | `skilldiff init --pr N --repo PATH [--base REF] [--pr-mode M] [--pr-pair P]` | Make a PR test from local refs |
-| `skilldiff check [-c CONFIG]` | Check the config, the CLI, the skill, isolation, and the graders |
+| `skilldiff check [-c CONFIG] [--no-probe]` | Check the config, the CLI, the skill, isolation, and the graders (Claude: one tiny authenticated call confirms the login; `--no-probe` skips it) |
 | `skilldiff run [-c CONFIG] [--runs N] [-j N] [-m MODEL] [-t TASK] [--resume \| --resume-from DIR] [--seed N]` | Run the test (resume reuses pairs only when hashes match) |
 | `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run |
 | `skilldiff report [RUN_DIR]` | Rebuild reports for a run |
+| `skilldiff regrade [RUN_DIR] [-c CONFIG] [-t TASK] [--dry-run]` | Re-run the current graders on a finished run without any agent session |
 | `skilldiff compare RUN_A RUN_B [--json] [--strict]` | Compare two runs |
 | `skilldiff lint [SKILL_DIR] [--json]` | Lint SKILL.md frontmatter, trigger keywords, and length |
 | `skilldiff diagnose [RUN_DIR] [--json]` | Diagnose failure modes, regressions, and adoption gaps |
+
+`regrade` is for grader fixes after the fact. It rebuilds each arm's final files from the run's frozen fixture plus the saved `diff.patch`, grades them with the current graders, and rewrites scores, aggregates, and reports. Each regraded record keeps its earlier grade under `regrade_history`, `results.json` gains a `regrades` entry, and the report shows a warning that the run was regraded, so the change stays auditable. Use `--dry-run` to see which scores would change first. A pair whose diff cannot be rebuilt (binary or excluded files) keeps its original grade and is reported as skipped. PR experiments are not supported.
 
 `lint` checks a `SKILL.md` before you spend anything: required frontmatter, naming rules, description length and broad phrasing, unclosed code fences, and broken relative links, with an estimated token count. `diagnose` reads a finished run and names what went wrong: a skill that never triggered on intended tasks, one that triggered on irrelevant tasks, regressions, blast-radius violations, agent failures, and token bloat without score gains, each with a suggested fix.
 
