@@ -170,10 +170,13 @@ def detect_skill_reference(text: str, skill_names: list[str]) -> bool:
 def detect_opencode_skill_load(transcript: str, skill_names: list[str]) -> bool:
     """Structured adoption check for OpenCode's JSON stream.
 
-    A loaded skill shows up either as the harness's own skill tool call
-    (``"tool":"skill"`` with ``input.id`` equal to the skill name) or as the
-    injected ``<skill_content name="...">`` payload. Reading the structured
-    events is more reliable than regexing a filesystem path out of the text.
+    A loaded skill shows up as the harness's own skill tool call
+    (``"tool":"skill"`` with ``input.id`` equal to the skill name), as the
+    injected ``<skill_content name="...">`` payload, or as a read of a file
+    inside the installed skill directory. Only calls that match the skill
+    under test count: agents may invoke unrelated user-level skills, and
+    those must not be mistaken for adoption of the skill under test (or,
+    in the control arm, for contamination).
     """
     if not skill_names:
         return False
@@ -190,18 +193,22 @@ def detect_opencode_skill_load(transcript: str, skill_names: list[str]) -> bool:
         part = item.get("part")
         candidates: list[Any] = [item, part if isinstance(part, dict) else {}]
         for candidate in candidates:
-            tool = str(candidate.get("tool") or "")
             tool_input = candidate.get("input")
+            if not isinstance(tool_input, dict):
+                # OpenCode v2 nests tool inputs under the part's ``state``.
+                state = candidate.get("state")
+                if isinstance(state, dict):
+                    tool_input = state.get("input")
             if isinstance(tool_input, dict):
                 skill_id = tool_input.get("id") or tool_input.get("skill")
                 if skill_id and _skill_matches(skill_id, skill_names):
                     return True
-            if tool in {"skill", "Skill"}:
-                return True
-    return any(
+    if any(
         re.search(rf'<skill_content\s+name=["\']{re.escape(name)}["\']', transcript)
         for name in skill_names
-    )
+    ):
+        return True
+    return detect_skill_reference(transcript, skill_names)
 
 
 def _opencode_error_message(stdout: str, stderr: str) -> Optional[str]:

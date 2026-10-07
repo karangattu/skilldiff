@@ -3,7 +3,12 @@ import time
 from pathlib import Path
 
 from skilldiff.config import ClaudeConfig, ExperimentConfig
-from skilldiff.runner import AgentRunner, detect_skill_reference, parse_claude_output
+from skilldiff.runner import (
+    AgentRunner,
+    detect_opencode_skill_load,
+    detect_skill_reference,
+    parse_claude_output,
+)
 
 
 def test_runner_allows_fixture_edits_and_shiny_docs_without_prompts(
@@ -219,6 +224,57 @@ def test_runner_times_out_and_kills_children(tmp_path: Path) -> None:
 def test_detect_skill_reference() -> None:
     assert detect_skill_reference("cat .agents/skills/my-skill/SKILL.md", ["my-skill"])
     assert not detect_skill_reference("cat .agents/skills/my-skill-2/SKILL.md", ["my-skill"])
+
+
+def _opencode_skill_event(skill_id: str, tool: str = "skill") -> str:
+    """One OpenCode v2 tool event, shaped like the real JSON stream."""
+    return json.dumps(
+        {
+            "type": "tool_use",
+            "part": {
+                "tool": tool,
+                "state": {"status": "completed", "input": {"id": skill_id}},
+            },
+        }
+    )
+
+
+def test_detect_opencode_skill_load_matches_skill_id() -> None:
+    assert detect_opencode_skill_load(_opencode_skill_event("my-skill"), ["my-skill"])
+
+
+def test_detect_opencode_skill_load_ignores_unrelated_skill() -> None:
+    """A control run invoking any user-level skill must not count as adoption.
+
+    Regression: the detector used to return True for any ``tool:"skill"``
+    call regardless of which skill was invoked, flagging clean controls as
+    contaminated (and diluting adoption on the skill arm).
+    """
+    transcript = _opencode_skill_event("verification-before-completion")
+    assert not detect_opencode_skill_load(transcript, ["my-skill"])
+
+
+def test_detect_opencode_skill_load_via_skill_content_payload() -> None:
+    transcript = 'output: <skill_content name="my-skill">\nbody...'
+    assert detect_opencode_skill_load(transcript, ["my-skill"])
+    assert not detect_opencode_skill_load(transcript, ["other-skill"])
+
+
+def test_detect_opencode_skill_load_via_direct_file_read() -> None:
+    transcript = json.dumps(
+        {
+            "type": "tool_use",
+            "part": {
+                "tool": "read",
+                "state": {
+                    "status": "completed",
+                    "input": {"path": ".opencode/skills/my-skill/SKILL.md"},
+                },
+            },
+        }
+    )
+    assert detect_opencode_skill_load(transcript, ["my-skill"])
+    assert not detect_opencode_skill_load(transcript, ["other-skill"])
 
 
 def test_claude_sessions_do_not_inherit_parent_claude_code_session(
