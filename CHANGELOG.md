@@ -6,6 +6,8 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-07
+
 ### Added
 
 - `skilldiff regrade [RUN_DIR]` re-runs the current graders on a finished run from its
