@@ -295,7 +295,7 @@ SKILLDIFF_DIFF_FILE (a git diff of its changes), SKILLDIFF_TASK_DIR.
 import json
 
 checks = [
-    True,  # TODO: replace with real checks, e.g. run tests or inspect files
+    False,  # TODO: replace with real checks, e.g. run tests or inspect files
 ]
 score = sum(checks) / len(checks)
 print(json.dumps({"score": score, "success": all(checks), "checks": checks}))
@@ -421,8 +421,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     print("Initialized skilldiff experiment:")
     for path in created:
         print(f"  - {path}")
-    print()
     if skill_arg:
+        print(
+            "Warning: graders/my_first_task.py is a placeholder template that fails until replaced."
+        )
         print("Next steps:")
         print("  1. Put a small test project in fixtures/my-project/.")
         print("  2. Fill in tasks/my-first-task.yaml and graders/my_first_task.py.")
@@ -498,6 +500,7 @@ def _init_skill_ab(
            _nested_task(CUSTOM_TASK_YAML, "my-held-out-task"), force)
     _write(root / "graders" / "my_first_task.py", CUSTOM_GRADER, force)
     (root / "fixtures" / "my-project").mkdir(parents=True, exist_ok=True)
+    print("Warning: graders/my_first_task.py is a placeholder template that fails until replaced.")
     print(f"Initialized skill A/B experiment in {root} (A={rel_a}, B={rel_b})")
     print("Same fixtures run with skill A vs skill B, interleaved and paired.")
     return 0
@@ -551,6 +554,7 @@ grader:
     _write(root / "tasks" / "heldout" / "my-held-out-task.yaml",
            _nested_task(task_template, "my-held-out-task"), force)
     _write(root / "graders" / "my_first_task.py", CUSTOM_GRADER, force)
+    print("Warning: graders/my_first_task.py is a placeholder template that fails until replaced.")
     print(f"Initialized PR #{args.pr} experiment in {root}")
     print("Fetch the GitHub PR head into your local repository before check/run:")
     print(f"  git -C {shlex.quote(str(repo))} fetch origin {head}:{head}")
@@ -956,12 +960,35 @@ def cmd_check(args: argparse.Namespace) -> int:
                     f"task {task.id}: fixture contains Python files but grader_ignore "
                     "does not cover bytecode (*.pyc, __pycache__/*)"
                 )
+            allowed_domains = getattr(cfg.claude, "allowed_domains", None) or []
+            if has_py and not allowed_domains:
+                warn(
+                    f"task {task.id}: fixture contains Python files but allowed_domains "
+                    "is empty; add 'pypi.org' and 'files.pythonhosted.org' if agents "
+                    "need pip install"
+                )
         for message in scope_pattern_warnings(
             task.id,
             getattr(task, "forbidden_paths", None) or [],
             getattr(task, "grader_ignore", None) or [],
         ):
             warn(message)
+        if task.grader and task.grader.command:
+            for part in task.grader.command.split():
+                if part.endswith(".py") or part.endswith(".sh"):
+                    p = Path(part.replace("$SKILLDIFF_TASK_DIR", str(task_dir)))
+                    if not p.is_absolute():
+                        p = (task_dir / p).resolve()
+                    if p.is_file():
+                        try:
+                            content = p.read_text(encoding="utf-8")
+                            if "TODO: replace with real checks" in content:
+                                warn(
+                                    f"task {task.id}: grader {p.name} is a placeholder template "
+                                    "that fails until replaced with real checks"
+                                )
+                        except Exception:
+                            pass
         if not (task.grader and (task.grader.command or task.grader.type in {"llm", "rubric"})):
             warn(f"task {task.id}: no grader, so every run scores N/A (only cost/time compared)")
             continue

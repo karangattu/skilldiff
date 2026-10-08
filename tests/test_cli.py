@@ -218,3 +218,36 @@ def test_format_results_source_size_signed_pct():
     assert "Source size: 160176 → 172934 bytes (+8.0%)" in out
     assert "reduction" not in out
 
+
+def test_cli_init_warns_placeholder_grader(tmp_path: Path, capsys):
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: my-skill\ndescription: test\n---\n")
+    code = cmd_init(Args(force=False, skill=str(skill), dir=str(tmp_path / "exp")))
+    assert code == 0
+    out = capsys.readouterr().out
+    assert (
+        "Warning: graders/my_first_task.py is a placeholder template that fails until replaced."
+    ) in out
+    grader_text = (tmp_path / "exp" / "graders" / "my_first_task.py").read_text()
+    assert "False,  # TODO: replace with real checks" in grader_text
+
+
+def test_cli_check_warns_placeholder_grader_and_python_domains(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: my-skill\ndescription: test\n---\n")
+    cmd_init(Args(force=False, skill=str(skill), dir="."))
+    (tmp_path / "fixtures" / "my-project" / "main.py").write_text("print('hello')\n")
+    fake = tmp_path / "claude"
+    fake.write_text("#!/bin/sh\necho 9.9.9\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("CLAUDE_BIN", str(fake))
+
+    cmd_check(Args(config="skilldiff.yaml", no_grade=True))
+    out = capsys.readouterr().out
+    assert "is a placeholder template that fails until replaced" in out
+    assert "allowed_domains is empty; add 'pypi.org' and 'files.pythonhosted.org'" in out
+
+
