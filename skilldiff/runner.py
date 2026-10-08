@@ -1,5 +1,6 @@
 import json
 import os
+import queue
 import re
 import shutil
 import signal
@@ -20,7 +21,10 @@ from skilldiff.config import (
     CodexConfig,
     ExperimentConfig,
     OpenCodeConfig,
+    read_skill_name,
 )
+from skilldiff.preflight import codex_env, protected_read_paths
+from skilldiff.processes import OwnedDescendants
 
 
 @dataclass
@@ -41,7 +45,7 @@ class RunResult:
     # True/False when the harness output says whether the agent loaded the skill;
     # None when it cannot be determined.
     skill_invoked: Optional[bool] = None
-    # Whether the harness reported the skill as installed (Claude init event only).
+    # Whether initialization or a workspace discovery probe established availability.
     skill_available: Optional[bool] = None
     # "ok", "error", or "timeout".
     status: str = "ok"
@@ -124,7 +128,7 @@ def resolve_container_image(runtime: str, image: Optional[str], timeout: float =
 
 
 def validate_container_auth(config: ExperimentConfig) -> None:
-    if config.isolation == "local":
+    if config.isolation not in {"docker", "podman"}:
         return
     harness = config.harness
     if harness in {"claude", "codex"}:
@@ -390,15 +394,19 @@ class AgentRunner:
         readonly_mounts: Optional[list[tuple[Path, str]]] = None,
         forward_env: Optional[list[str]] = None,
         temp_dir: Optional[Path] = None,
+        read_paths: Optional[list[str]] = None,
+        protected_paths: Optional[list[str]] = None,
+        rpc_requests: Optional[list[dict[str, Any]]] = None,
     ) -> ExecResult:
-        """Run an agent CLI without a stdin pipe, with a timeout, and clean up its children.
+        """Run a CLI with a timeout and clean up its owned children.
 
+        Discovery uses bounded JSON-RPC over pipes; model sessions have no stdin pipe.
         Output goes to temporary files rather than pipes so that background processes the
         agent leaves behind (dev servers, watchers) cannot keep the run from finishing.
         """
         if self._cancelled:
             raise RuntimeError("Cancelled before the agent started")
-        if isolation not in {"local", "docker", "podman"}:
+        if isolation not in {"local", "docker", "podman", "macos"}:
             raise ValueError(f"Unsupported isolation mode: {isolation}")
 
         started = time.monotonic()
@@ -417,6 +425,11 @@ class AgentRunner:
         runtime = None
         if sys.platform == "darwin" and isolation == "local" and shutil.which("caffeinate"):
             exec_cmd = ["caffeinate", "-i", *exec_cmd]
+        elif isolation == "macos":
+            from skilldiff.isolation import macos_command
+
+            exec_cmd = macos_command(exec_cmd, cwd, temp_dir, read_paths or [],
+                                     protected_paths or [])
         elif isolation in {"docker", "podman"}:
             runtime = shutil.which(isolation)
             if not runtime:
@@ -453,6 +466,8 @@ class AgentRunner:
                 "-w",
                 "/workspace",
             ]
+            if rpc_requests:
+                exec_cmd.append("-i")
             if temp_dir is not None:
                 exec_cmd.extend(["-v", f"{temp_dir.resolve()}:/session-tmp"])
             for source, target in mounts:
@@ -483,23 +498,84 @@ class AgentRunner:
                 exec_cmd,
                 cwd=cwd,
                 env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=out,
+                stdin=subprocess.PIPE if rpc_requests else subprocess.DEVNULL,
+                stdout=subprocess.PIPE if rpc_requests else out,
                 stderr=err,
                 start_new_session=os.name == "posix",
             )
             with self._active_lock:
                 self._active.add(proc)
+            descendants = OwnedDescendants(proc.pid)
             timed_out = False
             cleanup_error = None
+            protocol_error = None
+            stop_reader = threading.Event()
             try:
-                exit_code = proc.wait(timeout=remaining)
+                if rpc_requests:
+                    messages: queue.Queue[bytes | None] = queue.Queue()
+
+                    def read_messages() -> None:
+                        assert proc.stdout is not None
+                        try:
+                            for line in iter(proc.stdout.readline, b""):
+                                if not stop_reader.is_set():
+                                    messages.put(line)
+                        finally:
+                            proc.stdout.close()
+                            messages.put(None)
+
+                    reader = threading.Thread(target=read_messages, daemon=True)
+                    reader.start()
+                    assert proc.stdin is not None
+                    for request in rpc_requests:
+                        proc.stdin.write((json.dumps(request) + "\n").encode())
+                        proc.stdin.flush()
+                        if "id" not in request:
+                            continue
+                        while True:
+                            wait = None if deadline is None else max(0, deadline - time.monotonic())
+                            try:
+                                line = messages.get(timeout=wait)
+                            except queue.Empty as exc:
+                                raise subprocess.TimeoutExpired(cmd, timeout) from exc
+                            if line is None:
+                                raise RuntimeError("Codex discovery closed before replying")
+                            out.write(line)
+                            message = json.loads(line)
+                            if message.get("id") == request["id"]:
+                                if "error" in message:
+                                    raise RuntimeError(f"Codex discovery error: {message['error']}")
+                                break
+                    _kill_group(proc)
+                    proc.wait(timeout=5)
+                    reader.join(timeout=1)
+                    exit_code = 0
+                else:
+                    exit_code = proc.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 _kill_group(proc)
                 exit_code = proc.wait()
+            except (RuntimeError, ValueError, BrokenPipeError) as exc:
+                if not rpc_requests:
+                    raise
+                protocol_error = str(exc)
+                _kill_group(proc)
+                exit_code = -1
             finally:
                 _kill_group(proc)
+                descendants.cleanup()
+                if rpc_requests:
+                    stop_reader.set()
+                    proc.wait(timeout=5)
+                    if proc.stdin:
+                        try:
+                            proc.stdin.close()
+                        except BrokenPipeError:
+                            pass
+                    # The reader owns stdout. Closing its pipe from this thread
+                    # waits for its read lock if an escaped child kept it open,
+                    # silently extending the discovery deadline.
                 with self._active_lock:
                     self._active.discard(proc)
                 if container_name:
@@ -522,6 +598,7 @@ class AgentRunner:
             return ExecResult(
                 stdout=out.read().decode("utf-8", errors="replace"),
                 stderr=err.read().decode("utf-8", errors="replace") +
+                       ("\n" + protocol_error if protocol_error else "") +
                        ("\n" + cleanup_error if cleanup_error else ""),
                 exit_code=exit_code if not cleanup_error else (exit_code or -1),
                 duration=duration,
@@ -609,6 +686,16 @@ class AgentRunner:
             status=last_res.status,
         )
 
+    def preflight(self, cwd: Path, config: ExperimentConfig,
+                  expected_skills: list[str], temp_dir: Optional[Path] = None,
+                  runtime_probe: Optional[str] = None) -> dict[str, Any]:
+        from skilldiff.preflight import probe_workspace
+
+        if temp_dir is None:
+            with tempfile.TemporaryDirectory(prefix="probe-", dir=cwd.resolve().parent) as tmp:
+                return self.preflight(cwd, config, expected_skills, Path(tmp), runtime_probe)
+        return probe_workspace(self, cwd, config, expected_skills, temp_dir, runtime_probe)
+
     def run(
         self,
         prompt: str | list[str],
@@ -622,10 +709,23 @@ class AgentRunner:
         # Workspaces already have private roots. Keep temporary files outside
         # the fixture/diff, reuse them across turns, and never mutate os.environ.
         with tempfile.TemporaryDirectory(prefix="tmp-", dir=cwd.resolve().parent) as tmp:
-            return self._run_session(
+            checked = False
+            if (isinstance(config, ExperimentConfig) and config.harness == "codex"
+                    and config.skill_names
+                    and not os.environ.get("SKILLDIFF_MOCK_RUNNER")):
+                expected = sorted({read_skill_name(path.parent) or path.parent.name
+                                   for root in (".agents/skills", ".codex/skills")
+                                   for path in (cwd / root).glob("*/SKILL.md")
+                                   if path.parent.name in config.skill_names})
+                self.preflight(cwd, config, expected, Path(tmp))
+                checked = config.codex.verify_skills
+            result = self._run_session(
                 prompt, cwd, model, config, harness, skill_names, timeout,
                 temp_dir=Path(tmp),
             )
+            if checked:
+                result.skill_available = bool(expected)
+            return result
 
     def _run_session(
         self,
@@ -727,6 +827,8 @@ class AgentRunner:
                 isolation=isolation,
                 container_image=container_image,
                 temp_dir=temp_dir,
+                protected_paths=(protected_read_paths(config)
+                                 if isinstance(config, ExperimentConfig) else []),
             )
         elif active_harness == "opencode":
             result = self._run_opencode(
@@ -888,6 +990,7 @@ class AgentRunner:
         isolation: str = "local",
         container_image: Optional[str] = None,
         temp_dir: Optional[Path] = None,
+        protected_paths: Optional[list[str]] = None,
     ) -> RunResult:
         bin_path = codex_cfg.bin_path or self.codex_bin
         cmd = [bin_path, "exec", prompt, "-m", model, "--json"]
@@ -899,15 +1002,14 @@ class AgentRunner:
         if codex_cfg.extra_args:
             cmd.extend(codex_cfg.extra_args)
 
-        env = os.environ.copy()
-        if codex_cfg.auth in {"subscription", "stored"}:
-            env.pop("OPENAI_API_KEY", None)
+        env = codex_env(codex_cfg, isolation, temp_dir)
 
         start_time = time.perf_counter()
         try:
             execution = self._exec(
                 cmd, cwd, env, timeout, isolation=isolation, container_image=container_image,
-                temp_dir=temp_dir,
+                temp_dir=temp_dir, read_paths=codex_cfg.read_paths,
+                protected_paths=protected_paths,
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))

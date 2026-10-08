@@ -75,6 +75,8 @@ def test_resume_reuses_pairs_and_allows_more_repetitions(experiment):
         ("runs", 0),
         ("failure_policy", {"agent_failure": "zero"}),
         ("thresholds", {"acceptable_score_regression_pp": 8}),
+        ("cost_basis", "api-equivalent"),
+        ("pricing", {"rates": {"test": {"input": 2}}}),
         ("claude.max_turns", 1),
         ("claude.extra_args", ["--some-flag"]),
     ],
@@ -471,3 +473,32 @@ def test_recorded_python_version_is_checked(experiment):
     metadata = runner._metadata("test")
     metadata["system"]["python"] = "0.0.0"
     assert "python version changed" in runner._resume_mismatches(metadata)
+
+
+def test_interruption_keeps_arm_resources_diff_and_explicit_partial_records(experiment):
+    from skilldiff.runner import RunResult
+
+    cfg, tasks = experiment
+
+    class InterruptedRunner(AgentRunner):
+        count = 0
+
+        def run(self, prompt, cwd, model, config):
+            self.count += 1
+            (cwd / 'data.txt').write_text('repaired' if self.count == 1 else 'partial')
+            if self.count == 2:
+                raise KeyboardInterrupt
+            return RunResult(str(prompt), 'fixed', 'agent evidence', 12, .25,
+                             100, 20, 2, 0)
+
+    result = ExperimentRunner(cfg, tasks, agent_runner=InterruptedRunner()).run()
+    root = Path(result['run_dir'])
+    records = [json.loads(path.read_text()) for path in root.rglob('run.json')]
+    assert len(records) == 2
+    finished = next(record for record in records if record['status'] == 'ok')
+    assert finished['input_tokens'] == 100 and finished['cost'] == .25
+    assert finished['response'] == 'fixed' and finished['complete'] is False
+    assert any('repaired' in path.read_text() for path in root.rglob('diff.patch'))
+    assert any(record['status'] == 'interrupted' for record in records)
+    assert result['runs']['control'] == result['runs']['treatment'] == []
+    assert len(result['incomplete_runs']) == 2

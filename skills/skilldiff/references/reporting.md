@@ -51,6 +51,21 @@ measurements as `N/A`. Agent sessions are not automatically retried.
 The skill-context tax is a text-size estimate assuming text is carried each
 turn, not measured prompt injection or spend.
 
+## Recorded decision cost basis
+
+The evaluation table always labels its API estimate. The closing decision uses
+`cost_basis: harness` by default. A run configured with `api-equivalent` uses
+its saved rates and measured usage for cost comparisons, uncertainty, and its
+verdict across report formats and terminal output. Unknown usage or rates stay
+`N/A`. Original harness cost is preserved in arm records. Results with no basis
+retain the historical harness interpretation. Looking up prices after a run
+can add a labelled estimate to a summary, but must not change its recorded
+verdict or masquerade as pre-registered pricing.
+
+Discovery preflight establishes skill availability, not adoption. Report
+"Skill loaded" from transcript evidence. Incomplete trial telemetry and diffs
+are audit evidence; incomplete pairs do not enter this table or the decision.
+
 ## Closing decision
 
 The report itself ends with a **Closing decision** table — score, cost, time,

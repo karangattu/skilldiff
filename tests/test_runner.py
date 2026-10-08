@@ -1,6 +1,10 @@
 import json
+import os
+import subprocess
 import time
 from pathlib import Path
+
+import pytest
 
 from skilldiff.config import ClaudeConfig, ExperimentConfig
 from skilldiff.runner import (
@@ -357,3 +361,47 @@ def test_exec_pins_pwd_to_cwd(tmp_path: Path):
         runner._exec(["echo", "hi"], cwd=tmp_path, env={}, timeout=5.0, isolation="local")
 
         assert mock_popen.call_args.kwargs["env"]["PWD"] == str(tmp_path.resolve())
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='POSIX descendant cleanup')
+def test_exec_cleans_owned_server_that_starts_a_new_session(tmp_path):
+    import sys
+
+    code = (
+        "import subprocess,sys,time,pathlib\n"
+        "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],"
+        "start_new_session=True)\n"
+        "pathlib.Path('server.pid').write_text(str(p.pid))\n"
+        "time.sleep(2)\n"
+    )
+    result = AgentRunner()._exec([sys.executable, '-c', code], tmp_path,
+                                os.environ.copy(), 10)
+    assert result.exit_code == 0
+    pid = int((tmp_path / 'server.pid').read_text())
+    try:
+        # ps distinguishes a terminated zombie awaiting init from a live server.
+        state = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)],
+                               capture_output=True, text=True, check=False).stdout.strip()
+        assert not state or state.startswith('Z'), f'owned server {pid} survived: {state}'
+    finally:
+        try:
+            os.kill(pid, 9)
+        except ProcessLookupError:
+            pass
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='POSIX pipe inheritance')
+def test_rpc_deadline_is_not_extended_by_an_unobserved_pipe_holder(tmp_path):
+    import sys
+
+    code = (
+        "import subprocess,sys\n"
+        "subprocess.Popen([sys.executable,'-c','import time;time.sleep(3)'],"
+        "start_new_session=True)\n"
+    )
+    started = time.monotonic()
+    result = AgentRunner()._exec([sys.executable, '-c', code], tmp_path,
+                                os.environ.copy(), .15,
+                                rpc_requests=[{'id': 1, 'method': 'initialize'}])
+    assert result.timed_out
+    assert time.monotonic() - started < 2.5

@@ -3,6 +3,7 @@ preset: skill
 skill: ./skills/csv-totals
 
 harness: claude
+cost_basis: harness          # choose api-equivalent before a new run to decide using rates
 
 models:
   - claude-sonnet-5

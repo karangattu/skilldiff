@@ -28,7 +28,9 @@ csv-totals/
   rates, source, and date before the run; the report prices the saved token
   breakdown and regenerating reproduces the estimate. The rates there are
   illustrative (checked 2026-09-27) — refresh them from the provider's pricing
-  page before a real run.
+  page before a real run. This example explicitly keeps `cost_basis: harness`;
+  choose `api-equivalent` before a new evaluation if recorded API estimates
+  should drive its decision. Historical samples retain their original basis.
 - **Closing decision.** Reports end with score, cost, time, tokens,
   tool calls, turns, and adoption (paired change, CI, plain reading) plus one bottom line:
   SHIP, DO NOT SHIP, or NEEDS MORE RUNS.

@@ -7,6 +7,7 @@ for pull requests), and `report.qmd` (for customizing with Quarto).
 
 import html
 import json
+import math
 import re
 import statistics
 from pathlib import Path
@@ -514,6 +515,13 @@ def category_reading(
 
 def _cost_basis_note(results: dict[str, Any]) -> str:
     pricing = results.get("pricing") or {}
+    if results.get("cost_basis") == "api-equivalent":
+        return ("Decision cost basis: API-equivalent cost, calculated from recorded usage "
+                f"and rates from {pricing.get('source')} (checked {pricing.get('date')}). "
+                "This estimates API spend; it is not subscription billing. Missing usage "
+                "or model rates remain N/A. Saved harness cost is unchanged. "
+                "For Codex, omitted cache-write usage is treated as zero; "
+                "the estimate excludes any unreported cache writes.")
     if pricing:
         return (
             "Tokens include cached input where the harness reports it. Cost is the "
@@ -564,6 +572,31 @@ def _fmt_money_diff(val: Any, currency: str = "USD") -> str:
     sign = "+" if v > 0.005 else ("-" if v < -0.005 else "")
     body = f"${abs(v):.2f}" if currency == "USD" else f"{abs(v):.2f} {currency}"
     return f"{sign}{body}"
+
+
+def decision_cost_runs(runs: list[dict[str, Any]], results: dict[str, Any]) -> list[dict[str, Any]]:
+    """Use an explicitly recorded cost basis without changing saved run telemetry.
+
+    Legacy results with no basis retain harness cost. Unknown usage or rates
+    stay unknown, even if other token categories have measurements.
+    """
+    if results.get("cost_basis", "harness") != "api-equivalent":
+        return runs
+    rates = (results.get("pricing") or {}).get("rates") or {}
+    normalized = []
+    for run in runs:
+        record = dict(run)
+        record["harness_cost"] = run.get("harness_cost", run.get("cost"))
+        record["cost"] = None
+        model_rates = rates.get(str(run.get("model", ""))) or {}
+        usage = [run.get(field) for field, _ in _API_TOKEN_FIELDS]
+        if all(isinstance(value, (int, float)) and not isinstance(value, bool)
+               and math.isfinite(value) and value >= 0 for value in usage):
+            if all(key in model_rates for _, key in _API_TOKEN_FIELDS):
+                record["cost"] = sum(run[field] * model_rates[key]
+                                     for field, key in _API_TOKEN_FIELDS) / 1_000_000
+        normalized.append(record)
+    return normalized
 
 
 def _api_equivalent_summary(
@@ -1631,6 +1664,8 @@ def build_decision_context(
     if control_runs is None or treatment_runs is None:
         runs = _load_runs_for_report(results, run_root)
         control_runs, treatment_runs = runs["control"], runs["treatment"]
+    control_runs = decision_cost_runs(control_runs, results)
+    treatment_runs = decision_cost_runs(treatment_runs, results)
     control_runs = [analysis_run(r, policy.get("agent_failure", "exclude")) for r in control_runs]
     treatment_runs = [analysis_run(r, policy.get("agent_failure", "exclude"))
                       for r in treatment_runs]
@@ -1668,6 +1703,8 @@ def build_decision_context(
             f"Headline and closing decision use held-out data only ({coverage}). "
             "Dev pairs are for iteration."
         )
+    if results.get("cost_basis") == "api-equivalent":
+        note = (note + " " if note else "") + _cost_basis_note(results)
     thresholds = results.get("thresholds") or (results.get("settings") or {}).get("thresholds")
     preset = results.get("preset") or (results.get("settings") or {}).get("preset")
     recommendation = _recommendation(
@@ -2085,7 +2122,7 @@ def _apply_codex_cache_write_fallback(
 ) -> dict[str, list[dict[str, Any]]]:
     """Treat omitted Codex cache-write usage as zero so known counts remain usable."""
     if results.get("harness") != "codex":
-        return runs
+        return {arm: decision_cost_runs(records, results) for arm, records in runs.items()}
     normalized = {arm: [dict(run) for run in records] for arm, records in runs.items()}
     for records in normalized.values():
         for run in records:
@@ -2095,7 +2132,7 @@ def _apply_codex_cache_write_fallback(
                 and run.get("output_tokens") is not None
             ):
                 run["cache_creation_tokens"] = 0
-    return normalized
+    return {arm: decision_cost_runs(records, results) for arm, records in normalized.items()}
 
 
 def _run_status(run: dict[str, Any]) -> Cell:
@@ -2640,6 +2677,15 @@ def build_report_blocks(
     split_basis_note = decision["basis_note"]
 
     blocks: list[tuple] = []
+    incomplete = results.get("incomplete_runs") or []
+    if incomplete:
+        known = [run.get("cost") for run in incomplete if run.get("cost") is not None]
+        blocks.append(("callout", "warning", "Incomplete trials",
+                       f"{len(incomplete)} incomplete arm record(s) are excluded from paired "
+                       f"decisions. Saved harness cost: ${sum(known):.2f} across {len(known)} "
+                       "measured arm(s); remaining spend and usage are unknown. Telemetry "
+                       "and available diffs remain in the arm artifacts. Resume refuses "
+                       "incomplete pairs; start a new run to avoid silently repeating paid work."))
     thresholds = results.get("thresholds") or (results.get("settings") or {}).get("thresholds")
 
     if headline_paired.get("pairs"):
@@ -3159,7 +3205,7 @@ def build_report_blocks(
                 + ". Control column is Original; treatment column is Minified. "
                 "Tune on dev tasks, then compare frozen versions on held-out tasks."
             )
-            if skill_comparison.get("include_baseline"):
+            if (skill_comparison or {}).get("include_baseline"):
                 run_note += " A no-skill baseline arm also ran per pair (see runs/baseline)."
         elif skill_comparison:
             run_note = (
@@ -3168,7 +3214,7 @@ def build_report_blocks(
                 + (f" (seed `{results.get('seed')}`)" if seeded else "")
                 + ". Control column is Skill A; treatment column is Skill B."
             )
-            if skill_comparison.get("include_baseline"):
+            if (skill_comparison or {}).get("include_baseline"):
                 run_note += (
                     " A no-skill baseline arm also ran per pair in balanced rotation "
                     "(see Baseline comparisons)."
@@ -3367,7 +3413,7 @@ def build_report_blocks(
     # decision, not with reading notes.
     rec_kind, rec_label, rec_reason = decision["recommendation"]
     blocks.append(("h", 2, "Closing decision"))
-    if split_basis_note:
+    if decision["held_out"]:
         blocks.append(
             (
                 "p",

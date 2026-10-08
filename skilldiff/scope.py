@@ -1,6 +1,7 @@
 """Path-scope helpers shared by the grader, reporter, and diagnosis."""
 
 import fnmatch
+import json
 import re
 
 BLAST_RADIUS_PREFIX = "Blast radius violation"
@@ -66,3 +67,17 @@ def scope_pattern_warnings(
                 "`grader_ignore: [\"outputs/*\"]` or rely on a grader-side file hash"
             )
     return messages
+
+
+def scope_instructions(allowed: list[str], forbidden: list[str], ignored: list[str]) -> str:
+    """State the grader's path contract identically in both arms."""
+    if not (allowed or forbidden or ignored):
+        return ""
+    lines = ["Task file constraints (repo-relative globs match at any depth):"]
+    if allowed:
+        lines.append("Only modify paths matching: " + json.dumps(allowed))
+    if forbidden:
+        lines.append("Do not modify paths matching: " + json.dumps(forbidden))
+    if ignored:
+        lines.append("Paths excluded from grading and these constraints: " + json.dumps(ignored))
+    return "\n\n" + "\n".join(lines)

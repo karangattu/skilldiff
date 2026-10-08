@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from skilldiff import __version__
-from skilldiff.config import ExperimentConfig, TaskConfig
+from skilldiff.config import ExperimentConfig, TaskConfig, read_skill_name
 from skilldiff.grader import Candidate, Grader
 from skilldiff.host_exposure import host_exposure_warnings
 from skilldiff.persistence import atomic_json, atomic_write, read_json, run_lock
-from skilldiff.reporter import calculate_metrics, create_reports
+from skilldiff.reporter import _apply_codex_cache_write_fallback, calculate_metrics, create_reports
 from skilldiff.revisions import resolve_comparison
 from skilldiff.runner import (
     AgentRunner,
@@ -30,7 +30,7 @@ from skilldiff.runner import (
     resolve_container_image,
     validate_container_auth,
 )
-from skilldiff.scope import is_blast_violation
+from skilldiff.scope import is_blast_violation, scope_instructions
 from skilldiff.snapshots import (
     SNAPSHOT_VERSION,
     create_snapshots,
@@ -490,6 +490,7 @@ class ExperimentRunner:
             "thresholds": dict(getattr(self.config, "thresholds", {}) or {}),
             "failure_policy": dict(getattr(self.config, "failure_policy", {}) or {}),
             "pricing": dict(getattr(self.config, "pricing", {}) or {}),
+            "cost_basis": self.config.cost_basis,
             "seed": self._seed,
             "claude": asdict(self.config.claude),
             "codex": asdict(self.config.codex),
@@ -604,9 +605,11 @@ class ExperimentRunner:
                 f"{getattr(self.config, 'preset', None)})"
             )
         for key in ("timeout_seconds", "parallel", "thresholds", "failure_policy",
-                    "container_image"):
+                    "container_image", "pricing"):
             if prev_exp.get(key) != getattr(self.config, key):
                 reasons.append(f"{key} changed")
+        if prev_exp.get("cost_basis", "harness") != self.config.cost_basis:
+            reasons.append("cost_basis changed")
         if prev_exp.get("isolation", "local") != self.config.isolation:
             reasons.append("isolation changed")
         if prev_exp.get("container_image_id") != self._container_image_id:
@@ -733,10 +736,13 @@ class ExperimentRunner:
             self._execution_config.container_image = self._container_image_id
 
     def run(self, resume: bool | Path = False) -> dict[str, Any]:
-        if self.config.isolation not in {"local", "docker", "podman"}:
+        if self.config.isolation not in {"local", "docker", "podman", "macos"}:
             raise ValueError(f"Unsupported isolation mode: {self.config.isolation}")
+        if self.config.isolation == "macos":
+            if platform.system() != "Darwin" or self.config.harness != "codex":
+                raise ValueError("isolation: macos requires macOS and the Codex harness")
         validate_container_auth(self.config)
-        if self.config.isolation != "local":
+        if self.config.isolation in {"docker", "podman"}:
             self._container_image_id = resolve_container_image(
                 self.config.isolation, self.config.container_image
             )
@@ -921,7 +927,7 @@ class ExperimentRunner:
             forbidden_paths=getattr(task, "forbidden_paths", None),
             grader_ignore=getattr(task, "grader_ignore", None),
             task_prompt=task.prompt,
-            isolation=execution.isolation,
+            isolation="local" if execution.isolation == "macos" else execution.isolation,
             container_image=execution.container_image,
             inputs_root=self.config.config_path.parent if self.config.config_path else None,
         )
@@ -1041,6 +1047,26 @@ class ExperimentRunner:
             for ws in workspaces.values():
                 ws.setup()
 
+            if not is_correctness and not os.environ.get("SKILLDIFF_MOCK_RUNNER") and (
+                (execution.harness == "codex" and execution.codex.verify_skills)
+                or task.runtime_probe or execution.isolation == "macos"
+            ):
+                # Verify every arm before paying for the first model session.
+                for arm, ws in workspaces.items():
+                    expected = ([read_skill_name(path) or path.name for path in ws.skill_dirs]
+                                if ws.is_treatment else [])
+                    directory = {"control": ctrl_dir, "treatment": treat_dir,
+                                 "baseline": baseline_dir}[arm]
+                    self.progress(f"Preflight: {model} · {task.id} · {arm}")
+                    try:
+                        probe = self.agent_runner.preflight(
+                            ws.root, execution, expected, runtime_probe=task.runtime_probe)
+                        atomic_json(directory / "preflight.json", {"status": "ok", **probe})
+                    except Exception as exc:
+                        atomic_json(directory / "preflight.json",
+                                    {"status": "error", "error": str(exc)})
+                        raise
+
             # Balanced arm order within each task/model (seeded, auditable).
             # With a baseline, all three positions rotate so the baseline does
             # not always run last (warm-cache / rate-limit bias).
@@ -1099,24 +1125,51 @@ class ExperimentRunner:
                     task_prompt_val = (
                         task.prompts if getattr(task, "prompts", None) else task.prompt
                     )
-                    results[arm] = self.agent_runner.run(
-                        task_prompt_val, workspaces[arm].root, model, execution
-                    )
+                    constraints = scope_instructions(task.allowed_paths, task.forbidden_paths,
+                                                     task.grader_ignore)
+                    if isinstance(task_prompt_val, list):
+                        task_prompt_val = [prompt + constraints for prompt in task_prompt_val]
+                    else:
+                        task_prompt_val += constraints
+                    self.progress(f"Agent starting: {model} · {task.id} · {arm}")
+                    try:
+                        results[arm] = self.agent_runner.run(
+                            task_prompt_val, workspaces[arm].root, model, execution
+                        )
+                    except KeyboardInterrupt:
+                        diff_text, changed = workspaces[arm].get_diff()
+                        self._save_run_artifacts(arm_dirs_tmp[arm], {
+                            "model": model, "task_id": task.id,
+                            "repetition": pair.repetition, "arm": arm,
+                            "complete": False, "status": "interrupted",
+                            "grade_status": "pending", "prompt": task_prompt_val,
+                            "cost": None, "input_tokens": None, "output_tokens": None,
+                            "files_changed": changed,
+                            "error": "Interrupted before harness telemetry was returned",
+                        }, "Interrupted; harness telemetry unavailable", diff_text)
+                        raise
                     # Persist each arm immediately so rerunning failures cannot
                     # silently improve the reported result; retries are logged.
+                    immediate_diff, immediate_files = workspaces[arm].get_diff()
                     self._save_run_artifacts(
                         arm_dirs_tmp[arm],
                         {
+                            **{key: value for key, value in asdict(results[arm]).items()
+                               if key != "transcript"},
                             "model": model,
                             "task_id": task.id,
                             "repetition": pair.repetition,
                             "arm": arm,
-                            "status": results[arm].status,
+                            "complete": False,
+                            "grade_status": "pending",
                             "attempt": 1,
+                            "files_changed": immediate_files,
                         },
                         results[arm].transcript,
-                        "",
+                        immediate_diff,
                     )
+
+                    self.progress(f"Agent finished: {model} · {task.id} · {arm}; artifacts saved")
 
             diffs = {arm: workspaces[arm].get_diff() for arm in workspaces if arm in results}
             self._ensure_running()
@@ -1431,7 +1484,7 @@ class ExperimentRunner:
             "skill_a", "skill_b", "skill_comparison", "comparison", "skill_names",
             "timestamp", "run_dir", "models", "tasks", "task_categories", "task_details",
             "tasks_count", "runs_per_arm", "seed", "failure_policy", "settings",
-            "thresholds", "pricing", "provenance", "context_tax", "retries",
+            "thresholds", "pricing", "cost_basis", "provenance", "context_tax", "retries",
         ):
             if key in old_results:
                 results[key] = old_results[key]
@@ -1475,9 +1528,17 @@ class ExperimentRunner:
         agent_failure = (getattr(self.config, "failure_policy", {}) or {}).get(
             "agent_failure", "exclude"
         )
-        control_runs = [analysis_run(r, agent_failure) for r in raw_control_runs]
-        treatment_runs = [analysis_run(r, agent_failure) for r in raw_treatment_runs]
-        baseline_runs = [analysis_run(r, agent_failure) for r in raw_baseline_runs]
+        normalized = {"control": raw_control_runs, "treatment": raw_treatment_runs,
+                      "baseline": raw_baseline_runs}
+        if self.config.cost_basis == "api-equivalent":
+            normalized = _apply_codex_cache_write_fallback({
+                "control": raw_control_runs, "treatment": raw_treatment_runs,
+                "baseline": raw_baseline_runs,
+            }, {"harness": self.config.harness, "cost_basis": self.config.cost_basis,
+                "pricing": self.config.pricing})
+        control_runs = [analysis_run(r, agent_failure) for r in normalized["control"]]
+        treatment_runs = [analysis_run(r, agent_failure) for r in normalized["treatment"]]
+        baseline_runs = [analysis_run(r, agent_failure) for r in normalized["baseline"]]
 
         by_model: dict[str, dict[str, Any]] = {}
         for model in self.config.models:
@@ -1529,6 +1590,12 @@ class ExperimentRunner:
                 provenance = collect_provenance(self.config, self.tasks)
             except Exception:
                 provenance = {}
+        incomplete_runs = []
+        for path in sorted(run_root.rglob("run.json")):
+            record = read_json(path)
+            if record.get("complete") is False:
+                record.setdefault("artifacts", str(path.parent.relative_to(run_root)))
+                incomplete_runs.append(record)
         task_categories = {t.id: getattr(t, "category", "general") for t in self.tasks}
         task_details = [
             {
@@ -1662,12 +1729,14 @@ class ExperimentRunner:
             "failure_policy": dict(getattr(self.config, "failure_policy", {}) or {}),
             "valid": valid,
             "interrupted": interrupted,
+            "incomplete_runs": incomplete_runs,
             "warnings": warnings,
             "settings": _settings_summary(self.config),
             "thresholds": dict(getattr(self.config, "thresholds", {}) or {}),
             # Cost basis recorded with the run: regenerated reports reproduce
             # the API-equivalent estimate from these rates and the token counts.
             "pricing": dict(getattr(self.config, "pricing", {}) or {}),
+            "cost_basis": self.config.cost_basis,
             "provenance": provenance,
             "by_model": by_model,
             "by_category": by_category,
@@ -1768,6 +1837,7 @@ def _settings_summary(config: ExperimentConfig) -> dict[str, Any]:
     harness_cfg.pop("bin_path", None)
     out: dict[str, Any] = {
         "harness": config.harness,
+        "cost_basis": config.cost_basis,
         "preset": getattr(config, "preset", None),
         "timeout_seconds": config.timeout_seconds,
         "parallel": config.parallel,

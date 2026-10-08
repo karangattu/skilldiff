@@ -37,7 +37,7 @@ def analysis_run(run: dict[str, Any], agent_failure: str = "exclude") -> dict[st
 
 def usable_agent_run(run: dict[str, Any]) -> bool:
     """Whether this session contributes to outcome and efficiency summaries."""
-    if run.get("analysis_excluded") is True:
+    if run.get("analysis_excluded") is True or run.get("complete") is False:
         return False
     return run.get("status") in (None, "ok", "correctness") or bool(
         run.get("failure_scored_zero")

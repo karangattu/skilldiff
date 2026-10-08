@@ -35,6 +35,7 @@ EXPERIMENT_KEYS = frozenset(
         "failure_policy",
         "on_failure",  # alias of failure_policy
         "pricing",
+        "cost_basis",
         "isolation",
         "container_image",
     }
@@ -56,6 +57,8 @@ CODEX_KEYS = frozenset(
     {
         "auth",
         "sandbox",
+        "verify_skills",
+        "read_paths",
         "dangerously_bypass_approvals_and_sandbox",
         "bin_path",
         "extra_args",
@@ -98,6 +101,7 @@ TASK_KEYS = frozenset(
         "allowed_paths",
         "forbidden_paths",
         "grader_ignore",
+        "runtime_probe",
     }
 )
 GRADER_KEYS = frozenset({"type", "command", "rubric", "prompt", "model"})
@@ -172,17 +176,19 @@ def validate_experiment_values(data: dict[str, Any]) -> None:
     if "timeout_seconds" in data and data["timeout_seconds"] is not None:
         validate_number(data["timeout_seconds"], "timeout_seconds", positive=True)
     if "isolation" in data:
-        validate_enum(data["isolation"], "isolation", {"local", "docker", "podman"})
+        validate_enum(data["isolation"], "isolation", {"local", "docker", "podman", "macos"})
+    if "cost_basis" in data:
+        validate_enum(data["cost_basis"], "cost_basis", {"harness", "api-equivalent"})
     for block in ("claude", "codex", "opencode", "antigravity", "agy"):
         values = data.get(block) or {}
         for key in ("bin_path", "variant", "provider"):
             if key in values:
                 validate_string(values[key], f"{block}.{key}", nullable=key != "provider")
-        for key in ("extra_args", "allowed_tools"):
+        for key in ("extra_args", "allowed_tools", "read_paths"):
             if key in values:
                 validate_string_list(values[key], f"{block}.{key}")
         for key in ("isolate", "dangerously_skip_permissions",
-                    "dangerously_bypass_approvals_and_sandbox"):
+                    "dangerously_bypass_approvals_and_sandbox", "verify_skills"):
             if key in values:
                 validate_boolean(values[key], f"{block}.{key}")
     claude = data.get("claude") or {}
@@ -280,6 +286,8 @@ class CodexConfig:
     bin_path: Optional[str] = None
     extra_args: list[str] = field(default_factory=list)
 
+    verify_skills: bool = True
+    read_paths: list[str] = field(default_factory=list)
 
 @dataclass
 class OpenCodeConfig:
@@ -327,6 +335,7 @@ class TaskConfig:
     # audit files an agent writes under outputs/.
     grader_ignore: list[str] = field(default_factory=list)
     prompts: list[str] = field(default_factory=list)
+    runtime_probe: Optional[str] = None
 
 
 @dataclass
@@ -393,6 +402,7 @@ class ExperimentConfig:
     pricing: dict[str, Any] = field(default_factory=dict)
     isolation: str = "local"
     container_image: Optional[str] = None
+    cost_basis: str = "harness"
 
     @property
     def is_skill_comparison(self) -> bool:
@@ -690,6 +700,9 @@ def load_task(task_path: Path) -> TaskConfig:
         else:
             validate_string_list(value, f"{context}.validation.{key}")
 
+    if "runtime_probe" in data:
+        validate_string(data["runtime_probe"], f"{context}.runtime_probe")
+
     return TaskConfig(
         id=str(task_id),
         prompt=prompt,
@@ -703,6 +716,7 @@ def load_task(task_path: Path) -> TaskConfig:
         forbidden_paths=forbidden_paths,
         grader_ignore=grader_ignore,
         prompts=prompts,
+        runtime_probe=data.get("runtime_probe"),
     )
 
 
@@ -728,6 +742,9 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     reject_unknown_block_keys(data)
     validate_experiment_values(data)
     pricing = parse_pricing(data.get("pricing"))
+    cost_basis = data.get("cost_basis", "harness")
+    if cost_basis == "api-equivalent" and not pricing:
+        raise ValueError("cost_basis: api-equivalent requires recorded pricing rates")
 
     name = data.get("name")
     if not name:
@@ -846,6 +863,9 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     if codex_auth not in {"stored", "subscription", "api_key"}:
         raise ValueError("codex.auth must be 'stored', 'subscription', or 'api_key'")
     codex_cfg = CodexConfig(
+        verify_skills=codex_data.get("verify_skills", True),
+        read_paths=[str((experiment_path.parent / Path(p).expanduser()).resolve())
+                    for p in codex_data.get("read_paths", [])],
         auth=codex_auth,
         sandbox=codex_data.get("sandbox", "workspace-write"),
         dangerously_bypass_approvals_and_sandbox=codex_data.get(
@@ -925,6 +945,10 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     failure_policy.setdefault("missing", "exclude")
 
     isolation = str(data.get("isolation", "local") or "local").strip().lower()
+    if codex_cfg.read_paths and isolation != "macos":
+        raise ValueError("codex.read_paths requires isolation: macos")
+    if isolation == "macos" and harness != "codex":
+        raise ValueError("isolation: macos currently supports the Codex harness only")
     container_image = data.get("container_image")
 
     exp_config = ExperimentConfig(
@@ -950,6 +974,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         parallel=parallel,
         thresholds=thresholds,
         pricing=pricing,
+        cost_basis=cost_basis,
         isolation=isolation,
         container_image=container_image,
     )

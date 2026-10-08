@@ -16,6 +16,7 @@ from skilldiff.config import (
     find_skill_dirs,
     load_experiment,
     read_skill_frontmatter,
+    read_skill_name,
     validate_integer,
     validate_string_list,
 )
@@ -23,6 +24,7 @@ from skilldiff.experiment import (
     ExperimentRunner,
     find_harness_inheritance,
     find_user_level_installs,
+    safe_path_component,
 )
 from skilldiff.grader import Grader
 from skilldiff.host_exposure import host_exposure_warnings
@@ -118,6 +120,7 @@ parallel: 1                 # pairs to run at once
 # record them here with source and date; the saved run then reproduces the
 # estimate and the report shows the API-equivalent cost per arm. Rates are
 # per 1M tokens for each model listed under `models`:
+# cost_basis: api-equivalent  # use recorded rates in the decision (default: harness)
 # pricing:
 #   source: https://www.anthropic.com/pricing
 #   date: "2026-09-27"
@@ -164,6 +167,7 @@ parallel: 1
 
 # API-equivalent cost basis: record provider rates before the run (per 1M
 # tokens, with source and date) so regenerated reports reproduce the estimate:
+# cost_basis: api-equivalent  # use recorded rates in the decision (default: harness)
 # pricing:
 #   source: https://www.anthropic.com/pricing
 #   date: "2026-09-27"
@@ -560,12 +564,12 @@ def cmd_check(args: argparse.Namespace) -> int:
     def warn(msg: str) -> None:
         nonlocal warnings
         warnings += 1
-        print(f"  warn  {msg}")
+        print(f"  warn  {msg}", flush=True)
 
     def fail(msg: str) -> None:
         nonlocal problems
         problems += 1
-        print(f"  FAIL  {msg}")
+        print(f"  FAIL  {msg}", flush=True)
 
     print(f"Checking {config_path}")
     try:
@@ -578,7 +582,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         f"{cfg.runs} run(s) per arm"
     )
     image_id = None
-    if cfg.isolation != "local":
+    if cfg.isolation in {"docker", "podman"}:
         try:
             validate_container_auth(cfg)
             image_id = resolve_container_image(cfg.isolation, cfg.container_image)
@@ -771,8 +775,10 @@ def cmd_check(args: argparse.Namespace) -> int:
         cfg, config_path.resolve().parent / "runs", scan_home=getattr(args, "scan_home", False)
     ):
         warn(message)
-    if getattr(args, "scan_home", False) and cfg.isolation != "local":
+    if getattr(args, "scan_home", False) and cfg.isolation in {"docker", "podman"}:
         ok("host scan skipped: host HOME and run snapshots are not mounted into agent containers")
+    if cfg.harness == "codex" and not cfg.codex.verify_skills:
+        warn("Codex discovery disabled: skill availability is unverified")
 
     # Failure policy is pre-registered, not decided after seeing results.
     fp = dict(getattr(cfg, "failure_policy", {}) or {})
@@ -789,6 +795,26 @@ def cmd_check(args: argparse.Namespace) -> int:
         if fixture and not fixture.exists():
             fail(f"task {task.id}: repo not found: {fixture}")
             continue
+        if (
+            (cfg.harness == "codex" and cfg.codex.verify_skills) or task.runtime_probe
+            or cfg.isolation == "macos"
+        ):
+            check_skill = cfg.skill_a if cfg.is_skill_comparison else cfg.skill
+            with tempfile.TemporaryDirectory(prefix="skilldiff-probe-") as tmp:
+                for arm, installed in (("control", cfg.is_skill_comparison), ("treatment", True)):
+                    source = (cfg.skill_b if arm == "treatment" and cfg.is_skill_comparison
+                              else check_skill)
+                    probe_ws = Workspace(Path(tmp) / arm / "workspace", installed, source,
+                                         fixture, cfg.harness)
+                    try:
+                        probe_ws.setup()
+                        expected = ([read_skill_name(path) or path.name
+                                     for path in probe_ws.skill_dirs] if installed else [])
+                        AgentRunner().preflight(probe_ws.root, cfg, expected,
+                                                runtime_probe=task.runtime_probe)
+                        ok(f"task {task.id}: {arm} workspace discovery/runtime preflight passed")
+                    except Exception as exc:
+                        fail(f"task {task.id}: {arm} preflight: {exc}")
         # Isolation: escaping symlinks and .git history must never enter workspaces.
         if fixture and fixture.is_dir() and not cfg.pr:
             try:
@@ -861,7 +887,7 @@ def cmd_check(args: argparse.Namespace) -> int:
                 forbidden_paths=getattr(task, "forbidden_paths", None),
                 grader_ignore=getattr(task, "grader_ignore", None),
                 task_prompt=task.prompt,
-                isolation=cfg.isolation,
+                isolation="local" if cfg.isolation == "macos" else cfg.isolation,
                 container_image=image_id,
                 inputs_root=config_path.resolve().parent,
             )
@@ -892,10 +918,15 @@ def cmd_check(args: argparse.Namespace) -> int:
                         "solution under `good:`"
                     )
                 report = _validate(grader, ws.root, good_dirs or None, broken_dirs)
+                log = (config_path.resolve().parent / "runs" / "preflight"
+                       / safe_path_component(task.id))
+                log.mkdir(parents=True, exist_ok=True)
+                atomic_json(log / "grader.json", report)
                 verdict = report.get("verdict")
                 if verdict != "ok":
                     fail(
-                        f"task {task.id}: grader validation {verdict}: "
+                        f"task {task.id}: grader validation {verdict} "
+                        f"(log: {log / 'grader.json'}): "
                         f"{'; '.join(report.get('checks', []))}"
                     )
                     continue
@@ -1299,7 +1330,9 @@ def _format_results(results: dict) -> str:
     thresholds = results.get("thresholds") or (results.get("settings") or {}).get("thresholds")
     preset = results.get("preset") or (results.get("settings") or {}).get("preset")
     arm_labels = results.get("arm_labels") or {}
-    raw_runs = results.get("runs") or {}
+    from skilldiff.reporter import _apply_codex_cache_write_fallback
+
+    raw_runs = _apply_codex_cache_write_fallback(results.get("runs") or {}, results)
     failure_policy = results.get("failure_policy") or (results.get("settings") or {}).get(
         "failure_policy") or {}
     agent_failure = failure_policy.get("agent_failure", "exclude")

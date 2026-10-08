@@ -13,6 +13,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from skilldiff.reporter import _apply_codex_cache_write_fallback
 from skilldiff.stats import METRICS, analysis_run, pair_runs, usable_agent_run
 
 
@@ -37,10 +38,11 @@ def _arm_runs(results: dict[str, Any], arm: str) -> list[dict[str, Any]]:
     runs = results.get("runs") or {}
     names = ("treatment", "skill") if arm == "treatment" else (arm,)
     if isinstance(runs, list):
-        return [r for r in runs if r.get("arm") in names]
+        records = [r for r in runs if r.get("arm") in names]
+        return _apply_codex_cache_write_fallback({arm: records}, results)[arm]
     for key in names:
         if runs.get(key):
-            return list(runs[key])
+            return _apply_codex_cache_write_fallback({arm: list(runs[key])}, results)[arm]
     return []
 
 
@@ -148,6 +150,11 @@ def check_compatibility(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
         warnings.append(f"Tasks differ: {a.get('tasks')} vs {b.get('tasks')}.")
     if a.get("harness") != b.get("harness"):
         warnings.append(f"Harness differs: {a.get('harness')} vs {b.get('harness')}.")
+    if a.get("cost_basis", "harness") != b.get("cost_basis", "harness"):
+        warnings.append("Decision cost bases differ; cost comparisons use different meanings.")
+    if a.get("cost_basis") == b.get("cost_basis") == "api-equivalent":
+        if a.get("pricing") != b.get("pricing"):
+            warnings.append("Recorded pricing differs; API cost changes may reflect rates.")
     if _failure_policy(a) != _failure_policy(b):
         warnings.append(f"Failure policies differ: {_failure_policy(a)} vs {_failure_policy(b)}.")
     if a.get("skilldiff_version") != b.get("skilldiff_version"):

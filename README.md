@@ -60,6 +60,10 @@ calls, turns, and adoption, each with paired change, 95% CI, and a plain reading
 bottom line: SHIP, DO NOT SHIP, or NEEDS MORE RUNS, with the reason. When the
 config records `pricing:` rates (per 1M tokens, with source and date), reports
 also reproduce an **API-equivalent cost** table from the saved token breakdown.
+Set `cost_basis: api-equivalent` before the run to use that estimate in the
+closing decision and saved cost aggregates as well. The default is `harness`; old results
+without a recorded basis keep their original interpretation. Missing usage
+or model rates remain `N/A`, and the original harness cost stays in `run.json`.
 A **Skill context tax** table estimates the frozen skill's text footprint and
 the overhead if that text is carried on every turn. File size and estimated
 tokens are separate from measured harness token use; this table does not measure
@@ -324,7 +328,9 @@ measurements or audit copies under `outputs/` would trip that pattern even thoug
 the agent changed nothing out of scope. `grader_ignore` lists globs (for example
 `["outputs/*"]`) that the grader never sees: the grader runs in a copy of the
 workspace without them, `$SKILLDIFF_DIFF_FILE` omits their hunks, and the
-scope check skips them. `check` warns when a `forbidden_paths` pattern would also
+scope check skips them. The same file constraints are appended to both arms' prompts. `check` compares
+each known-good solution against the untouched fixture and rejects solutions
+that violate those constraints. It also warns when a `forbidden_paths` pattern would also
 match nested copies. A run that edits out-of-scope paths is labelled
 `N/A (blast radius)` in the report, counted apart from grader errors, and
 `diagnose` points at the task scope before it blames the agent or skill.
@@ -481,7 +487,8 @@ The output shows score changes, adoption changes, efficiency changes, and newly 
 Each metric uses only matched model/task/repetition records with values on both
 sides and reports its usable counts. Failure policies apply before comparison;
 failed sessions' partial grader checks never become newly passing or failing
-checks. Different failure policies warn and fail strict comparison.
+checks. Different failure policies, decision cost bases, or API pricing warn
+and fail strict comparison. Cost comparisons use each run's recorded basis.
 
 </details>
 
@@ -558,6 +565,8 @@ forwarded. Host login directories are not mounted. Claude and Codex container
 runs require API authentication; their host subscription logins are unavailable
 inside the image. Run `skilldiff check` to verify the image, executable,
 authentication configuration, and graders before starting an evaluation.
+For Codex skill experiments, `check` queries `app-server skills/list` in fresh workspaces to verify skill discovery prior to paid sessions. Codex also supports opt-in macOS native isolation (`isolation: macos`) via `sandbox-exec` with private session directories, and tasks can declare a `runtime_probe` command. See [preflight reference](skills/skilldiff/references/preflight.md) for details.
+
 
 Running these from inside an agent needs a few things too:
 

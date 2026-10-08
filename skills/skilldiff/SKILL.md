@@ -117,7 +117,9 @@ Other rules:
   `outputs/measurements/…/data/`. If the skill under test asks agents to save
   measurements or copies, add `grader_ignore: ["outputs/*"]` to the task: those
   paths are hidden from the grader and skipped by the scope check. `check` warns
-  when a forbidden pattern would match nested copies.
+  when a forbidden pattern would match nested copies. SkillDiff appends the same
+  constraints to both arms' prompts and rejects known-good solutions that conflict
+  with them. Fix task scope before accepting grader validation.
 - **Script multi-turn tasks with `prompts:`.** A list of prompts runs in order
   in one workspace; tokens, cost, time, and turns sum across the turns, and one
   timeout covers the whole script.
@@ -167,6 +169,10 @@ sandbox to keep agents from reading grader files or skills outside the workspace
 ```bash
 skilldiff check -c skill-eval/skilldiff.yaml
 ```
+
+Codex discovery is checked before paid sessions. For native macOS isolation,
+custom wrappers, and task `runtime_probe:` checks, read
+[preflight safeguards](references/preflight.md). Availability is separate from adoption.
 
 Fix every `FAIL` and assess every `warn` before running one pair per task. Local
 checks warn about live skill sources and matching copies in `runs/`, including
@@ -229,6 +235,7 @@ runs: 5
 #   acceptable_score_regression_pp: 5
 #   required_cost_reduction_pct: 10
 #   required_token_reduction_pct: 20
+# cost_basis: api-equivalent  # decide with saved rates (default: harness)
 # API-equivalent cost basis: look the rates up on the provider's own pricing
 # page BEFORE the run and record them here, so the saved run reproduces the
 # estimate and the report shows the API-equivalent cost per arm:
@@ -348,3 +355,7 @@ git -C ~/code/pkg fetch origin refs/pull/42/head:refs/pull/42/head
 skilldiff init --pr 42 --repo ~/code/pkg --base origin/main --dir ./pr-42-eval
 # add --pr-mode correctness --pr-pair base-merge as needed
 ```
+
+Choose the decision `cost_basis` before the run; see [reporting](references/reporting.md).
+Incomplete trials retain telemetry and diffs but never enter paired decisions.
+Resume preserves them and refuses implicit retries. See [preflight safeguards](references/preflight.md).

@@ -611,13 +611,15 @@ def validate_grader_against_directories(
     report["untouched"] = {
         "score": untouched.score,
         "grade_status": untouched.grade_status,
+        "feedback": untouched.feedback,
     }
     if (
         untouched.grade_status != "graded"
         or untouched.score is None
         or not math.isfinite(untouched.score)
     ):
-        checks.append("untouched fixture could not be graded (grader error/timeout)")
+        checks.append("untouched fixture could not be graded (grader error/timeout): "
+                      + (untouched.feedback or "No feedback"))
         report["verdict"] = "grader-broken"
         return report
     if untouched.score is not None and untouched.score >= 1.0:
@@ -628,15 +630,31 @@ def validate_grader_against_directories(
     good_dirs: list[Path] = (
         [] if good_dir is None else [good_dir] if isinstance(good_dir, Path) else list(good_dir)
     )
+    from skilldiff.snapshots import tree_contents
+
+    scoped = bool(grader.allowed_paths or grader.forbidden_paths)
+    original = {entry["path"]: entry for entry in tree_contents(untouched_dir)
+                if entry["type"] != "directory"} if good_dirs and scoped else {}
     for i, directory in enumerate(good_dirs):
         label = "known-good solution" if len(good_dirs) == 1 else f"known-good solution {i}"
+        candidate = {entry["path"]: entry for entry in tree_contents(directory)
+                     if entry["type"] != "directory"} if scoped else {}
+        changed = sorted(path for path in original.keys() | candidate.keys()
+                         if original.get(path) != candidate.get(path))
+        conflict = check_blast_radius(changed, grader.allowed_paths,
+                                      grader.forbidden_paths, grader.grader_ignore)
+        if conflict:
+            checks.append(f"{label} conflicts with task scope: {conflict}")
+            report["verdict"] = "scope-conflict"
+            return report
         good = grader.grade_workspace(directory)
         report["good" if len(good_dirs) == 1 else f"good_{i}"] = {
             "score": good.score,
             "grade_status": good.grade_status,
+            "feedback": good.feedback,
         }
         if good.grade_status != "graded" or good.score is None or not math.isfinite(good.score):
-            checks.append(f"{label} could not be graded")
+            checks.append(f"{label} could not be graded: {good.feedback or 'No feedback'}")
             report["verdict"] = "grader-broken"
             return report
         if good.score < 0.99:
@@ -653,13 +671,15 @@ def validate_grader_against_directories(
         report[f"broken_{i}"] = {
             "score": broken.score,
             "grade_status": broken.grade_status,
+            "feedback": broken.feedback,
         }
         if (
             broken.grade_status != "graded"
             or broken.score is None
             or not math.isfinite(broken.score)
         ):
-            checks.append(f"broken solution {i} could not be graded")
+            checks.append(f"broken solution {i} could not be graded: "
+                          f"{broken.feedback or 'No feedback'}")
             report["verdict"] = "grader-broken"
             return report
         if broken.grade_status == "graded" and broken.score is not None and broken.score >= 1.0:

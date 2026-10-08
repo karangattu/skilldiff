@@ -286,6 +286,21 @@ def fake_container_runtime(tmp_path, monkeypatch):
         "    if args[-1] == '--version':\n"
         "        assert args[-2] == '/image/bin/agent'\n"
         "        print('image-agent 9.9.9')\n"
+        "    elif 'app-server' in args:\n"
+        "        host = next(value.rsplit(':',1)[0] for value in args "
+        "if value.endswith(':/workspace'))\n"
+        "        skills = []\n"
+        "        for path in pathlib.Path(host, '.agents/skills').glob('*/SKILL.md'):\n"
+        "            name = next(line.split(':',1)[1].strip() for line in "
+        "path.read_text().splitlines() if line.startswith('name:'))\n"
+        "            skills.append({'name':name, 'enabled':True, "
+        "'path':'/workspace/'+str(path.relative_to(host))})\n"
+        "        for line in sys.stdin:\n"
+        "            request=json.loads(line)\n"
+        "            if 'id' not in request: continue\n"
+        "            result={'data':[{'skills':skills,'errors':[]}]} "
+        "if request['method']=='skills/list' else {}\n"
+        "            print(json.dumps({'id':request['id'],'result':result}),flush=True)\n"
         "    else:\n"
         "        print(json.dumps({'score': 0, 'success': False}))\n"
     )
@@ -327,10 +342,10 @@ def test_check_versions_image_binary_and_grades_inside_container(
     assert "host instructions that are not mounted" not in output
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     runs = [call for call in calls if call[0] == "run"]
-    assert len(runs) == 2
+    assert len(runs) == (4 if harness == "codex" else 2)
     assert ["sha256:checked-image", "/image/bin/agent", "--version"] == runs[0][-3:]
     assert any(argument.startswith(f"{tmp_path.resolve()}:") and argument.endswith(":ro")
-               for argument in runs[1])
+               for argument in runs[-1])
     assert all("UNRELATED_HOST_SECRET" not in call for call in runs)
 
 
