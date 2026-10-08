@@ -825,6 +825,17 @@ def cmd_check(args: argparse.Namespace) -> int:
             probe_ok, detail = runner.probe_claude_auth(cfg.models[0], cfg.claude)
             if probe_ok:
                 ok(f"claude auth probe: {detail}")
+                if claude_sandbox_settings(cfg.claude, cfg.isolation):
+                    canary_ok, denied = runner.probe_claude_sandbox_canary(
+                        cfg.models[0], cfg.claude
+                    )
+                    if denied:
+                        warn(
+                            f"claude sandbox canary: {len(denied)} command shape(s) denied "
+                            f"({', '.join(denied)})"
+                        )
+                    elif canary_ok:
+                        ok("claude sandbox canary: representative command shapes permitted")
             elif looks_like_auth_error(detail):
                 fail(
                     f"claude auth probe failed ({detail}). "

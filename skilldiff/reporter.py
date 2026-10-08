@@ -923,6 +923,8 @@ def render_report_table(
             preset=preset,
             control_score=c_score,
             treatment_score=t_score,
+            control_denials=decision.get("control_denials", 0) if decision is not None else 0,
+            treatment_denials=decision.get("treatment_denials", 0) if decision is not None else 0,
         )
         lines.append(_strip_inline(verdict))
     if include_recommendation:
@@ -962,6 +964,8 @@ def _verdict(
     preset: str | None = None,
     control_score: float | None = None,
     treatment_score: float | None = None,
+    control_denials: int = 0,
+    treatment_denials: int = 0,
 ) -> tuple[str, str]:
     """Return (sentence, callout kind) for the task-score effect."""
     total = int(paired.get("pairs", 0))
@@ -1001,7 +1005,20 @@ def _verdict(
             f"only {tasks_count} task(s) — repetitions measure those tasks, "
             "not general skill effect"
         )
+    asymmetric_denials = bool(control_denials or treatment_denials) and (
+        control_denials != treatment_denials
+    )
+    if control_denials or treatment_denials:
+        if control_denials != treatment_denials:
+            cautions.append(
+                f"denials: control {control_denials}, treatment {treatment_denials} (confound)"
+            )
+        else:
+            cautions.append(f"denials: control {control_denials}, treatment {treatment_denials}")
     caution_txt = f" ({'; '.join(cautions)})" if cautions else ""
+
+    def _out(msg: str, k: str) -> tuple[str, str]:
+        return msg, ("warning" if asymmetric_denials else k)
 
     practical_txt = ""
     if thresholds:
@@ -1010,32 +1027,34 @@ def _verdict(
     if n_valid < 2:
         if mean_pp == 0:
             if control_score is not None and control_score >= 0.95:
-                return (
+                return _out(
                     f"Tasks at ceiling: control already scores {round(control_score * 100)}%; "
                     f"tasks cannot discriminate.{caution_txt}",
                     "note",
                 )
-            return f"No task-score difference in {pairs_txt}. Add repetitions.{caution_txt}", "note"
-        return (
+            return _out(
+                f"No task-score difference in {pairs_txt}. Add repetitions.{caution_txt}", "note"
+            )
+        return _out(
             f"Task score changed by **{format_pp_diff(mean_pp)}** in {pairs_txt}. "
             f"One pair can't separate a real effect from noise.{caution_txt}",
             "note",
         )
     if effect == "better":
-        return (
+        return _out(
             f"The {subject} improved task score by **{format_pp_diff(mean_pp)}** "
             f"(95% CI {ci}, {pairs_txt}){caution_txt}.{practical_txt}".replace("..", "."),
             "tip",
         )
     if effect == "worse":
-        return (
+        return _out(
             f"The {subject} reduced task score by **{abs(mean_pp)} pp** "
             f"(95% CI {ci}, {pairs_txt}){caution_txt}.{practical_txt}".replace("..", "."),
             "warning",
         )
     if mean_pp == 0 and lo == hi == 0:
         if control_score is not None and control_score >= 0.95:
-            return (
+            return _out(
                 f"Tasks at ceiling: control already scores {round(control_score * 100)}%; "
                 f"tasks cannot discriminate.{caution_txt}",
                 "note",
@@ -1044,33 +1063,33 @@ def _verdict(
             control_score is not None and control_score <= 0.05
             and (treatment_score is None or treatment_score <= 0.05)
         ):
-            return (
+            return _out(
                 f"Tasks at floor: both arms score ~0%; tasks cannot discriminate.{caution_txt}",
                 "note",
             )
         if thresholds:
             if preset == "compression":
-                return (
+                return _out(
                     f"Quality preserved: both arms scored the same in all {pairs_txt} "
                     f"(95% CI {ci}){caution_txt}.{practical_txt}".replace("..", "."),
                     "tip" if "meets compression criteria" in practical_txt else "note",
                 )
-            return (
+            return _out(
                 f"No task-score difference: both arms scored the same in all {pairs_txt} "
                 f"{caution_txt}.{practical_txt}".replace("..", "."),
                 "note",
             )
-        return (
+        return _out(
             f"No task-score difference: both arms scored the same in all {pairs_txt}.{caution_txt}",
             "note",
         )
     if control_score is not None and control_score >= 0.95 and abs(mean_pp) <= 5:
-        return (
+        return _out(
             f"Tasks at ceiling: control already scores {round(control_score * 100)}%; "
             f"tasks cannot discriminate.{caution_txt}",
             "note",
         )
-    return (
+    return _out(
         f"No clear task-score effect: **{format_pp_diff(mean_pp)}**, but the 95% CI "
         f"({ci}) includes zero ({pairs_txt}){caution_txt}.{practical_txt}".replace("..", "."),
         "note",
@@ -1741,11 +1760,14 @@ def build_decision_context(
         control_score=selected_metrics[0].get("task_score"),
         treatment_score=selected_metrics[1].get("task_score"),
     )
+    control_denials = sum(1 for r in (control_runs or []) if r.get("permission_denials"))
+    treatment_denials = sum(1 for r in (treatment_runs or []) if r.get("permission_denials"))
     return {
         "overall_control": control, "overall_skill": skill, "overall_paired": paired,
         "control": selected_metrics[0], "skill": selected_metrics[1],
         "paired": selected_paired, "held_out": held, "tasks_count": tasks_count,
         "basis_note": note, "coverage": coverage, "recommendation": recommendation,
+        "control_denials": control_denials, "treatment_denials": treatment_denials,
     }
 
 
@@ -2748,6 +2770,8 @@ def build_report_blocks(
             preset=preset,
             control_score=headline_control.get("task_score"),
             treatment_score=headline_skill.get("task_score"),
+            control_denials=decision.get("control_denials", 0),
+            treatment_denials=decision.get("treatment_denials", 0),
         )
     else:
         diff = _score_difference(headline_control, headline_skill)

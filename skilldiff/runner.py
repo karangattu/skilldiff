@@ -1001,6 +1001,31 @@ class AgentRunner:
         detail = (result.error or result.status or "unknown failure").strip().splitlines()
         return False, (detail[0] if detail else "unknown failure")[:300]
 
+    def probe_claude_sandbox_canary(
+        self, model: str, claude_cfg: ClaudeConfig, timeout: float = 90
+    ) -> tuple[bool, list[str]]:
+        import dataclasses
+
+        probe_cfg = dataclasses.replace(
+            claude_cfg,
+            max_turns=2,
+            max_budget_usd=0.10,
+            effort=None,
+        )
+        prompt = (
+            "Run each of these 4 commands using the Bash tool:\n"
+            "1. cat << 'EOF'\nhello\nEOF\n"
+            "2. python3 -c \"print('canary')\"\n"
+            "3. VAR='test'; echo \"$VAR\"\n"
+            "4. echo \"quoted string test\""
+        )
+        with tempfile.TemporaryDirectory(prefix="skilldiff-canary-probe-") as tmp:
+            result = self._run_claude(
+                prompt, Path(tmp), model, probe_cfg, timeout=timeout
+            )
+        denials = result.permission_denials or []
+        return result.status == "ok", denials
+
     def claude_command(
         self,
         prompt: str,
@@ -1675,10 +1700,17 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             )
             denials = event.get("permission_denials")
             if isinstance(denials, list):
-                parsed["permission_denials"] = [
-                    str(d.get("tool_name") or "unknown") if isinstance(d, dict) else "unknown"
-                    for d in denials
-                ]
+                parsed["permission_denials"] = []
+                for d in denials:
+                    if isinstance(d, dict):
+                        tool = str(d.get("tool_name") or "unknown")
+                        reason = d.get("reason") or d.get("message")
+                        if reason:
+                            parsed["permission_denials"].append(f"{tool} ({reason})")
+                        else:
+                            parsed["permission_denials"].append(tool)
+                    else:
+                        parsed["permission_denials"].append(str(d))
             subtype = str(event.get("subtype") or "")
             if event.get("is_error") or subtype.startswith("error"):
                 parsed["is_error"] = True

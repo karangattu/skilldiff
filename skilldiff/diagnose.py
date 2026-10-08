@@ -206,13 +206,28 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         )
     if permission_denied:
         tools = sorted({tool for item in permission_denied for tool in item["tools"]})
+        patterns = sorted({
+            t.split("(", 1)[1].rstrip(")")
+            for item in permission_denied
+            for t in item["tools"]
+            if "(" in t
+        })
+        arm_counts = ", ".join(
+            f"{arm}: {sum(1 for r in permission_denied if r.get('arm') == arm)}"
+            for arm in sorted({r["arm"] for r in permission_denied})
+        )
+        asymmetry = ""
+        c_denials = sum(1 for r in permission_denied if r.get("arm") == "control")
+        t_denials = sum(1 for r in permission_denied if r.get("arm") == "treatment")
+        if c_denials != t_denials and (c_denials > 0 or t_denials > 0):
+            asymmetry = " (uneven across arms — confound)"
+        pattern_str = f"; denied patterns: {', '.join(patterns)}" if patterns else ""
         recommendations.append(
             f"Permission denials: the harness refused tool calls ({', '.join(tools)}) in "
-            f"{len(permission_denied)} session(s) across "
-            f"{', '.join(sorted({r['arm'] for r in permission_denied}))}. Headless sessions "
-            "cannot answer prompts and sandboxed commands fail, so those agents worked "
-            "without the tools. Fix the harness permissions (see `skilldiff check`) before "
-            "blaming the agent or the skill."
+            f"{len(permission_denied)} session(s) ({arm_counts}{asymmetry}){pattern_str}. "
+            "Headless sessions cannot answer prompts and sandboxed commands fail, so those "
+            "agents worked without the tools. Fix the harness permissions (see `skilldiff check`) "
+            "before blaming the agent or the skill."
         )
     planned_pairs = _planned_pairs(data)
     expected_keys = _planned_keys(data)
