@@ -1517,6 +1517,10 @@ def _format_results(results: dict) -> str:
             f"Control (without PR): {comparison['control_commit']} ({pair})\n"
             f"Treatment (with PR): {comparison['treatment_commit']} [{mode}]"
         )
+    ctrl_label = (
+        arm_labels.get("control")
+        or ("Skill A" if skill_comparison or preset in {"revision", "compression"} else "Control")
+    )
     treat_label = (
         arm_labels.get("treatment")
         or ("Skill B" if skill_comparison else ("Treatment" if comparison else "Skill"))
@@ -1538,6 +1542,7 @@ def _format_results(results: dict) -> str:
                 runs_per_arm=runs_per_arm,
                 paired=source.get("paired"),
                 treatment_label=treat_label,
+                control_label=ctrl_label,
                 thresholds=thresholds,
                 preset=preset,
                 decision=decision,
@@ -1559,6 +1564,7 @@ def _format_results(results: dict) -> str:
                     model_name=model_name,
                     paired=model_data.get("paired"),
                     treatment_label=treat_label,
+                    control_label=ctrl_label,
                     thresholds=thresholds,
                     preset=preset,
                     include_recommendation=False,
