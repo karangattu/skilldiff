@@ -912,3 +912,79 @@ def test_by_split_section_absent_without_split_metadata():
     treatment = _runs("treatment", [1.0, 1.0], 0.5, skill_invoked=True)
     md = reporter.build_markdown_report(_results(control, treatment))
     assert "## By split" not in md
+
+
+def test_revision_preset_consistent_arm_labels():
+    control = _runs("control", [0.8], 0.5, skill_invoked=True)
+    treatment = _runs("treatment", [1.0], 0.5, skill_invoked=True)
+    results = _results(control, treatment, preset="revision")
+
+    md = reporter.build_markdown_report(results)
+    assert "Both arms have a skill installed; this comparison is between revisions." in md
+    assert "| Metric | Skill A | Skill B | Paired mean Δ | 95% CI | Reading |" in md
+    assert "| Task | Skill A | Skill B | Δ score (paired mean) | Better/worse/tie |" in md
+    assert "| Metric | Skill A | Skill B | Paired change | 95% CI | Reading |" in md
+
+    details, runs_rows = reporter._build_runs_table(
+        control,
+        treatment,
+        preset="revision",
+        control_label="Skill A",
+        treatment_label="Skill B",
+    )
+    for r in runs_rows:
+        if r[2] == "Skill A":
+            assert r[6] == "yes"
+
+    c_summary = reporter.calculate_metrics(control)
+    s_summary = reporter.calculate_metrics(treatment)
+    p_summary = reporter.paired_comparison(control, treatment)
+    table_txt = reporter.render_report_table(
+        "exp",
+        c_summary,
+        s_summary,
+        1,
+        1,
+        1,
+        paired=p_summary,
+        treatment_label="Skill B",
+        control_label="Skill A",
+        preset="revision",
+    )
+    assert "Both arms have a skill installed; this comparison is between revisions." in table_txt
+    assert "Skill A" in table_txt
+    assert "1/1" in table_txt
+
+
+def test_custom_arm_labels_consistent():
+    control = _runs("control", [0.8], 0.5)
+    treatment = _runs("treatment", [1.0], 0.5, skill_invoked=True)
+    results = _results(control, treatment)
+    results["arm_labels"] = {"control": "Baseline v1", "treatment": "Candidate v2"}
+
+    md = reporter.build_markdown_report(results)
+    assert "| Metric | Baseline v1 | Candidate v2 | Paired mean Δ | 95% CI | Reading |" in md
+    assert "| Task | Baseline v1 | Candidate v2 | Δ score (paired mean) | Better/worse/tie |" in md
+    assert "| Metric | Baseline v1 | Candidate v2 | Paired change | 95% CI | Reading |" in md
+
+
+def test_source_size_signed_percentage_without_reduction():
+    control = _runs("control", [1.0], 0.5)
+    treatment = _runs("treatment", [1.0], 0.5, skill_invoked=True)
+    results = _results(
+        control,
+        treatment,
+        preset="compression",
+        skill_comparison={
+            "preset": "compression",
+            "source_bytes_a": 160176,
+            "source_bytes_b": 172934,
+        },
+    )
+    md = reporter.build_markdown_report(results)
+    assert "160176 bytes → minified 172934 bytes (+8.0%)" in md
+    assert "static reduction" not in md
+    assert "reduction" not in md
+    assert "**Source size:** 160176 → 172934 bytes (+8.0%)" in md
+
+

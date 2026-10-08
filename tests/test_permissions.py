@@ -294,3 +294,84 @@ def test_antigravity_soft_denials_are_denials():
         res = AgentRunner(antigravity_bin="agy-mock").run(
             "t", Path("."), "m", AntigravityConfig(dangerously_skip_permissions=False))
     assert res.permission_denials == ["run_command", "write_to_file"]
+
+
+def test_claude_permission_denial_reasons():
+    event = {
+        "type": "result",
+        "subtype": "success",
+        "result": "done",
+        "permission_denials": [
+            {
+                "tool_name": "Bash",
+                "reason": "Quoted text in this command can't be checked before it runs",
+            },
+            {
+                "tool_name": "Bash",
+                "message": "Parser skipped input between top-level statements",
+            },
+        ],
+    }
+    parsed = parse_claude_output(json.dumps(event), [])
+    assert parsed["permission_denials"] == [
+        "Bash (Quoted text in this command can't be checked before it runs)",
+        "Bash (Parser skipped input between top-level statements)",
+    ]
+
+
+def test_probe_claude_sandbox_canary():
+    from skilldiff.runner import RunResult
+
+    runner = AgentRunner()
+    denials = ["Bash (Quoted text in this command can't be checked before it runs)"]
+    with patch.object(
+        runner,
+        "_run_claude",
+        return_value=RunResult(
+            prompt="",
+            response="done",
+            transcript="",
+            duration=1.0,
+            cost=0.0,
+            input_tokens=0,
+            output_tokens=0,
+            tool_calls=1,
+            exit_code=0,
+            status="ok",
+            permission_denials=denials,
+        ),
+    ):
+        ok, found = runner.probe_claude_sandbox_canary("claude-sonnet", ClaudeConfig())
+    assert ok is True
+    assert found == denials
+
+
+def test_diagnose_reports_denied_patterns_and_asymmetry(tmp_path):
+    control = [{
+        "status": "ok",
+        "task_id": "t1",
+        "model": "m",
+        "arm": "control",
+        "repetition": 1,
+        "permission_denials": [
+            "Bash (Quoted text in this command can't be checked before it runs)",
+            "Bash (Parser skipped input between top-level statements)",
+        ],
+    }]
+    treatment = [{
+        "status": "ok",
+        "task_id": "t1",
+        "model": "m",
+        "arm": "treatment",
+        "repetition": 1,
+        "permission_denials": [],
+    }]
+    (tmp_path / "results.json").write_text(json.dumps(
+        {"runs": {"control": control, "treatment": treatment}}
+    ))
+    diag = diagnose_run(tmp_path)
+    rec = next(r for r in diag["recommendations"] if r.startswith("Permission denials"))
+    assert "Parser skipped input between top-level statements" in rec
+    assert "Quoted text in this command can't be checked before it runs" in rec
+    assert "uneven across arms — confound" in rec
+

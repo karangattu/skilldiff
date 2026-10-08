@@ -129,3 +129,23 @@ def test_ceiling_effect_verdict_recommends_redesign_instead_of_more_repetitions(
     assert "Tasks at ceiling: control already scores 100%" in report
     assert "Redesign tasks with harder challenges rather than adding repetitions" in report
 
+
+def test_denials_in_verdict_headline_and_confound_callout():
+    from skilldiff.reporter import _verdict
+
+    paired = {
+        "pairs": 5,
+        "score": {"mean_diff": 0.2, "n": 5, "ci_low": 0.1, "ci_high": 0.3},
+    }
+    # Asymmetric denials: should flag confound and elevate kind to warning
+    sentence, kind = _verdict(paired, "skill", control_denials=2, treatment_denials=0)
+    assert "denials: control 2, treatment 0 (confound)" in sentence
+    assert kind == "warning"
+
+    # Symmetric denials: should note denials without confound flag or warning
+    sentence, kind = _verdict(paired, "skill", control_denials=1, treatment_denials=1)
+    assert "denials: control 1, treatment 1" in sentence
+    assert "(confound)" not in sentence
+    assert kind == "tip"
+
+

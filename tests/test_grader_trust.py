@@ -463,6 +463,7 @@ def test_regrade_keeps_run_when_diff_cannot_be_rebuilt(tmp_path, monkeypatch, ca
         patch.write_text("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n")
     assert cmd_regrade(Args(run_dir=None, config="skilldiff.yaml", task=None, dry_run=True)) == 0
     captured = capsys.readouterr()
+    assert "skipped 1 (binary diff)" in captured.out
     assert "skipped" in captured.err and "could not apply the saved diff" in captured.err
     assert _results(tmp_path)["overall"]["skill"]["task_score"] == 1.0
 
@@ -471,3 +472,70 @@ def test_regrade_requires_a_run_and_a_config(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert cmd_regrade(Args(run_dir=None, config=None, task=None, dry_run=False)) == 1
     assert "No experiment run" in capsys.readouterr().err
+
+
+def test_validate_grader_with_reference_solutions(tmp_path):
+    untouched = tmp_path / "untouched"
+    untouched.mkdir()
+    (untouched / "app.py").write_text("old = 1")
+
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "app.py").write_text("new = 2")
+
+    ref = tmp_path / "ref"
+    ref.mkdir()
+    (ref / "app.py").write_text("ref = 3")
+
+    class MockGrader:
+        allowed_paths = []
+        forbidden_paths = []
+        grader_ignore = []
+
+        def grade_workspace(self, ws):
+            content = (ws / "app.py").read_text()
+            if "old" in content:
+                return GradeResult(score=0.0, success=False, label="ctrl")
+            return GradeResult(score=1.0, success=True, label="pass")
+
+    report = validate_grader_against_directories(
+        MockGrader(), untouched, good_dir=good, reference_dirs=[ref]
+    )
+    assert report["verdict"] == "ok"
+    assert "reference solution scores 100%" in report["checks"]
+
+
+def test_validate_grader_flags_deprecated_api(tmp_path):
+    untouched = tmp_path / "untouched"
+    untouched.mkdir()
+    (untouched / "app.py").write_text("old = 1")
+
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "app.py").write_text("@render.download\ndef foo(): pass")
+
+    class MockGrader:
+        allowed_paths = []
+        forbidden_paths = []
+        grader_ignore = []
+
+        def grade_workspace(self, ws):
+            return GradeResult(score=1.0, success=True, label="pass")
+
+    report = validate_grader_against_directories(
+        MockGrader(), untouched, good_dir=good, deprecated_patterns=["render.download"]
+    )
+    assert report["verdict"] == "deprecated-api-used"
+    assert any("uses deprecated API 'render.download'" in c for c in report["checks"])
+
+
+def test_check_blast_radius_ignores_pycache_by_default():
+    changed = [
+        "app.py",
+        "__pycache__/app.cpython-312.pyc",
+        "subdir/__pycache__/helper.cpython-312.pyc",
+        "nested/foo.pyc",
+    ]
+    violation = check_blast_radius(changed, allowed_paths=["app.py"], forbidden_paths=[])
+    assert violation is None
+
