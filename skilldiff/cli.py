@@ -555,6 +555,28 @@ grader:
            _nested_task(task_template, "my-held-out-task"), force)
     _write(root / "graders" / "my_first_task.py", CUSTOM_GRADER, force)
     print("Warning: graders/my_first_task.py is a placeholder template that fails until replaced.")
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "diff", "--name-only", f"{base}...{head}"],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            proc = subprocess.run(
+                ["git", "-C", str(repo), "diff", "--name-only", base, head],
+                capture_output=True,
+                text=True,
+            )
+        if proc.returncode == 0:
+            diff_lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            if any("SKILL.md" in line for line in diff_lines) and pr_mode != "agent":
+                print(
+                    "Warning: The PR touches a SKILL.md path, but the chosen mode "
+                    f"'{pr_mode}' does not install skills into workspaces. Suggest using "
+                    "the skill A/B preset (--skill-a / --skill-b) as an alternative."
+                )
+    except Exception:
+        pass
     print(f"Initialized PR #{args.pr} experiment in {root}")
     print("Fetch the GitHub PR head into your local repository before check/run:")
     print(f"  git -C {shlex.quote(str(repo))} fetch origin {head}:{head}")
@@ -679,6 +701,17 @@ def cmd_check(args: argparse.Namespace) -> int:
         )
         if comparison.get("mode") == "correctness":
             ok("correctness mode: graders run on untouched revisions, no agent sessions")
+            if comparison.get("touched_skills"):
+                warn(
+                    f"PR touches skill(s) {', '.join(comparison['touched_skills'])}, but "
+                    "pr.mode is 'correctness' which does not install skills; suggest using "
+                    "pr.mode 'agent' or skill A/B preset (--skill-a / --skill-b)"
+                )
+        elif comparison.get("touched_skills"):
+            ok(
+                f"PR touches skill(s): {', '.join(comparison['touched_skills'])}; "
+                "installed into agent workspaces"
+            )
 
     if getattr(cfg, "preset", None):
         ok(f"preset: {cfg.preset}")
@@ -911,8 +944,19 @@ def cmd_check(args: argparse.Namespace) -> int:
                 for arm, installed in (("control", cfg.is_skill_comparison), ("treatment", True)):
                     source = (cfg.skill_b if arm == "treatment" and cfg.is_skill_comparison
                               else check_skill)
-                    probe_ws = Workspace(Path(tmp) / arm / "workspace", installed, source,
-                                         fixture, cfg.harness)
+                    probe_ws = Workspace(
+                        Path(tmp) / arm / "workspace",
+                        installed,
+                        source,
+                        fixture,
+                        cfg.harness,
+                        source_commit=(comparison or {}).get(f"{arm}_commit"),
+                        pr_touched_skills=(
+                            (comparison or {}).get("touched_skills")
+                            if (comparison and (comparison.get("mode") or "agent") == "agent")
+                            else None
+                        ),
+                    )
                     try:
                         probe_ws.setup()
                         expected = ([read_skill_name(path) or path.name
@@ -1007,6 +1051,11 @@ def cmd_check(args: argparse.Namespace) -> int:
                 source_commit=(comparison or {}).get("control_commit"),
                 strip_skill_dirs=(
                     [cfg.skill_b] if cfg.is_skill_comparison and cfg.skill_b else None
+                ),
+                pr_touched_skills=(
+                    (comparison or {}).get("touched_skills")
+                    if (comparison and (comparison.get("mode") or "agent") == "agent")
+                    else None
                 ),
             )
             try:

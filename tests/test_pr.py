@@ -226,3 +226,168 @@ def test_pr_diff_includes_agent_configuration_changes(pr_experiment, tmp_path):
     diff, files = ws.get_diff()
     assert ".agents/config.txt" in diff
     assert files
+
+
+def test_find_pr_touched_skills(tmp_path):
+    from skilldiff.revisions import find_pr_touched_skills
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test")
+    (repo / "skills" / "foo").mkdir(parents=True)
+    (repo / "skills" / "foo" / "SKILL.md").write_text("---\nname: foo\n---\n")
+    (repo / "SKILL.md").write_text("---\nname: root\n---\n")
+    (repo / "unrelated.txt").write_text("v1")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "initial")
+    base = git(repo, "rev-parse", "HEAD")
+
+    (repo / "skills" / "foo" / "helper.py").write_text("print(1)")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "touch foo")
+    head1 = git(repo, "rev-parse", "HEAD")
+    assert find_pr_touched_skills(repo, base, head1) == ["skills/foo"]
+
+    (repo / "SKILL.md").write_text("---\nname: root\n---\nupdated")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "touch root")
+    head2 = git(repo, "rev-parse", "HEAD")
+    assert find_pr_touched_skills(repo, head1, head2) == [""]
+
+
+def test_workspace_installs_pr_touched_skills(tmp_path):
+    from skilldiff.workspace import Workspace
+
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    skill_dir = fixture / "nested" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: my-skill\n---\n")
+
+    ws_root = tmp_path / "ws"
+    ws = Workspace(
+        ws_root,
+        is_treatment=False,
+        skill_dir=None,
+        fixture_repo=fixture,
+        pr_touched_skills=["nested/my-skill"],
+    )
+    ws.setup()
+    installed = ws.root / ".claude" / "skills" / "my-skill" / "SKILL.md"
+    assert installed.is_file()
+    assert ws.is_treatment is True
+    assert ws.root / ".claude" / "skills" / "my-skill" in ws.skill_dirs
+
+
+def test_resolve_comparison_populates_touched_skills(tmp_path):
+    from skilldiff.config import PRConfig
+    from skilldiff.revisions import resolve_comparison
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test")
+    (repo / "skills" / "bar").mkdir(parents=True)
+    (repo / "skills" / "bar" / "SKILL.md").write_text("---\nname: bar\n---\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "base")
+    git(repo, "branch", "base")
+
+    (repo / "skills" / "bar" / "SKILL.md").write_text("---\nname: bar\n---\nupdated")
+    git(repo, "commit", "-qam", "head")
+    git(repo, "branch", "feature")
+
+    pr_cfg = PRConfig(repo=repo, base="base", head="feature", mode="agent")
+    res = resolve_comparison(pr_cfg)
+    assert res.get("touched_skills") == ["skills/bar"]
+
+
+def test_cli_check_pr_touched_skills_warnings_and_messages(tmp_path, monkeypatch, capsys):
+    from argparse import Namespace
+
+    from skilldiff.cli import cmd_check
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLAUDE_BIN", "/bin/echo")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test")
+    (repo / "skills" / "baz").mkdir(parents=True)
+    (repo / "skills" / "baz" / "SKILL.md").write_text("---\nname: baz\n---\n")
+    (repo / "task.txt").write_text("1")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "base")
+    git(repo, "branch", "base")
+
+    (repo / "skills" / "baz" / "SKILL.md").write_text("---\nname: baz\n---\nupdated")
+    git(repo, "commit", "-qam", "head")
+    git(repo, "branch", "feature")
+
+    (tmp_path / "task.yaml").write_text("id: t1\nprompt: test\ngrader:\n  command: echo 1\n")
+
+    cfg_correctness = {
+        "name": "pr-test",
+        "pr": {"repo": "./repo", "base": "base", "head": "feature", "mode": "correctness"},
+        "models": ["test"],
+        "tasks": ["task.yaml"],
+    }
+    cfg_path = tmp_path / "skilldiff.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg_correctness))
+
+    assert cmd_check(Namespace(config=str(cfg_path), no_grade=True)) == 0
+    out = capsys.readouterr().out
+    assert "PR touches skill(s) skills/baz, but pr.mode is 'correctness'" in out
+
+    cfg_agent = {
+        "name": "pr-test",
+        "pr": {"repo": "./repo", "base": "base", "head": "feature", "mode": "agent"},
+        "models": ["test"],
+        "tasks": ["task.yaml"],
+    }
+    cfg_path.write_text(yaml.safe_dump(cfg_agent))
+
+    assert cmd_check(Namespace(config=str(cfg_path), no_grade=True)) == 0
+    out = capsys.readouterr().out
+    assert "PR touches skill(s): skills/baz; installed into agent workspaces" in out
+
+
+def test_cli_init_pr_warns_on_skill_touched(tmp_path, monkeypatch, capsys):
+    from argparse import Namespace
+
+    from skilldiff.cli import cmd_init
+
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test")
+    (repo / "skills" / "demo").mkdir(parents=True)
+    (repo / "skills" / "demo" / "SKILL.md").write_text("---\nname: demo\n---\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "base")
+    git(repo, "branch", "base")
+
+    (repo / "skills" / "demo" / "SKILL.md").write_text("---\nname: demo\n---\nmod")
+    git(repo, "commit", "-qam", "head")
+    git(repo, "update-ref", "refs/pull/123/head", "HEAD")
+
+    args = Namespace(
+        pr=123,
+        repo=str(repo),
+        base="base",
+        harness="claude",
+        dir=str(tmp_path / "exp"),
+        force=False,
+        pr_mode="correctness",
+        pr_pair="merge-base",
+    )
+    cmd_init(args)
+    out = capsys.readouterr().out
+    assert "Warning: The PR touches a SKILL.md path, but the chosen mode 'correctness'" in out
