@@ -451,6 +451,7 @@ class ExperimentRunner:
                 info["source_bytes_a"] = bytes_a
                 info["source_bytes_b"] = bytes_b
                 if bytes_a > 0:
+                    info["source_pct_change"] = (bytes_b - bytes_a) / bytes_a * 100
                     info["source_reduction_pct"] = (bytes_a - bytes_b) / bytes_a * 100
         except Exception:
             pass

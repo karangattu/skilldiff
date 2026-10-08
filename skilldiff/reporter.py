@@ -3311,13 +3311,13 @@ def build_report_blocks(
         try:
             ba = int(sc.get("source_bytes_a") or 0)
             bb = int(sc.get("source_bytes_b") or 0)
-            red = float(sc.get("source_reduction_pct") or 0)
+            pct = (bb - ba) / ba * 100 if ba else (-float(sc.get("source_reduction_pct") or 0))
             blocks.append(("h", 2, "Source size"))
             blocks.append(
                 (
                     "p",
                     f"Static skill size: original {ba} bytes → minified {bb} bytes "
-                    f"({red:+.1f}% reduction). This is separate from session tokens, "
+                    f"({pct:+.1f}%). This is separate from session tokens, "
                     "cost, and time measured per run.",
                 )
             )
@@ -3438,10 +3438,12 @@ def build_report_blocks(
             try:
                 ba = int(skill_comparison.get("source_bytes_a") or 0)
                 bb = int(skill_comparison.get("source_bytes_b") or 0)
-                red = float(skill_comparison.get("source_reduction_pct") or 0)
-                setup_items.append(
-                    f"**Source size:** {ba} → {bb} bytes ({red:+.1f}% static reduction)"
+                pct = (
+                    (bb - ba) / ba * 100
+                    if ba
+                    else (-float(skill_comparison.get("source_reduction_pct") or 0))
                 )
+                setup_items.append(f"**Source size:** {ba} → {bb} bytes ({pct:+.1f}%)")
             except Exception:
                 pass
     if comparison:

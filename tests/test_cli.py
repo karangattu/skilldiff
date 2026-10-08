@@ -189,3 +189,32 @@ def test_cli_check_and_run_reject_unknown_config_key(tmp_path: Path, monkeypatch
     err = capsys.readouterr().err
     assert code == 1, err
     assert "Configuration error: Unknown key" in err
+
+
+def test_format_results_source_size_signed_pct():
+    from skilldiff.cli import _format_results
+
+    res = {
+        "name": "test-exp",
+        "harness": "claude",
+        "models": ["m"],
+        "tasks": ["t"],
+        "tasks_count": 1,
+        "runs_per_arm": 1,
+        "preset": "compression",
+        "skill_comparison": {
+            "skill_a": "skills/a",
+            "skill_b": "skills/b",
+            "source_bytes_a": 160176,
+            "source_bytes_b": 172934,
+        },
+        "summary": {
+            "control": {"task_score": 0.5},
+            "skill": {"task_score": 0.5},
+            "paired": {},
+        },
+    }
+    out = _format_results(res)
+    assert "Source size: 160176 → 172934 bytes (+8.0%)" in out
+    assert "reduction" not in out
+

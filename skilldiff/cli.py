@@ -697,8 +697,8 @@ def cmd_check(args: argparse.Namespace) -> int:
             if sizes.get("skill_a") or sizes.get("skill_b"):
                 ba = int(sizes.get("skill_a") or 0)
                 bb = int(sizes.get("skill_b") or 0)
-                red = (ba - bb) / ba * 100 if ba else 0
-                ok(f"source size: {ba} → {bb} bytes ({red:+.1f}% static reduction)")
+                pct = (bb - ba) / ba * 100 if ba else 0
+                ok(f"source size: {ba} → {bb} bytes ({pct:+.1f}%)")
         except Exception:
             pass
         if getattr(cfg, "preset", None) == "compression":
@@ -1506,8 +1506,12 @@ def _format_results(results: dict) -> str:
             try:
                 ba = int(skill_comparison.get("source_bytes_a") or 0)
                 bb = int(skill_comparison.get("source_bytes_b") or 0)
-                red = float(skill_comparison.get("source_reduction_pct") or 0)
-                sections.append(f"Source size: {ba} → {bb} bytes ({red:+.1f}%)")
+                pct = (
+                    (bb - ba) / ba * 100
+                    if ba
+                    else (-float(skill_comparison.get("source_reduction_pct") or 0))
+                )
+                sections.append(f"Source size: {ba} → {bb} bytes ({pct:+.1f}%)")
             except Exception:
                 pass
     elif comparison:
