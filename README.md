@@ -2,27 +2,54 @@
 
 ![SkillDiff — paired agent terminals, with and without a skill, joined by a delta comparison symbol](assets/skill_diff_logo.png)
 
-Does your Agent Skill help? SkillDiff runs the same task with and without your skill. It grades both runs and reports the difference in score, cost, time, and tokens.
+Does your Agent Skill actually help? SkillDiff gives an agent the same tasks with and
+without your skill. It grades both and reports the difference in score, cost, time,
+and tokens. It ends with one bottom line: **SHIP**, **DO NOT SHIP**, or
+**NEEDS MORE RUNS**.
 
-It works with Claude Code, Codex, OpenCode, and Antigravity. It tests one skill or a folder of skills. It also tests a PR.
+It works with Claude Code, Codex, OpenCode, and Antigravity. It can test one skill,
+a folder of skills, two versions of a skill, or a pull request.
 
-## Quick start
+## How it works
 
-You need Python 3.10+, Git, and a signed-in agent CLI.
+```mermaid
+flowchart TB
+    T["📦 Your skill<br/>+ tasks + graders"] --> W["🗂️ Fresh copy of the<br/>test project per run<br/><i>same agent · model · task</i>"]
+    subgraph PAIR [" "]
+        direction LR
+        C["🚫 Agent <b>without</b><br/>the skill (control)"]
+        S["✨ Agent <b>with</b><br/>the skill (treatment)"]
+    end
+    W --> C
+    W --> S
+    C --> G["🙈 Grader scores<br/>anonymous work"]
+    S --> G
+    G --> R["📊 Repeat and compare<br/>pairs (95% intervals)"]
+    R --> V(["✅ SHIP · ⛔ DO NOT SHIP<br/>🔁 NEEDS MORE RUNS"])
 
-Install the skill for your agent (replace `claude-code` with `codex`, `opencode`, or `antigravity`):
-
-```bash
-npx skills add karangattu/skilldiff -g -y -a claude-code
+    classDef input fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a8a
+    classDef control fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+    classDef treatment fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
+    classDef grade fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#4c1d95
+    classDef verdict fill:#fef3c7,stroke:#d97706,stroke-width:3px,color:#78350f
+    class T,W input
+    class C control
+    class S treatment
+    class G,R grade
+    class V verdict
+    style PAIR fill:transparent,stroke:#64748b,stroke-width:2px,stroke-dasharray:6 4
 ```
 
-To upgrade installed skills to the latest version:
+- Both arms use the same agent, model, task, and starting files. Only the skill differs.
+- Each run gets its own throwaway workspace. The control arm never sees the skill.
+- Graders see `candidate-A` and `candidate-B`, never which arm is which.
+- Arm order alternates from a recorded seed. Inputs are frozen and hashed, so results are reproducible.
 
-```bash
-npx skills update skilldiff -g
-```
+## Install
 
-To run evaluations or try the CLI demo:
+You need Python 3.10+, Git, and a signed-in agent CLI (`claude`, `codex`, `opencode`, or `agy`).
+
+**1. Install the `skilldiff` tool:**
 
 ```bash
 uv tool install git+https://github.com/karangattu/skilldiff
@@ -36,186 +63,31 @@ uv tool install git+https://github.com/karangattu/skilldiff
 > [!IMPORTANT]
 > Install from GitHub as shown above. The `skilldiff` package on PyPI is a different project.
 
-## What you get
-
-Each run writes four files:
-
-- `report.html`: full report with tables and takeaways.
-- `report.md`: short version for pull requests.
-- `report.qmd`: version for Quarto.
-- `results.json`: raw data for scripts.
-
-Each run also saves the transcript and the diff for each agent run.
-
-The terminal output and saved reports include an **Evaluation results** table with
-App, Arm, Score, Time, Input, Cached input, Output, Total tokens, Tool calls,
-Turns, Skill loaded, and API-equivalent cost. App is the task ID; each app and arm
-has a row per model, plus a paired Δ row when both arms are present. Scores are
-means; resource usage and costs are totals across eligible matched repetitions.
-Cached input includes cache reads and writes. Missing measurements or pricing
-show as `N/A`.
-
-Reports end with a **Closing decision** table — score, cost, time, tokens, tool
-calls, turns, and adoption, each with paired change, 95% CI, and a plain reading — followed by one
-bottom line: SHIP, DO NOT SHIP, or NEEDS MORE RUNS, with the reason. When the
-config records `pricing:` rates (per 1M tokens, with source and date), reports
-also reproduce an **API-equivalent cost** table from the saved token breakdown.
-Set `cost_basis: api-equivalent` before the run to use that estimate in the
-closing decision and saved cost aggregates as well. The default is `harness`; old results
-without a recorded basis keep their original interpretation. Missing usage
-or model rates remain `N/A`, and the original harness cost stays in `run.json`.
-A **Skill context tax** table estimates the frozen skill's text footprint and
-the overhead if that text is carried on every turn. File size and estimated
-tokens are separate from measured harness token use; this table does not measure
-actual prompt injection or spend.
-
-The terminal and saved reports use the same shipping decision, including control
-validity, held-out evidence, and the number of tasks with usable paired scores.
-Planned tasks with grader failures do not satisfy the task-coverage safeguard.
-
-A complete small evaluation lives in [`examples/csv-totals`](examples/csv-totals):
-a skill, dev and held-out tasks, fixtures, a deterministic grader, and a
-committed sample report. Copy it as a starting point.
-
-## Example result
-
-The numbers below are examples. They are not real results.
-
-| **App** | **Arm** | **Score** | **Time** | **Input** | **Cached input** | **Output** | **Total tokens** | **Tool calls** | **Turns** | **Skill loaded** | **API-equivalent cost** |
-| ------- | ------- | --------- | -------- | --------- | ---------------- | ---------- | ---------------- | -------------- | --------- | ---------------- | ----------------------- |
-| csv-totals | Control | 60% | 450s | 100,000 | 500,000 | 70,000 | 670,000 | 30 | 15 | 0/5 | $1.50 |
-| csv-totals | Skill | 80% | 375s | 80,000 | 400,000 | 56,000 | 536,000 | 25 | 10 | 5/5 | $1.20 |
-| csv-totals | Δ (Skill - Control) | +20 pp | -75s | -20,000 | -100,000 | -14,000 | -134,000 | -5 | -5 | | -$0.30 |
-
-How to read the table:
-
-- Δ is skill minus control as a paired-mean change.
-- Control and Skill show means for score and medians for cost and time.
-- Reading states the verdict for that row in plain words. It uses the same Δ and interval, so the three columns never disagree.
-- If the interval includes zero, the result can be noise.
-- `N/A` means the value is unknown, not zero.
-- `n=X/Y` shows how many pairs gave a value.
-- Cost is the harness-reported price. On subscription auth the real spend is $0 at the margin. Record provider rates in `skilldiff.yaml` (`pricing:` with source, date, and per-model rates per 1M tokens) before the run; the report then prices the saved token breakdown itself, and regenerating the report reproduces the estimate.
-- If Codex omits `cache_write_input_tokens`, skilldiff calculates totals and API-equivalent cost from reported input, cache-read, and output counts; any unreported cache-write usage is excluded.
-
-<details>
-<summary>Tips for clear results</summary>
-
-- Use 5 or more runs as a starting point, not a rule. Fix the budget before you look at results.
-- Cover four kinds: intended tasks, normal representative tasks, irrelevant tasks, and ambiguous plus regression tasks.
-- Split `tasks/dev/` (iterate) from `tasks/heldout/` (freeze before the full run). The report keeps them separate in By split and decides on held-out only.
-- Write tasks that need what only the skill gives. Good tasks use obscure APIs, recent changes, or house rules.
-- Do not name the skill in prompts. Adoption is part of the test.
-- If control scores 100%, the task is too easy. The report calls this a ceiling effect.
-- Read warnings about agent errors, grader errors, and skill runs that ignored the skill.
-- Many repetitions of two tasks still describe only those two tasks. Add tasks before you generalize.
-
-</details>
-
-## Test your own skill
-
-Run this command to create a template for your skill:
-
-```bash
-skilldiff init --skill ~/code/my-package/.claude/skills/my-skill --dir my-skill-eval
-cd my-skill-eval
-```
-
-Then complete these steps:
-
-1. Add a small test project to `fixtures/`.
-2. Describe a real task in `tasks/`.
-3. Check how the agent did in `graders/`.
-4. Run `skilldiff check`.
-5. Run `skilldiff run`.
-
-**What each folder holds:** `skilldiff.yaml` holds name, skill path, harness, models, tasks, run count, seed, thresholds, failure policy, and optional `pricing:` rates (source, date, per-1M-token prices) for reproducible API-equivalent costs. `tasks/` holds one YAML file per task with an id, a prompt (or `prompts:` for a multi-turn script), a category, an optional `split: dev|held-out`, optional path assertions (`allowed_paths`, `forbidden_paths`), and optional `validation: {good, broken}`. `fixtures/` holds the small test projects, copied fresh for each run without `.git` history and with escaping symlinks rejected. `graders/` holds the scripts that score the work.
-
-Every key listed there is checked when the config loads: an unknown or misspelled key (in the experiment file, a nested block such as `claude:` or `thresholds:`, a task file, or a `grader:`) fails `skilldiff check` and `skilldiff run` immediately, naming the closest matching key, instead of being ignored while the run uses defaults you never chose.
-
-Values are checked too: path patterns, `prompts:`, and arguments must be lists of
-strings; flags must be YAML booleans; run and parallel counts must be positive
-integers; prices, thresholds, and timeouts must be finite numbers. Unsupported
-isolation modes fail rather than falling back to host execution. Distinct task
-files must have unique IDs; overlapping globs can safely select the same file.
-
-Older block names (`agy:` and `on_failure:`) are checked even when their replacements are also present. Optional sections accept `null` or `{}`; lists, booleans, numbers, and strings are rejected instead of being treated as empty settings.
-
-## Details
-
-The sections below hold all reference material. Beginners can stop here and run the demo first.
-
-<details>
-<summary id="why-skilldiff">Why SkillDiff, and how it stays fair</summary>
-
-You can compare a skill by hand: ask an agent to do a task once with the skill
-and once without, then read both results. That is fine for a quick sanity check.
-It falls apart as a measurement, because the parts that make the comparison
-trustworthy are bookkeeping that is easy to skip and hard to notice you skipped.
-
-| By hand | SkillDiff |
-|---|---|
-| Runs both arms in your working repo | A fresh copy of the fixture per arm, with no `.git` history; escaping symlinks are rejected |
-| Lets the agent see which run is which, and sometimes grade its own work | Graders see `candidate-A` and `candidate-B`, with names and arm labels removed |
-| Runs one arm, then the other | Seeded, balanced order, so neither arm keeps the warm cache every time |
-| Compares two numbers by eye | Paired differences with a bootstrap 95% confidence interval |
-| Edits the skill while testing | Each run freezes skills, tasks, fixtures, and graders under a sha256 manifest |
-| Judges whether the output looked good | Also records adoption, cost, time, and tokens for both arms |
-
-<p align="center">
-  <img src="assets/evaluation-flow.png" width="640" alt="How SkillDiff evaluates a skill, from top to bottom: prepare the same task and starting files; run the same agent and model in two fresh workspaces, one without the skill and one with it, alternating run order; grade anonymous work; repeat and compare score, cost, time, and tokens, checking skill use and uncertainty; report SHIP, DO NOT SHIP, or NEEDS MORE RUNS with the evidence and reason.">
-</p>
-
-What keeps it fair:
-
-- **Isolation.** SkillDiff marks detected control-arm skill loading or workspace contamination INVALID. For Claude the default excludes user settings from automatic loading. Local agents may still read skill sources or saved snapshots elsewhere on the host; exposure warnings are advisory and do not prove contamination. Use container execution or an enforced read sandbox to block those paths.
-- **Blind grading.** Graders see anonymous work, with names and arm labels removed.
-- **Balanced order.** Each task and model alternates which arm runs first, from a recorded seed, so no arm keeps the warm cache every time.
-- **Adoption.** The usual way a skill "fails" is that it never loaded. The report counts how many skill runs actually used the skill.
-- **Uncertainty.** Each difference has a bootstrap 95% interval, and the report flags a ceiling effect when control already scores 100%.
-- **Frozen inputs.** Each run keeps copies of its skills, tasks, fixtures, and graders under a versioned sha256 manifest, so editing the originals cannot change later pairs. Keep the evaluation output outside the skill and fixture directories.
-- **Safe stops and resume.** Every agent run has a timeout. Press Ctrl-C to stop and keep a report for the pairs that finished; resume refuses to mix in changed inputs.
-
-| Do it by hand when… | Reach for SkillDiff when… |
-|---|---|
-| You want a quick sanity check. | The result will decide whether the skill ships. |
-| A single anecdote is enough. | Someone will ask you to defend the number. |
-| You want a feel for whether the skill does anything at all. | |
-
-</details>
-
-<details>
-<summary>Use it from your agent</summary>
-
-SkillDiff ships as an agent skill. Your agent designs tasks, writes graders, runs the test, and explains the report.
-
-There are two separate installs. Only the first one is yours:
-
-- **The skilldiff skill** goes into your own agent once, so the agent can drive skilldiff. Use the command below.
-- **The skill under test** is copied into each fresh workspace by skilldiff itself, once per run. You never do this by hand. See [Where skilldiff installs the skill under test](#where-skilldiff-installs-the-skill-under-test).
-
-Install the skilldiff skill once. One command covers every supported agent (needs Node):
+**2. Install the skill into your agent** (replace `claude-code` with `codex`, `opencode`, or `antigravity`):
 
 ```bash
 npx skills add karangattu/skilldiff -g -y -a claude-code
 ```
 
-This is the [`skills` CLI](https://github.com/vercel-labs/skills). `-g` installs at user level so the skill is available in every project; without it the skill lands in the current folder, which is usually not what you want. `-a` names the agent to install into, so set it to the one you actually use. Run `npx skills update skilldiff -g` later to refresh.
+To upgrade installed skills to the latest version:
 
-Always pass `-a`. With no `-a` the CLI auto-detects your agents, and when it detects none it installs the skill into every agent it knows about, about sixty directories at once. Passing `-a` keeps the install to a single location.
+```bash
+npx skills update skilldiff -g
+```
 
-| Agent | `--agent` | Installs to |
+| Agent | `-a` value | Installs to |
 |---|---|---|
 | Claude Code | `claude-code` | `~/.claude/skills/skilldiff` |
 | Codex | `codex` | `~/.agents/skills/skilldiff` |
 | OpenCode | `opencode` | `~/.agents/skills/skilldiff` |
 | Antigravity | `antigravity` | `~/.agents/skills/skilldiff` |
 
-The `--agent` names are not quite skilldiff's `--harness` names. SkillDiff's `--harness` flag takes `claude`, `codex`, `opencode`, and `antigravity`; note the Gemini CLI is `antigravity` there, because that is the harness name skilldiff accepts.
-
-These user-level paths are exactly the ones `skilldiff check` watches, so an existing install shows up as contamination in `check` output instead of silently skewing a run.
-
-If you cannot use `npx`, install the skill by hand instead: copy the `skills/skilldiff` folder into your agent's user-level skills directory (same locations as the workspace ones in [Where skilldiff installs the skill under test](#where-skilldiff-installs-the-skill-under-test), but under your home directory). Claude Code users can also install the plugin, which adds the `/skilldiff:skilldiff <path>` slash command:
+Always pass `-a`. Without it, the [`skills` CLI](https://github.com/vercel-labs/skills)
+may install into every agent it knows, which is about sixty folders. `-g` installs
+for your user, so every project can use the skill. Without `npx`, copy the
+[`skills/skilldiff`](skills/skilldiff) folder into the folder shown in the table.
+Claude Code users can instead install the plugin, which adds a
+`/skilldiff:skilldiff <path>` command:
 
 ```bash
 # Inside Claude Code
@@ -223,359 +95,138 @@ If you cannot use `npx`, install the skill by hand instead: copy the `skills/ski
 /plugin install skilldiff@skilldiff
 ```
 
-Ask in plain words:
+You install only the skilldiff skill. SkillDiff copies the skill *under test* into
+each run's workspace itself.
+
+## Ask your agent
+
+Once the skill is installed, ask in plain words. Paste a request like this:
 
 ```text
-/skilldiff:skilldiff ~/code/py-shiny/.claude/skills/shiny-docs
-Test if this skill helps sonnet and opus write current Shiny APIs.
+Use skilldiff to test whether the skill at ~/code/my-pkg/skills/my-skill helps.
+Use the claude harness with sonnet. Set up the experiment outside the skill's
+repo, run skilldiff check and a 1-run smoke test, then show me the full-run
+cost and wait for my OK before running it.
 ```
 
-Only Claude Code gets the `/skilldiff:skilldiff` command. On Codex, OpenCode, and Antigravity, describe the same work in plain words and the agent picks up the skill.
+Change `claude` to `codex`, `opencode`, or `antigravity`, and pick a model you use.
+These requests also work:
 
-The agent then does the work:
+```text
+Use skilldiff to compare ~/skills/v1/my-skill against ~/skills/v2/my-skill on codex.
+Use skilldiff to check whether PR 42 in ~/code/my-pkg changes agent results.
+Read the latest skilldiff run and tell me whether to ship the skill.
+```
 
-1. Reads the skill and runs `skilldiff lint` on it.
-2. Runs `skilldiff init --skill <path>` outside the skill repo.
-3. Writes 2 to 5 tasks, fixtures, and graders.
-4. Runs `skilldiff check`, fixes failures, and assesses exposure warnings before running.
-5. Runs a smoke test with `--runs 1`.
-6. Asks you before the full run and shows run count and max cost.
-7. Reads the finished run with `skilldiff diagnose` and the report, then summarizes.
+The agent then:
 
-</details>
+1. Reads and lints the skill (`skilldiff lint`).
+2. Creates the experiment (`skilldiff init`) and writes tasks, test projects, and graders.
+3. Runs `skilldiff check` and fixes what it reports.
+4. Runs a smoke test (`skilldiff run --runs 1`) and reads some transcripts.
+5. Shows you the session count and maximum cost, and waits for your OK.
+6. Runs the full test, then explains the report and `skilldiff diagnose` output.
 
-<details>
-<summary id="where-skilldiff-installs-the-skill-under-test">Where skilldiff installs the skill under test</summary>
+**One-time setup if your agent sandboxes its shell.** Your agent runs `skilldiff`,
+and `skilldiff` starts its own agent sessions. Those sessions need network access
+and write access to their login folder. Allow `skilldiff` once:
 
-Before each treatment run, skilldiff copies the skill under test into the fresh workspace. You never do this yourself. Some harnesses read more than one location, so skilldiff writes all of them:
-
-| Harness (`--harness`) | Workspace location for the skill under test |
+| Your agent | One-time setup |
 |---|---|
-| `claude` | `.claude/skills/<name>` |
-| `codex` | `.codex/skills/<name>`, `.agents/skills/<name>` |
-| `opencode` | `.opencode/skills/<name>`, `.agents/skills/<name>` |
-| `antigravity` | `.agents/skills/<name>` |
+| Claude Code | In `.claude/settings.json`: `{"permissions": {"allow": ["Bash(skilldiff *)"]}, "sandbox": {"excludedCommands": ["skilldiff *"]}}` |
+| Codex | Add `prefix_rule(pattern=["skilldiff"], decision="allow")` to `~/.codex/rules/default.rules`, or approve the command when Codex asks |
+| OpenCode | Nothing by default. If you restricted bash, add `{"permission": {"bash": {"skilldiff *": "allow"}}}` to `opencode.json` |
+| Antigravity | Approve `skilldiff` when asked, or add `command(skilldiff)` and `unsandboxed(skilldiff)` to `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` |
 
-The control arm gets none of these. In A/B mode both arms carry a skill and the other revision is stripped from the fixture. See [Why SkillDiff, and how it stays fair](#why-skilldiff).
+If you skip this setup, `skilldiff check` fails with a `host:` line and prints the
+fix for your agent. `skilldiff run` refuses to start rather than fail every session.
+A full run can outlast your agent's shell timeout, so the skill tells your agent to
+run it in the background.
 
-For local runs, SkillDiff also checks these user-level paths for possible harness inheritance:
-
-| Harness | User-level paths watched |
-|---|---|
-| `claude` | `~/.claude/skills`, `~/.claude/plugins`, `~/.claude/CLAUDE.md`, `~/.claude/memory`, `~/.claude/settings.json` |
-| `codex` | `~/.codex/skills`, `~/.agents/skills`, `~/.codex/AGENTS.md`, `~/.codex/memory` |
-| `opencode` | `~/.config/opencode/skills`, `~/.config/opencode/plugins`, `~/.claude/skills`, `~/.agents/skills`, `~/.config/opencode/AGENTS.md`, `~/.config/opencode/memory` |
-| `antigravity` | `~/.gemini/skills`, `~/.agents/skills`, `~/.gemini/GEMINI.md`, `~/.gemini/memory` |
-
-Antigravity's own docs have moved its global location between releases (`~/.gemini/config/skills/` now, `~/.gemini/antigravity/skills/` and `~/.gemini/skills/` earlier), and the `skills` CLI writes `~/.agents/skills`, which every current Antigravity surface reads. SkillDiff watches `~/.gemini/skills` and `~/.agents/skills`, and `isolate: true` keeps user-level skills out of both arms regardless.
-
-`check` and `run` also warn about the live skill sources and matching copies in the
-experiment's `runs/` directory, including frozen `inputs/` snapshots. Runs record
-these warnings in `results.json`, the terminal summary, and every report format.
-The source warning is expected for local skill evaluations, even with automatic
-user-level skill loading disabled. It does not mark a result INVALID.
-
-Use `skilldiff check --scan-home` to look for additional copies under `$HOME`.
-Copies match a skill's directory name, frontmatter name, or identical `SKILL.md`
-contents, including both revisions in A/B mode and skills in a pack. Each scan
-stops after 20000 entries, 5 seconds, or 20 matches. It reports skipped and
-unreadable paths. It does not follow symlinks, scan `.git`, `.venv`, `venv`,
-`node_modules`, `__pycache__`, or `.cache`, or read `SKILL.md` files over 1 MiB.
-No matches cannot certify a clean host: renamed, changed, or otherwise unscanned
-copies may still exist. Container runs skip host exposure checks because those
-host paths are not mounted into agent containers; the image itself must be clean.
-
-</details>
-
-<details>
-<summary id="tasks-graders-and-categories">Tasks, graders, and categories</summary>
-
-A task file holds an id, a prompt, a category, a split, and a grader:
-
-```yaml
-id: fix-parser
-category: intended
-split: held-out        # dev (iterate) or held-out (frozen validation)
-repo: ../fixtures/parser
-prompt: |
-  Fix the parser so that it accepts empty input. Keep all tests green.
-allowed_paths: [parser.py, "tests/**"]   # edits outside these are reported as errors
-forbidden_paths: ["**/*.lock"]
-grader_ignore: ["outputs/*"]            # hidden from the grader, skipped by the scope check
-grader:
-  type: command
-  command: python3 "$SKILLDIFF_TASK_DIR/../graders/fix_parser.py"
-```
-
-A task can also be scripted across several turns. Set `prompts:` to a list and
-each prompt runs in order in the same workspace, with tokens, cost, time, and
-turns summed across the turns.
-The configured timeout covers the entire script. If any turn lacks a measurement,
-that aggregate remains `N/A`; a missing measurement is never counted as zero.
-Agent sessions are not automatically retried, so each reported attempt includes
-its full observed expenditure and failure evidence.
-
-`allowed_paths` and `forbidden_paths` are integrity assertions. When a run
-modifies an out-of-scope file it is reported as an error, `N/A` with the path
-named, never as `0%`, so a stray edit cannot look like a wrong answer.
-Saved diffs and changed paths compare final work against the initial fixture,
-including changes the agent stages or commits. Baseline arms use the same
-grader inputs and integrity assertions as both skill arms.
-
-Patterns match at the root and at any depth, so `data/*` also matches a copy such
-as `outputs/measurements/baseline/data/orders.csv`. Skills that ask agents to save
-measurements or audit copies under `outputs/` would trip that pattern even though
-the agent changed nothing out of scope. `grader_ignore` lists globs (for example
-`["outputs/*"]`) that the grader never sees: the grader runs in a copy of the
-workspace without them, `$SKILLDIFF_DIFF_FILE` omits their hunks, and the
-scope check skips them. The same file constraints are appended to both arms' prompts. `check` compares
-each known-good solution against the untouched fixture and rejects solutions
-that violate those constraints. It also warns when a `forbidden_paths` pattern would also
-match nested copies. A run that edits out-of-scope paths is labelled
-`N/A (blast radius)` in the report, counted apart from grader errors, and
-`diagnose` points at the task scope before it blames the agent or skill.
-
-Categories:
-
-- `intended`: the skill must help here.
-- `irrelevant`: the skill must stay out of the way here.
-- `ambiguous`: the trigger is unclear here.
-- `general`: default when you set no category.
-
-The report shows adoption and results for each group in By category.
-
-Splits separate development from validation. `split` is `dev` or `held-out`
-(it is inferred from `tasks/dev/` and `tasks/heldout/` directories and may be
-omitted; a contradiction refuses). The report shows a By split table, and when
-held-out pairs exist the headline and closing decision use them only, so
-development results cannot stand in for validation.
-
-A grader runs in the workspace after the agent stops:
-
-- Exit 0 with no JSON passes. Exit non-zero with no JSON fails, unless the output shows a crash.
-- For part scores, print JSON with a `score` from 0 to 1.
-- For named checks, print `checks` as a list of `{"name": ..., "passed": ...}`. Bare booleans also work.
-- For diagnostics that are not checks (counts, timings, an error message), print `notes` as a string, a list of strings, or a mapping. Notes appear in a Grader notes section of the report and never enter the By check table or the score.
-- Environment: `SKILLDIFF_RESPONSE_FILE`, `SKILLDIFF_DIFF_FILE`, `SKILLDIFF_CHANGED_FILES_FILE` (one changed path per line, `grader_ignore` paths removed), and `SKILLDIFF_TASK_DIR`.
-- Check structure by parsing, not by searching raw text: a comment that mentions the old API (`# instead of renderUI()`) fails a text search on a correct solution.
-- The JSON can be the full output or the last line. Bad shapes report `error`, not a score.
-- A crashing grader (traceback, missing file, bad exit) shows `N/A`, not `0%`. Test failure shows `0%`.
-- Keep graders outside the fixture. Outside is not isolation by itself: confine agents so they cannot read parent paths.
-- Accept all valid solutions, not only the skill solution.
-- For output a script cannot score, set `type: llm` (alias `rubric`) with a
-  `rubric:` and a required judge `command:`. The command receives
-  `$SKILLDIFF_JUDGE_PROMPT_FILE` and must return JSON with `score`, `success`,
-  and `feedback`. There is no built-in judge; omitting the command fails
-  configuration validation instead of assigning an unevaluated score.
-
-Example grader output:
-
-```json
-{"score": 0.8, "success": false, "checks": [{"name": "parses empty", "passed": true}]}
-```
-
-The report adds a By check table. It shows which checks improve and which checks regress.
-
-Ungraded tasks show `N/A`, not `100%`. Grader timeouts and errors show `N/A`, not `0%`.
-
-Validate the grader three ways in the task file:
-
-```yaml
-validation:
-  good: [../validation/fix-parser-good, ../validation/fix-parser-alias]
-  broken: [../validation/fix-parser-bad]
-```
-
-`check` then grades untouched (must be below 100%), every known-good solution (must be 100%), and broken (must fail).
-`good` takes one directory or a list. List a second, differently shaped valid
-solution (another API call, an alias, a different structure): a grader that accepts
-your solution but rejects an equivalent one scores the equivalent as a failure, which
-looks like a skill improvement. `check` warns when there is only one.
-Every supplied validation fixture must produce a graded result. A crash, timeout,
-or missing grade on a broken example fails validation. Timed-out grader processes
-and their children are terminated before evaluation continues.
-
-</details>
-
-<details>
-<summary>Thresholds and verdicts</summary>
-
-You can set practical limits in `skilldiff.yaml`:
-
-```yaml
-thresholds:
-  acceptable_score_regression_pp: 5
-  required_cost_reduction_pct: 10
-  required_token_reduction_pct: 20  # session-token saving (compression)
-  meaningful_score_gain_pp: 5
-failure_policy:
-  agent_failure: exclude  # or "zero" (failed sessions score 0)
-  missing: exclude
-```
-
-Shipping needs bounds to clear the limits, not point estimates. The verdict checks the lower confidence bound for score and requires the cost and token intervals to exclude increases. It separates a useful gain from a small but real gain. For compression, equal scores still evaluate thresholds: quality preserved plus proven resource savings is the win.
-
-The report ends with one bottom line applying these rules: **SHIP**, **DO NOT
-SHIP**, or **NEEDS MORE RUNS**, with the reason. A confidence interval that
-includes zero is never SHIP, and an established regression is never SHIP.
-
-The headline also flags weak proof:
-
-- `only 2 pairs` means the sample is too small.
-- `CI collapsed` means all pairs gave the same difference.
-- `only 2 tasks` means repetitions describe those tasks, not the skill in general.
-
-Define `failure_policy` before you run. With `agent_failure: exclude`, an agent
-error or timeout is omitted from paired scores, success counts, time, token, and
-cost comparisons even if the grader scored its partial work. The failed attempt
-and its raw measurements remain visible in Run details. With `zero`, a failed
-agent gets a task score of zero and its resource use remains in the comparison;
-its partial grader checks are still diagnostic only. Grader timeouts and errors
-are always `N/A`.
-
-</details>
-
-<details>
-<summary id="presets-revisions-and-pr-tests">Presets, revisions, and PR tests</summary>
-
-Four named presets configure the same runner with clear arms and decision rules:
-
-| Preset | Control | Treatment | Decides |
-|---|---|---|---|
-| `skill` | Agent without the skill | Same agent with the skill | Does the skill help? |
-| `pr` | Code without PR changes | Code with PR changes | Does the PR change behaviour? |
-| `revision` | Skill A | Skill B | Which revision wins? |
-| `compression` | Original skill | Minified skill | Is quality preserved with fewer resources? |
+## Or run it yourself
 
 ```bash
-# 1. No skill versus skill
-skilldiff init --skill /path/to/my-skill --dir evaluations/skill-effectiveness
-
-# 2. Skill A versus skill B (add --include-baseline for a no-skill arm per pair)
-skilldiff init --skill-a /path/to/v1/my-skill \
-  --skill-b /path/to/v2/my-skill --dir evaluations/skill-revisions
-
-# 3. Original versus an already-created minified skill
-skilldiff init --skill-a /path/to/original/my-skill \
-  --skill-b /path/to/minified/my-skill --preset compression \
-  --dir evaluations/skill-compression
-
-# 4. PR; fetch the ref first
-git -C /path/to/repo fetch origin refs/pull/42/head:refs/pull/42/head
-skilldiff init --pr 42 --repo /path/to/repo --base origin/main --dir evaluations/pr-42
-# --pr-mode agent (agents work on each revision) or correctness (graders run on untouched revisions)
-# --pr-pair merge-base (merge-base vs head) or base-merge (base tip vs synthetic merge)
-cd evaluations/pr-42
-skilldiff check
-skilldiff run --runs 1
+skilldiff init --skill ~/code/my-pkg/skills/my-skill --harness claude --dir my-skill-eval
+cd my-skill-eval
+# 1. Put a small test project in fixtures/
+# 2. Describe a real task in tasks/ (do not name the skill in the prompt)
+# 3. Write a grader in graders/ that scores the result
+skilldiff check          # validates config, CLI login, permissions, and graders
+skilldiff run --runs 1   # smoke test: one pair per task
+skilldiff run            # full run
+skilldiff results        # show the latest run
 ```
 
-Each template still needs representative tasks, fixtures, and graders. Tune on dev tasks, then compare frozen versions on held-out tasks.
-
-For revision and compression, control is skill A and treatment is skill B on identical fixtures with paired results. The baseline arm rotates through all three positions, and the report shows baseline-vs-A and baseline-vs-B alongside A-vs-B, plus source-size reduction for compression. Compression keeps the skill name and trigger description identical so adoption changes do not confound the body comparison, records source-size reduction separately from session tokens, cost, and time, and requires bounds to support the decision (for example: at most 2pp loss with at least 20% fewer tokens).
-
-Reports label the arms per preset (Original/Minified, Skill A/Skill B, Without/With PR). Use one of `skill`, `skill_a` plus `skill_b`, or `pr`, not more than one, with `preset` set to `skill`, `revision`, `compression`, or `pr`. Tasks omit `repo` in PR mode, and correctness mode runs no agents.
-
-Each run records skill hashes, prompt hashes, fixture hashes, grader hashes, locks, and CLI versions; the task hash includes grader contents and locks, and all files are hashed with no silent caps. To compare two old runs:
-
-```bash
-skilldiff compare runs/2026-09-22T120000Z runs/2026-09-23T120000Z
-# add --strict to reject mismatched models, tasks, or hashes
-```
-
-The output shows score changes, adoption changes, efficiency changes, and newly failing or passing checks. Efficiency uses per-run means over matched tasks and repetitions, not totals. It warns if models, tasks, or versions differ. Prefer a single-run A/B over `compare`, which must match tasks and repetitions to normalize efficiency.
-Each metric uses only matched model/task/repetition records with values on both
-sides and reports its usable counts. Failure policies apply before comparison;
-failed sessions' partial grader checks never become newly passing or failing
-checks. Different failure policies, decision cost bases, or API pricing warn
-and fail strict comparison. Cost comparisons use each run's recorded basis.
-
-</details>
-
-<details>
-<summary>Resume compatibility and recovery</summary>
-
-`skilldiff run --resume` selects the latest run. `--resume-from DIR` selects a specific run. Resume validates the saved metadata, input snapshots, checkpoint, and all completed arm artifacts before writing to that run.
-
-- Keep skills, tasks, fixtures, PR revisions, models, preset, baseline settings, active harness configuration, timeout, parallelism, isolation mode, container image identity, failure policy, thresholds, and tool versions unchanged.
-- Omit `--seed` to reuse the original seed, or supply that same seed. You may increase `--runs`; decreasing it is refused.
-- Missing or corrupt records, changed snapshots, and incomplete pairs stop recovery with an error. Existing artifacts remain available. SkillDiff never silently reruns a partial paid pair; start a new run if needed.
-- Runs created before frozen-input metadata was introduced remain readable by `results`, `report`, and `compare`, but require a new run instead of resume.
-- Graders stay at their original paths. SkillDiff checks the grader directories and dependency locks tracked by provenance before and after grading. A change stops the run without completing that pair. Python import and pytest caches are excluded. Arbitrary external scripts, installed dependencies, and network services used by grader commands are not frozen or fully tracked.
-- Original inputs must still match the saved snapshots when resuming. Restore any edits or start a new experiment. Changes to originals during an already running experiment do not affect its frozen workspaces.
-
-Keep the entire run directory, including `inputs/`, for recovery. A small sibling `.lock` file is normal; its OS lock releases when the process exits, including after a crash. Do not delete the lock file while a writer is active.
-
-</details>
-
-<details>
-<summary id="harness-setup-and-commands">Harness setup and commands</summary>
+[`examples/csv-totals`](examples/csv-totals) is a complete small experiment you can
+copy. It has a skill, dev and held-out tasks, fixtures, a grader, and a sample report.
 
 | Command | What it does |
 |---|---|
-| `skilldiff init [--skill PATH] [--harness H] [--dir D]` | Make a demo or a template for your skill |
-| `skilldiff init --skill-a A --skill-b B [--include-baseline] [--preset revision\|compression] [--dir D]` | Make a skill A/B test with paired results |
-| `skilldiff init --pr N --repo PATH [--base REF] [--pr-mode M] [--pr-pair P]` | Make a PR test from local refs |
-| `skilldiff check [-c CONFIG] [--no-probe] [--no-grade] [--scan-home]` | Check config, CLI, skill exposure, and graders; optionally scan HOME for copies. `--no-probe` skips the Claude login call; `--no-grade` skips graders. |
-| `skilldiff run [-c CONFIG] [--runs N] [-j N] [-m MODEL] [-t TASK] [--resume \| --resume-from DIR] [--seed N]` | Run the test (resume reuses pairs only when hashes match) |
-| `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run |
-| `skilldiff report [RUN_DIR]` | Rebuild reports for a run |
-| `skilldiff regrade [RUN_DIR] [-c CONFIG] [-t TASK] [--dry-run]` | Re-run the current graders on a finished run without any agent session |
-| `skilldiff compare RUN_A RUN_B [--json] [--strict]` | Compare two runs |
-| `skilldiff lint [SKILL_DIR] [--json]` | Lint SKILL.md frontmatter, trigger keywords, and length |
-| `skilldiff diagnose [RUN_DIR] [--json]` | Diagnose failure modes, regressions, and adoption gaps |
+| `skilldiff init` | Create an experiment (`--skill`, `--skill-a/--skill-b`, or `--pr`) |
+| `skilldiff check` | Check config, CLI login, permissions, skill exposure, and graders |
+| `skilldiff run` | Run the experiment (`--runs N`, `-t TASK`, `--resume`) |
+| `skilldiff results` / `report` | Show or rebuild the reports for a run |
+| `skilldiff diagnose` | Explain failures: skill not triggering, regressions, denied tools |
+| `skilldiff regrade` | Re-grade a finished run after a grader fix, without new sessions |
+| `skilldiff compare` | Compare two runs |
+| `skilldiff lint` | Lint a `SKILL.md` before you spend anything |
 
-`regrade` is for grader fixes after the fact. It rebuilds each arm's final files from the run's frozen fixture plus the saved `diff.patch`, grades them with the current graders, and rewrites scores, aggregates, and reports. Each regraded record keeps its earlier grade under `regrade_history`, `results.json` gains a `regrades` entry, and the report shows a warning that the run was regraded, so the change stays auditable. Use `--dry-run` to see which scores would change first. A pair whose diff cannot be rebuilt (binary or excluded files) keeps its original grade and is reported as skipped. PR experiments are not supported.
+## Reading the result
 
-`lint` checks a `SKILL.md` before you spend anything: required frontmatter, naming rules, description length and broad phrasing, unclosed code fences, and broken relative links, with an estimated token count. `diagnose` reads a finished run and names what went wrong: a skill that never triggered on intended tasks, one that triggered on irrelevant tasks, regressions, blast-radius violations, agent failures, and token bloat without score gains, each with a suggested fix.
+Each run writes `report.html`, `report.md` (for pull requests), `report.qmd`, and
+`results.json`, plus each session's transcript and diff. The core table looks like
+this (the numbers are examples):
 
-Claude Code. The default uses your subscription. SkillDiff removes `ANTHROPIC_API_KEY` from each run. To bill through the API, set `auth: api_key` and export the key. Sandboxing is `permission_mode` plus `allowed_tools`, and `isolate: true` keeps user-level skills, plugins, and `CLAUDE.md` out of both arms.
+| **App** | **Arm** | **Score** | **Time** | **Input** | **Cached input** | **Output** | **Total tokens** | **Tool calls** | **Turns** | **Skill loaded** | **API-equivalent cost** |
+| ------- | ------- | --------- | -------- | --------- | ---------------- | ---------- | ---------------- | -------------- | --------- | ---------------- | ----------------------- |
+| csv-totals | Control | 60% | 450s | 100,000 | 500,000 | 70,000 | 670,000 | 30 | 15 | 0/5 | $1.50 |
+| csv-totals | Skill | 80% | 375s | 80,000 | 400,000 | 56,000 | 536,000 | 25 | 10 | 5/5 | $1.20 |
+| csv-totals | Δ (Skill - Control) | +20 pp | -75s | -20,000 | -100,000 | -14,000 | -134,000 | -5 | -5 | | -$0.30 |
 
-Codex. The default uses stored login and removes `OPENAI_API_KEY`. Sandboxing is `sandbox: workspace-write` (or `dangerously_bypass_approvals_and_sandbox`).
+- **Δ** is the paired change, skill minus control. If its 95% interval includes zero, the difference may be noise.
+- **Skill loaded** counts runs where the agent actually used the skill. Low adoption usually means the skill's `description` does not match how people ask.
+- **`N/A`** means unknown, never zero. Failed sessions and grader errors are reported apart from low scores.
+- The report ends with a **Closing decision** table and one bottom line, with the reason.
 
-OpenCode. The default `service: go` uses your Go subscription. Sign in with `opencode providers login`. Permissions are `dangerously_skip_permissions`.
+## Permissions in agent sessions
 
-Antigravity. Short names expand to full models. `gemini-3.8` becomes `gemini-3.8-flash-medium`. Permissions are `dangerously_skip_permissions`.
+The agent sessions skilldiff starts run headless, so nobody can answer a permission
+prompt. A tool that asks is refused, and the agent quietly works without it. The
+defaults avoid prompts and give both arms the same permissions:
 
-Sign in with each CLI's normal login before you run. Each harness accepts `bin_path` and `extra_args`. You can also set `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, or `AGY_BIN`.
+| Harness | Default | To allow network |
+|---|---|---|
+| `claude` | `sandbox: true`: Bash runs in Claude's own sandbox without prompts; writes stay in the workspace | `allowed_domains: ["pypi.org"]` |
+| `codex` | `sandbox: workspace-write`, no prompts | `network_access: true` |
+| `opencode` | `dangerously_skip_permissions: true` (passes `--auto`) | already allowed |
+| `antigravity` | `dangerously_skip_permissions: true` | already allowed |
 
-Each agent run uses a private temporary directory beside its workspace, with
-`TMPDIR`, `TMP`, and `TEMP` set only in the child process. Scripted turns share
-that directory; other arms and repetitions get separate directories. Temporary
-files are cleaned up when the run ends, including on failure or timeout, and are
-kept out of the workspace diff. This prevents accidental sharing by programs
-that honor these variables; directory layout does not restrict filesystem reads.
+`skilldiff check` prints what sessions may do. Reports and `skilldiff diagnose` count
+denied tool calls per arm for all four harnesses (including Codex sandbox blocks), so
+a broken permission setup cannot pass as a low score. To block reads outside the workspace as well, use
+`isolation: docker`/`podman`, or `isolation: macos` for Claude and Codex.
 
-By default runs are on the host. Set `isolation: docker` (or `podman`) and
-`container_image` in `skilldiff.yaml` to run agents and graders inside a container.
-The runtime must be on `PATH`, its daemon must be running, and the image must
-already exist locally. SkillDiff records its immutable image ID and uses that
-identity for execution and resume; it does not pull images automatically.
+## Tips for useful results
 
-Use an image containing the harness CLI, grader programs, and their dependencies.
-The default `python:3.11` image only supplies Python; it is not a ready-to-run
-agent image. An explicit harness `bin_path` refers to a path inside the image.
-Automatically discovered host CLIs use their executable name inside the image.
-Workspace arguments are translated to `/workspace`; agents receive their own
-temporary directory at `/session-tmp`. Graders also receive
-read-only mounts of task inputs and candidate artifacts.
+- Write tasks that need what only the skill knows, such as obscure APIs, recent changes, or house rules. If control already scores 100%, the task is too easy.
+- Include tasks where the skill should stay out of the way (`category: irrelevant`).
+- Tune on `tasks/dev/`, then freeze `tasks/heldout/`. The decision uses held-out pairs only.
+- Start with 5 or more runs per arm, and fix that number before you look at results.
+- Give each grader a known-good and a broken solution (`validation:`), so `check` can prove the grader works.
 
-Only selected authentication variables and grader `SKILLDIFF_*` variables are
-forwarded. Host login directories are not mounted. Claude and Codex container
-runs require API authentication; their host subscription logins are unavailable
-inside the image. Run `skilldiff check` to verify the image, executable,
-authentication configuration, and graders before starting an evaluation.
-For Codex skill experiments, `check` queries `app-server skills/list` in fresh workspaces to verify skill discovery prior to paid sessions. Codex and Claude also support opt-in macOS native isolation (`isolation: macos`) via `sandbox-exec` with private session directories; Claude takes its runtime root from `claude.read_paths`, as Codex does from `codex.read_paths`. Tasks can declare a `runtime_probe` command. See [preflight reference](skills/skilldiff/references/preflight.md) for details.
+## More detail
 
+The [reference](docs/reference.md) has the exact rules:
 
-Running these from inside an agent needs a few things too:
-
-- Shell access. The agent must run `skilldiff`. In Claude Code allow `Bash(skilldiff *)`.
-- A signed-in CLI. SkillDiff starts separate agent runs with your normal login. Sign in once in a terminal with `claude auth login`.
-- Network access. If the sandbox blocks new CLIs, runs fail. The report lists them as errors. Then run `skilldiff run` in your own terminal.
-- Time. A full test can exceed the agent timeout. Then run it in the background and check it with `skilldiff results`.
-
-</details>
+- [Reports and outputs](docs/reference.md#reports-and-outputs) and [the example result](docs/reference.md#example-result)
+- [Experiment files](docs/reference.md#experiment-files) and [tasks, graders, and categories](docs/reference.md#tasks-graders-and-categories)
+- [Why SkillDiff, and how it stays fair](docs/reference.md#why-skilldiff)
+- [Where skilldiff installs the skill under test](docs/reference.md#where-skilldiff-installs-the-skill-under-test)
+- [Thresholds and verdicts](docs/reference.md#thresholds-and-verdicts)
+- [Presets, revisions, and PR tests](docs/reference.md#presets-revisions-and-pr-tests)
+- [Resume compatibility and recovery](docs/reference.md#resume-compatibility-and-recovery)
+- [Harness setup and commands](docs/reference.md#harness-setup-and-commands)
+- [Preflight safeguards](skills/skilldiff/references/preflight.md) and [reporting rules](skills/skilldiff/references/reporting.md)
 
 ## Development
 
