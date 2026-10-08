@@ -909,12 +909,20 @@ def render_report_table(
     )
     verdict_paired = decision["paired"] if decision is not None else paired
     if verdict_paired and verdict_paired.get("pairs"):
+        c_score = (
+            decision["control"] if decision is not None else control_metrics
+        ).get("task_score")
+        t_score = (
+            decision["skill"] if decision is not None else skill_metrics
+        ).get("task_score")
         verdict, _ = _verdict(
             verdict_paired,
             treatment_label.lower(),
             thresholds=thresholds,
             tasks_count=decision["tasks_count"] if decision is not None else tasks_count,
             preset=preset,
+            control_score=c_score,
+            treatment_score=t_score,
         )
         lines.append(_strip_inline(verdict))
     if include_recommendation:
@@ -926,6 +934,8 @@ def render_report_table(
             _, rec_label, rec_reason = _recommendation(
                 paired or {}, treatment_label.lower(), thresholds=thresholds,
                 tasks_count=tasks_count or None, preset=preset,
+                control_score=control_metrics.get("task_score"),
+                treatment_score=skill_metrics.get("task_score"),
             )
         lines.append("")
         lines.append(_strip_inline(f"Recommendation: {rec_label} — {rec_reason}"))
@@ -950,16 +960,10 @@ def _verdict(
     tasks_count: int | None = None,
     failure_policy: dict[str, Any] | None = None,
     preset: str | None = None,
+    control_score: float | None = None,
+    treatment_score: float | None = None,
 ) -> tuple[str, str]:
-    """Return (sentence, callout kind) for the task-score effect.
-
-    Flags tiny samples and collapsed intervals in the headline so a
-    +100pp win on 2 identical pairs is not mistaken for conclusive evidence.
-    When practical thresholds are configured, adds a decision-oriented
-    assessment that requires confidence bounds (not point estimates) to clear
-    the gain/regression limits. Also separates repetition uncertainty from
-    task uncertainty: many reps of few tasks still generalize poorly.
-    """
+    """Return (sentence, callout kind) for the task-score effect."""
     total = int(paired.get("pairs", 0))
     score = paired.get("score") or {}
     n_valid = int(score.get("n", paired.get("scored_pairs", total)))
@@ -1005,6 +1009,12 @@ def _verdict(
 
     if n_valid < 2:
         if mean_pp == 0:
+            if control_score is not None and control_score >= 0.95:
+                return (
+                    f"Tasks at ceiling: control already scores {round(control_score * 100)}%; "
+                    f"tasks cannot discriminate.{caution_txt}",
+                    "note",
+                )
             return f"No task-score difference in {pairs_txt}. Add repetitions.{caution_txt}", "note"
         return (
             f"Task score changed by **{format_pp_diff(mean_pp)}** in {pairs_txt}. "
@@ -1024,9 +1034,20 @@ def _verdict(
             "warning",
         )
     if mean_pp == 0 and lo == hi == 0:
-        # Equal scores still carry a decision when thresholds are set: for
-        # compression, preserved quality plus proven resource savings is the
-        # win. "No clear difference" alone does not establish preservation.
+        if control_score is not None and control_score >= 0.95:
+            return (
+                f"Tasks at ceiling: control already scores {round(control_score * 100)}%; "
+                f"tasks cannot discriminate.{caution_txt}",
+                "note",
+            )
+        if (
+            control_score is not None and control_score <= 0.05
+            and (treatment_score is None or treatment_score <= 0.05)
+        ):
+            return (
+                f"Tasks at floor: both arms score ~0%; tasks cannot discriminate.{caution_txt}",
+                "note",
+            )
         if thresholds:
             if preset == "compression":
                 return (
@@ -1041,6 +1062,12 @@ def _verdict(
             )
         return (
             f"No task-score difference: both arms scored the same in all {pairs_txt}.{caution_txt}",
+            "note",
+        )
+    if control_score is not None and control_score >= 0.95 and abs(mean_pp) <= 5:
+        return (
+            f"Tasks at ceiling: control already scores {round(control_score * 100)}%; "
+            f"tasks cannot discriminate.{caution_txt}",
             "note",
         )
     return (
@@ -1711,6 +1738,8 @@ def build_decision_context(
         selected_paired, treatment_label.lower(), thresholds=thresholds,
         tasks_count=tasks_count, preset=preset, valid=results.get("valid") is not False,
         paired_held_out=held if held.get("pairs") else None,
+        control_score=selected_metrics[0].get("task_score"),
+        treatment_score=selected_metrics[1].get("task_score"),
     )
     return {
         "overall_control": control, "overall_skill": skill, "overall_paired": paired,
@@ -1728,16 +1757,10 @@ def _recommendation(
     preset: str | None = None,
     valid: bool = True,
     paired_held_out: dict[str, Any] | None = None,
+    control_score: float | None = None,
+    treatment_score: float | None = None,
 ) -> tuple[str, str, str]:
-    """Return (callout kind, SHIP/DO NOT SHIP/NEEDS MORE RUNS, reason).
-
-    One bottom line per report, derived from the same paired statistics,
-    intervals, and verdict logic as the tables above it. Shipping needs
-    bounds that clear thresholds, not point estimates: an effect whose 95%
-    CI includes zero is never SHIP, and a regression whose interval excludes
-    zero is never SHIP. When held-out pairs exist they drive the decision,
-    so development results cannot stand in for validation.
-    """
+    """Return (callout kind, SHIP/DO NOT SHIP/NEEDS MORE RUNS, reason)."""
     if not valid:
         return (
             _RECOMMENDATION_KIND["DO NOT SHIP"],
@@ -1805,7 +1828,6 @@ def _recommendation(
     if thresholds and mean_raw is not None:
         practical = _practical_assessment(use, thresholds, mean_pp, preset=preset)
 
-    # Pre-registered thresholds decide when present.
     if practical:
         if practical.startswith("Practical check: meets"):
             if tasks_count is not None and tasks_count < 3:
@@ -1842,6 +1864,25 @@ def _recommendation(
             "because the interval excludes zero.",
         )
     if mean_pp == 0 and lo == hi == 0:
+        if control_score is not None and control_score >= 0.95:
+            c_pct = round(control_score * 100)
+            return (
+                _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
+                "NEEDS MORE RUNS",
+                f"{basis}Tasks at ceiling: control already scores {c_pct}% on average, "
+                "so tasks cannot discriminate. Redesign tasks with harder challenges "
+                "rather than adding repetitions.",
+            )
+        if (
+            control_score is not None and control_score <= 0.05
+            and (treatment_score is None or treatment_score <= 0.05)
+        ):
+            return (
+                _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
+                "NEEDS MORE RUNS",
+                f"{basis}Tasks at floor: both arms score ~0%, so tasks cannot discriminate. "
+                "Redesign tasks with achievable challenges rather than adding repetitions.",
+            )
         if n >= 5:
             return (
                 _RECOMMENDATION_KIND["DO NOT SHIP"],
@@ -1881,6 +1922,15 @@ def _recommendation(
             _RECOMMENDATION_KIND["SHIP"],
             "SHIP",
             f"{basis}{effect_sentence('up')}; the interval excludes zero.",
+        )
+    if control_score is not None and control_score >= 0.95 and abs(mean_pp) <= 5:
+        c_pct = round(control_score * 100)
+        return (
+            _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
+            "NEEDS MORE RUNS",
+            f"{basis}Tasks at ceiling: control already scores {c_pct}% on average, "
+            "so tasks cannot discriminate. Redesign tasks with harder challenges "
+            "rather than adding repetitions.",
         )
     return (
         _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
@@ -2696,6 +2746,8 @@ def build_report_blocks(
             tasks_count=rec_tasks_count,
             failure_policy=failure_policy,
             preset=preset,
+            control_score=headline_control.get("task_score"),
+            treatment_score=headline_skill.get("task_score"),
         )
     else:
         diff = _score_difference(headline_control, headline_skill)
