@@ -1,5 +1,6 @@
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,36 @@ def _planned_keys(data: dict[str, Any]) -> set[tuple[str, str, int]] | None:
         for task in data["tasks"]
         for rep in range(1, int(repetitions) + 1)
     }
+
+
+SKILL_FILE_READS_THRESHOLD = 1
+
+
+def count_skill_file_reads(transcript: str) -> int:
+    if not transcript:
+        return 0
+    found = set()
+    for m in re.finditer(
+        r"(?:^|[\s\"'/\\])(SKILL\.md|references[/\\][\w.-]+\.md)",
+        transcript,
+        re.IGNORECASE,
+    ):
+        found.add(m.group(1).lower().replace("\\", "/"))
+    return len(found)
+
+
+def _extract_transcript(record: dict[str, Any], root: Path) -> str:
+    if record.get("transcript"):
+        return str(record["transcript"])
+    artifacts = record.get("artifacts")
+    if artifacts:
+        t_file = root / artifacts / "transcript.txt"
+        if t_file.is_file():
+            try:
+                return t_file.read_text(encoding="utf-8")
+            except OSError:
+                pass
+    return ""
 
 
 def diagnose_run(run_dir: Path) -> dict[str, Any]:
@@ -139,12 +170,17 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
                 "category", record.get("task_category", "general")
             )
             invoked = record.get("skill_invoked")
-            if not isinstance(invoked, bool):
+            transcript = _extract_transcript(record, path if path.is_dir() else path.parent)
+            file_reads = count_skill_file_reads(transcript)
+            over_read = file_reads > SKILL_FILE_READS_THRESHOLD
+            if not isinstance(invoked, bool) and not over_read:
                 unknown_adoption_runs += 1
-            elif category == "intended" and not invoked:
+            elif category == "intended" and not invoked and not over_read:
                 under_triggered.append(identity)
-            elif category == "irrelevant" and invoked:
-                over_triggered.append(identity)
+            elif category == "irrelevant" and (invoked or over_read):
+                over_triggered.append(
+                    identity | ({"skill_file_reads": file_reads} if file_reads else {})
+                )
 
     pairs = pair_runs(control_runs, treatment_runs)
     usable_score_pairs = 0

@@ -1178,6 +1178,9 @@ class AgentRunner:
         input_complete = output_complete = cache_complete = True
         cache_write_complete = True
         saw_cache_write = False
+        skill_names = _codex_skill_names(cwd)
+        skill_available: Optional[bool] = None
+        skill_invoked = False
 
         for line in stdout.splitlines():
             line = line.strip()
@@ -1191,6 +1194,14 @@ class AgentRunner:
                 continue
             item_type = str(item.get("type", ""))
 
+            # `codex exec --json` identifies skills available to the session
+            # in its thread.started event. Keep availability distinct from use:
+            # a skill can be installed without the agent opening or invoking it.
+            if item_type == "thread.started" and skill_names:
+                skills = item.get("skills")
+                if isinstance(skills, list):
+                    skill_available = any(_skill_matches(s, skill_names) for s in skills)
+
             # Current `codex exec --json` wraps work in item.* events.
             inner = item.get("item")
             if isinstance(inner, dict):
@@ -1202,6 +1213,16 @@ class AgentRunner:
                             response_texts.append(text)
                     elif inner_type not in {"reasoning", "todo_list", "error"}:
                         tool_calls += 1
+                    if inner_type == "command_execution" and skill_names:
+                        skill_invoked = skill_invoked or detect_skill_reference(
+                            str(inner.get("command") or ""), skill_names
+                        )
+                elif item_type == "item.started" and skill_names:
+                    inner_type = str(inner.get("type", ""))
+                    if inner_type == "command_execution":
+                        skill_invoked = skill_invoked or detect_skill_reference(
+                            str(inner.get("command") or ""), skill_names
+                        )
                 continue
 
             if item_type == "turn.completed":
@@ -1277,6 +1298,8 @@ class AgentRunner:
             ),
             num_turns=num_turns or None,
             permission_denials=codex_permission_denials(execution.stderr),
+            skill_available=skill_available,
+            skill_invoked=skill_invoked,
         )
         return _finalize_status(result, execution)
 
@@ -1614,6 +1637,22 @@ def _skill_matches(value: Any, skill_names: list[str]) -> bool:
     # Plugin skills are namespaced as "plugin:skill".
     candidate = value.lstrip("/").split(":")[-1]
     return candidate in skill_names
+
+
+def _codex_skill_names(workspace: Path) -> list[str]:
+    """Read installed workspace skill names for Codex event parsing."""
+    names: list[str] = []
+    for root in (workspace / ".agents" / "skills", workspace / ".codex" / "skills"):
+        if not root.is_dir():
+            continue
+        for path in root.glob("*/SKILL.md"):
+            name = path.parent.name
+            if name not in names:
+                names.append(name)
+            frontmatter_name = read_skill_name(path.parent)
+            if frontmatter_name and frontmatter_name not in names:
+                names.append(frontmatter_name)
+    return names
 
 
 def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:

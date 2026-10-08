@@ -340,3 +340,38 @@ def test_footprint_counts_skills_under_hidden_install_parents(tmp_path, parent):
     (cache / "module.pyc").write_bytes(b"excluded")
     assert measure_skill_footprint(skill)["total_bytes"] == 11
     assert measure_skill_footprint(skill)["file_count"] == 1
+
+
+def test_diagnose_flags_over_reading_of_skill_reference_files(tmp_path):
+    irrelevant_task_reads = [
+        "Read file .agents/skills/my-skill/SKILL.md",
+        "Read file .agents/skills/my-skill/references/api.md",
+        "Read file .agents/skills/my-skill/references/syntax.md",
+    ]
+    diag = diagnose(
+        tmp_path,
+        {
+            "runs_per_arm": 1,
+            "models": ["m"],
+            "tasks": ["irrelevant_task"],
+            "task_details": [{"id": "irrelevant_task", "category": "irrelevant"}],
+            "runs": {
+                "control": [],
+                "treatment": [
+                    {
+                        "model": "m",
+                        "task_id": "irrelevant_task",
+                        "repetition": 1,
+                        "arm": "treatment",
+                        "skill_invoked": False,
+                        "transcript": "\n".join(irrelevant_task_reads),
+                        "status": "ok",
+                    }
+                ],
+            },
+        },
+    )
+    assert len(diag["over_triggered"]) == 1
+    assert diag["over_triggered"][0]["task_id"] == "irrelevant_task"
+    assert any("Over-triggering" in r for r in diag["recommendations"])
+
