@@ -1009,6 +1009,12 @@ class ExperimentRunner:
             ctrl_is_treatment = False
             treat_is_treatment = True
 
+        pr_skills = (
+            (self.comparison or {}).get("touched_skills")
+            if (self.comparison and pr_mode == "agent")
+            else None
+        )
+
         with (
             tempfile.TemporaryDirectory(prefix="skilldiff-") as tmp_ctrl,
             tempfile.TemporaryDirectory(prefix="skilldiff-") as tmp_treat,
@@ -1023,6 +1029,7 @@ class ExperimentRunner:
                     strip_skill_dirs=([treat_skill] if is_ab and treat_skill else None),
                     fixture_repo=fixture_repo,
                     harness=self.config.harness,
+                    pr_touched_skills=pr_skills,
                 ),
                 "treatment": Workspace(
                     root=Path(tmp_treat) / "workspace",
@@ -1032,6 +1039,7 @@ class ExperimentRunner:
                     strip_skill_dirs=([ctrl_skill] if is_ab and ctrl_skill else None),
                     fixture_repo=fixture_repo,
                     harness=self.config.harness,
+                    pr_touched_skills=pr_skills,
                 ),
             }
             if is_ab and self.config.include_baseline:
@@ -1134,10 +1142,32 @@ class ExperimentRunner:
                     else:
                         task_prompt_val += constraints
                     self.progress(f"Agent starting: {model} · {task.id} · {arm}")
+                    arm_skills = [
+                        read_skill_name(path) or path.name
+                        for path in workspaces[arm].skill_dirs
+                    ] if workspaces[arm].skill_dirs else None
                     try:
-                        results[arm] = self.agent_runner.run(
-                            task_prompt_val, workspaces[arm].root, model, execution
-                        )
+                        import inspect
+
+                        run_sig = inspect.signature(self.agent_runner.run)
+                        if "skill_names" in run_sig.parameters or any(
+                            p.kind == inspect.Parameter.VAR_KEYWORD
+                            for p in run_sig.parameters.values()
+                        ):
+                            results[arm] = self.agent_runner.run(
+                                task_prompt_val,
+                                workspaces[arm].root,
+                                model,
+                                execution,
+                                skill_names=arm_skills,
+                            )
+                        else:
+                            results[arm] = self.agent_runner.run(
+                                task_prompt_val,
+                                workspaces[arm].root,
+                                model,
+                                execution,
+                            )
                     except KeyboardInterrupt:
                         diff_text, changed = workspaces[arm].get_diff()
                         self._save_run_artifacts(arm_dirs_tmp[arm], {
