@@ -131,34 +131,79 @@ def resolve_comparison(
             "merge_base": merge_base, "pair": pair, "mode": mode,
         }.items()):
             _git(pr.repo, "cat-file", "-e", previous["treatment_commit"] + "^{commit}")
-            return dict(previous)
-        synthetic = _synthetic_merge_commit(pr.repo, base_tip, head, merge_base)
-        return dict(
+            res = dict(previous)
+        else:
+            synthetic = _synthetic_merge_commit(pr.repo, base_tip, head, merge_base)
+            res = dict(
+                type="pr",
+                mode=mode,
+                pair=pair,
+                repo=str(pr.repo),
+                base=pr.base,
+                head=pr.head,
+                control_commit=base_tip,
+                treatment_commit=synthetic,
+                merge_base=merge_base,
+                base_tip=base_tip,
+                head_commit=head,
+            )
+    else:
+        res = dict(
             type="pr",
             mode=mode,
             pair=pair,
             repo=str(pr.repo),
             base=pr.base,
             head=pr.head,
-            control_commit=base_tip,
-            treatment_commit=synthetic,
+            control_commit=merge_base,
+            treatment_commit=head,
             merge_base=merge_base,
             base_tip=base_tip,
             head_commit=head,
         )
-    return dict(
-        type="pr",
-        mode=mode,
-        pair=pair,
-        repo=str(pr.repo),
-        base=pr.base,
-        head=pr.head,
-        control_commit=merge_base,
-        treatment_commit=head,
-        merge_base=merge_base,
-        base_tip=base_tip,
-        head_commit=head,
-    )
+    try:
+        touched = find_pr_touched_skills(pr.repo, res["control_commit"], res["treatment_commit"])
+        if touched:
+            res["touched_skills"] = touched
+    except Exception:
+        pass
+    return res
+
+
+def find_pr_touched_skills(
+    repo: Path, control_commit: str, treatment_commit: str
+) -> list[str]:
+    try:
+        diff_out = _git(repo, "diff", "--name-only", control_commit, treatment_commit)
+    except Exception:
+        return []
+    diff_files = [line.strip() for line in diff_out.splitlines() if line.strip()]
+    if not diff_files:
+        return []
+
+    skill_dirs: set[str] = set()
+    for commit in (control_commit, treatment_commit):
+        try:
+            entries = _git(repo, "ls-tree", "-r", "--name-only", commit)
+            for entry in entries.splitlines():
+                entry = entry.strip()
+                if entry == "SKILL.md":
+                    skill_dirs.add("")
+                elif entry.endswith("/SKILL.md"):
+                    skill_dirs.add(entry[:-9])
+        except Exception:
+            pass
+
+    touched: list[str] = []
+    for sdir in sorted(skill_dirs):
+        if sdir == "":
+            if any(df == "SKILL.md" or df.startswith("SKILL.md") for df in diff_files):
+                touched.append(sdir)
+        else:
+            prefix = f"{sdir}/"
+            if any(df == sdir or df.startswith(prefix) for df in diff_files):
+                touched.append(sdir)
+    return touched
 
 
 def export_revision(repo: Path, commit: str, root: Path) -> None:
