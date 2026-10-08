@@ -193,6 +193,7 @@ class Workspace:
         # Extra skill roots to strip from non-treatment arms (used for A/B
         # baselines where two revisions must both be absent).
         strip_skill_dirs: list[Path] | None = None,
+        pr_touched_skills: list[str] | None = None,
     ):
         self.root = root.resolve()
         self.is_treatment = is_treatment
@@ -202,6 +203,7 @@ class Workspace:
         self.harness = harness
         self.skill_dirs = (find_skill_dirs(self.skill_dir) or [self.skill_dir]) if skill_dir else []
         self.strip_skill_dirs: list[Path] = []
+        self.pr_touched_skills = list(pr_touched_skills or [])
         for extra in strip_skill_dirs or []:
             extra_resolved = extra.resolve() if extra else None
             if extra_resolved:
@@ -246,7 +248,29 @@ class Workspace:
                 check=True,
             )
 
-        if self.is_treatment:
+        if self.pr_touched_skills:
+            for rel in self.pr_touched_skills:
+                source_dir = (self.root / rel).resolve() if rel else self.root.resolve()
+                skill_md = source_dir / "SKILL.md"
+                if skill_md.is_file():
+                    from skilldiff.config import read_skill_name as _rsn
+
+                    skill_name = _rsn(source_dir) or source_dir.name or "skill"
+                    for target_dir in self._get_skill_target_dirs(skill_name):
+                        if target_dir.resolve() != source_dir:
+                            if target_dir.exists():
+                                shutil.rmtree(target_dir)
+                            target_dir.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copytree(
+                                source_dir,
+                                target_dir,
+                                symlinks=True,
+                                ignore=shutil.ignore_patterns(".git"),
+                            )
+                        if target_dir not in self.skill_dirs:
+                            self.skill_dirs.append(target_dir)
+                    self.is_treatment = True
+        elif self.is_treatment:
             for skill_dir in self.skill_dirs:
                 for target_dir in self._get_skill_target_dirs(skill_dir.name):
                     if target_dir.exists():
@@ -328,7 +352,7 @@ class Workspace:
                 ["git", "add", "--all", "--force", "."],
             ):
                 subprocess.run(command, cwd=self.root, env=env, check=True, capture_output=True)
-            base = ["git", "diff", "--cached", "--no-renames", self.initial_commit]
+            base = ["git", "diff", "--cached", "--no-renames", "--binary", self.initial_commit]
             paths = ["--", *([] if self.source_commit else GIT_DIFF_EXCLUDES)]
             patch = subprocess.check_output(base + paths, cwd=self.root, env=env, text=True)
             names = subprocess.check_output(

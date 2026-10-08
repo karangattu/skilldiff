@@ -405,3 +405,16 @@ def test_rpc_deadline_is_not_extended_by_an_unobserved_pipe_holder(tmp_path):
                                 rpc_requests=[{'id': 1, 'method': 'initialize'}])
     assert result.timed_out
     assert time.monotonic() - started < 2.5
+
+
+def test_exec_sets_pythondontwritebytecode(tmp_path: Path):
+    import sys
+
+    result = AgentRunner()._exec(
+        [sys.executable, "-c", "import os; print(os.environ.get('PYTHONDONTWRITEBYTECODE'))"],
+        tmp_path,
+        os.environ.copy(),
+        5.0,
+    )
+    assert result.stdout.strip() == "1"
+

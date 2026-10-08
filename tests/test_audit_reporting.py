@@ -101,3 +101,51 @@ def test_explicitly_unknown_token_component_does_not_become_a_partial_total():
     treatment = {**control, "input_tokens": None}
     assert paired_comparison([control], [treatment])["tokens"]["n"] == 0
     assert calculate_metrics([treatment])["total_tokens"] is None
+
+
+def test_ceiling_effect_verdict_recommends_redesign_instead_of_more_repetitions():
+    runs = {
+        "control": [
+            {"model": "m", "task_id": f"t{i}", "repetition": 1, "arm": "control",
+             "score": 1.0, "grade_status": "graded", "status": "ok", "duration": 1, "cost": 0.1,
+             "success": True}
+            for i in range(5)
+        ],
+        "treatment": [
+            {"model": "m", "task_id": f"t{i}", "repetition": 1, "arm": "treatment",
+             "score": 1.0, "grade_status": "graded", "status": "ok", "duration": 1, "cost": 0.1,
+             "success": True}
+            for i in range(5)
+        ],
+    }
+    results = {
+        "name": "ceiling_eval", "models": ["m"], "tasks": [f"t{i}" for i in range(5)],
+        "tasks_count": 5, "runs_per_arm": 1, "runs": runs, "valid": True,
+    }
+    terminal = _format_results(results)
+    report = build_markdown_report(results)
+    assert "Tasks at ceiling: control already scores 100%" in terminal
+    assert "Redesign tasks with harder challenges rather than adding repetitions" in terminal
+    assert "Tasks at ceiling: control already scores 100%" in report
+    assert "Redesign tasks with harder challenges rather than adding repetitions" in report
+
+
+def test_denials_in_verdict_headline_and_confound_callout():
+    from skilldiff.reporter import _verdict
+
+    paired = {
+        "pairs": 5,
+        "score": {"mean_diff": 0.2, "n": 5, "ci_low": 0.1, "ci_high": 0.3},
+    }
+    # Asymmetric denials: should flag confound and elevate kind to warning
+    sentence, kind = _verdict(paired, "skill", control_denials=2, treatment_denials=0)
+    assert "denials: control 2, treatment 0 (confound)" in sentence
+    assert kind == "warning"
+
+    # Symmetric denials: should note denials without confound flag or warning
+    sentence, kind = _verdict(paired, "skill", control_denials=1, treatment_denials=1)
+    assert "denials: control 1, treatment 1" in sentence
+    assert "(confound)" not in sentence
+    assert kind == "tip"
+
+

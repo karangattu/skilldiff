@@ -109,7 +109,7 @@ TASK_KEYS = frozenset(
     }
 )
 GRADER_KEYS = frozenset({"type", "command", "rubric", "prompt", "model"})
-VALIDATION_KEYS = frozenset({"good", "broken", "bad"})
+VALIDATION_KEYS = frozenset({"good", "broken", "bad", "reference", "deprecated"})
 
 
 def validate_string(value: Any, key: str, *, nullable: bool = False) -> None:
