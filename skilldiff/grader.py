@@ -24,14 +24,18 @@ MAX_ENV_TEXT = 64_000
 DEFAULT_GRADER_TIMEOUT = 600
 
 
+DEFAULT_BYTECODE_IGNORES = ["__pycache__/*", "*.pyc", "*/__pycache__/*", "*/*.pyc"]
+
+
 def check_blast_radius(
     changed_files: list[str],
     allowed_paths: list[str],
     forbidden_paths: list[str],
     ignore_paths: Optional[list[str]] = None,
 ) -> Optional[str]:
+    combined_ignores = (ignore_paths or []) + DEFAULT_BYTECODE_IGNORES
     for file_path in changed_files:
-        if ignore_paths and path_matches(file_path, ignore_paths):
+        if path_matches(file_path, combined_ignores):
             continue
         if path_matches(file_path, forbidden_paths):
             pattern = next(p for p in forbidden_paths if path_matches(file_path, [p]))

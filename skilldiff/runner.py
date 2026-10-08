@@ -515,6 +515,7 @@ class AgentRunner:
         # Harnesses that resolve their project directory from PWD (Bun/OpenCode,
         # for example) otherwise operate on the caller's directory.
         env["PWD"] = str(cwd.resolve())
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         if temp_dir is not None:
             for key in ("TMPDIR", "TMP", "TEMP"):
                 env[key] = str(temp_dir.resolve())
@@ -571,7 +572,7 @@ class AgentRunner:
                 exec_cmd.extend(["-v", f"{source.resolve()}:{target}:ro"])
             container_env = {
                 key: env[key]
-                for key in (*CONTAINER_AUTH_VARS, *(forward_env or []),
+                for key in (*CONTAINER_AUTH_VARS, "PYTHONDONTWRITEBYTECODE", *(forward_env or []),
                             *(("TMPDIR", "TMP", "TEMP") if temp_dir is not None else ()))
                 if key in env
             }

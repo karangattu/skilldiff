@@ -527,3 +527,14 @@ def test_validate_grader_flags_deprecated_api(tmp_path):
     assert report["verdict"] == "deprecated-api-used"
     assert any("uses deprecated API 'render.download'" in c for c in report["checks"])
 
+
+def test_check_blast_radius_ignores_pycache_by_default():
+    changed = [
+        "app.py",
+        "__pycache__/app.cpython-312.pyc",
+        "subdir/__pycache__/helper.cpython-312.pyc",
+        "nested/foo.pyc",
+    ]
+    violation = check_blast_radius(changed, allowed_paths=["app.py"], forbidden_paths=[])
+    assert violation is None
+

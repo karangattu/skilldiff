@@ -276,6 +276,10 @@ prompt: |
   TODO: describe a realistic request that your skill is meant to help with.
   Don't mention the skill: the point is to see whether the agent uses it on its own.
 
+grader_ignore:
+  - "__pycache__/*"
+  - "*.pyc"
+
 grader:
   type: command
   # Exit 0 = pass, or print JSON such as {"score": 0.75, "success": false}.
@@ -933,6 +937,14 @@ def cmd_check(args: argparse.Namespace) -> int:
                     )
             except Exception:
                 pass
+        if fixture and fixture.is_dir():
+            has_py = any(p.suffix == ".py" for p in fixture.rglob("*") if p.is_file())
+            g_ignore = getattr(task, "grader_ignore", None) or []
+            if has_py and not any("pyc" in pat or "pycache" in pat for pat in g_ignore):
+                warn(
+                    f"task {task.id}: fixture contains Python files but grader_ignore "
+                    "does not cover bytecode (*.pyc, __pycache__/*)"
+                )
         for message in scope_pattern_warnings(
             task.id,
             getattr(task, "forbidden_paths", None) or [],
