@@ -967,3 +967,24 @@ def test_custom_arm_labels_consistent():
     assert "| Task | Baseline v1 | Candidate v2 | Δ score (paired mean) | Better/worse/tie |" in md
     assert "| Metric | Baseline v1 | Candidate v2 | Paired change | 95% CI | Reading |" in md
 
+
+def test_source_size_signed_percentage_without_reduction():
+    control = _runs("control", [1.0], 0.5)
+    treatment = _runs("treatment", [1.0], 0.5, skill_invoked=True)
+    results = _results(
+        control,
+        treatment,
+        preset="compression",
+        skill_comparison={
+            "preset": "compression",
+            "source_bytes_a": 160176,
+            "source_bytes_b": 172934,
+        },
+    )
+    md = reporter.build_markdown_report(results)
+    assert "160176 bytes → minified 172934 bytes (+8.0%)" in md
+    assert "static reduction" not in md
+    assert "reduction" not in md
+    assert "**Source size:** 160176 → 172934 bytes (+8.0%)" in md
+
+

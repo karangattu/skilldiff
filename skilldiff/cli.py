@@ -295,7 +295,7 @@ SKILLDIFF_DIFF_FILE (a git diff of its changes), SKILLDIFF_TASK_DIR.
 import json
 
 checks = [
-    True,  # TODO: replace with real checks, e.g. run tests or inspect files
+    False,  # TODO: replace with real checks, e.g. run tests or inspect files
 ]
 score = sum(checks) / len(checks)
 print(json.dumps({"score": score, "success": all(checks), "checks": checks}))
@@ -421,8 +421,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     print("Initialized skilldiff experiment:")
     for path in created:
         print(f"  - {path}")
-    print()
     if skill_arg:
+        print(
+            "Warning: graders/my_first_task.py is a placeholder template that fails until replaced."
+        )
         print("Next steps:")
         print("  1. Put a small test project in fixtures/my-project/.")
         print("  2. Fill in tasks/my-first-task.yaml and graders/my_first_task.py.")
@@ -498,6 +500,7 @@ def _init_skill_ab(
            _nested_task(CUSTOM_TASK_YAML, "my-held-out-task"), force)
     _write(root / "graders" / "my_first_task.py", CUSTOM_GRADER, force)
     (root / "fixtures" / "my-project").mkdir(parents=True, exist_ok=True)
+    print("Warning: graders/my_first_task.py is a placeholder template that fails until replaced.")
     print(f"Initialized skill A/B experiment in {root} (A={rel_a}, B={rel_b})")
     print("Same fixtures run with skill A vs skill B, interleaved and paired.")
     return 0
@@ -551,6 +554,29 @@ grader:
     _write(root / "tasks" / "heldout" / "my-held-out-task.yaml",
            _nested_task(task_template, "my-held-out-task"), force)
     _write(root / "graders" / "my_first_task.py", CUSTOM_GRADER, force)
+    print("Warning: graders/my_first_task.py is a placeholder template that fails until replaced.")
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "diff", "--name-only", f"{base}...{head}"],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            proc = subprocess.run(
+                ["git", "-C", str(repo), "diff", "--name-only", base, head],
+                capture_output=True,
+                text=True,
+            )
+        if proc.returncode == 0:
+            diff_lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            if any("SKILL.md" in line for line in diff_lines) and pr_mode != "agent":
+                print(
+                    "Warning: The PR touches a SKILL.md path, but the chosen mode "
+                    f"'{pr_mode}' does not install skills into workspaces. Suggest using "
+                    "the skill A/B preset (--skill-a / --skill-b) as an alternative."
+                )
+    except Exception:
+        pass
     print(f"Initialized PR #{args.pr} experiment in {root}")
     print("Fetch the GitHub PR head into your local repository before check/run:")
     print(f"  git -C {shlex.quote(str(repo))} fetch origin {head}:{head}")
@@ -675,6 +701,17 @@ def cmd_check(args: argparse.Namespace) -> int:
         )
         if comparison.get("mode") == "correctness":
             ok("correctness mode: graders run on untouched revisions, no agent sessions")
+            if comparison.get("touched_skills"):
+                warn(
+                    f"PR touches skill(s) {', '.join(comparison['touched_skills'])}, but "
+                    "pr.mode is 'correctness' which does not install skills; suggest using "
+                    "pr.mode 'agent' or skill A/B preset (--skill-a / --skill-b)"
+                )
+        elif comparison.get("touched_skills"):
+            ok(
+                f"PR touches skill(s): {', '.join(comparison['touched_skills'])}; "
+                "installed into agent workspaces"
+            )
 
     if getattr(cfg, "preset", None):
         ok(f"preset: {cfg.preset}")
@@ -697,8 +734,8 @@ def cmd_check(args: argparse.Namespace) -> int:
             if sizes.get("skill_a") or sizes.get("skill_b"):
                 ba = int(sizes.get("skill_a") or 0)
                 bb = int(sizes.get("skill_b") or 0)
-                red = (ba - bb) / ba * 100 if ba else 0
-                ok(f"source size: {ba} → {bb} bytes ({red:+.1f}% static reduction)")
+                pct = (bb - ba) / ba * 100 if ba else 0
+                ok(f"source size: {ba} → {bb} bytes ({pct:+.1f}%)")
         except Exception:
             pass
         if getattr(cfg, "preset", None) == "compression":
@@ -907,8 +944,19 @@ def cmd_check(args: argparse.Namespace) -> int:
                 for arm, installed in (("control", cfg.is_skill_comparison), ("treatment", True)):
                     source = (cfg.skill_b if arm == "treatment" and cfg.is_skill_comparison
                               else check_skill)
-                    probe_ws = Workspace(Path(tmp) / arm / "workspace", installed, source,
-                                         fixture, cfg.harness)
+                    probe_ws = Workspace(
+                        Path(tmp) / arm / "workspace",
+                        installed,
+                        source,
+                        fixture,
+                        cfg.harness,
+                        source_commit=(comparison or {}).get(f"{arm}_commit"),
+                        pr_touched_skills=(
+                            (comparison or {}).get("touched_skills")
+                            if (comparison and (comparison.get("mode") or "agent") == "agent")
+                            else None
+                        ),
+                    )
                     try:
                         probe_ws.setup()
                         expected = ([read_skill_name(path) or path.name
@@ -956,12 +1004,35 @@ def cmd_check(args: argparse.Namespace) -> int:
                     f"task {task.id}: fixture contains Python files but grader_ignore "
                     "does not cover bytecode (*.pyc, __pycache__/*)"
                 )
+            allowed_domains = getattr(cfg.claude, "allowed_domains", None) or []
+            if has_py and not allowed_domains:
+                warn(
+                    f"task {task.id}: fixture contains Python files but allowed_domains "
+                    "is empty; add 'pypi.org' and 'files.pythonhosted.org' if agents "
+                    "need pip install"
+                )
         for message in scope_pattern_warnings(
             task.id,
             getattr(task, "forbidden_paths", None) or [],
             getattr(task, "grader_ignore", None) or [],
         ):
             warn(message)
+        if task.grader and task.grader.command:
+            for part in task.grader.command.split():
+                if part.endswith(".py") or part.endswith(".sh"):
+                    p = Path(part.replace("$SKILLDIFF_TASK_DIR", str(task_dir)))
+                    if not p.is_absolute():
+                        p = (task_dir / p).resolve()
+                    if p.is_file():
+                        try:
+                            content = p.read_text(encoding="utf-8")
+                            if "TODO: replace with real checks" in content:
+                                warn(
+                                    f"task {task.id}: grader {p.name} is a placeholder template "
+                                    "that fails until replaced with real checks"
+                                )
+                        except Exception:
+                            pass
         if not (task.grader and (task.grader.command or task.grader.type in {"llm", "rubric"})):
             warn(f"task {task.id}: no grader, so every run scores N/A (only cost/time compared)")
             continue
@@ -980,6 +1051,11 @@ def cmd_check(args: argparse.Namespace) -> int:
                 source_commit=(comparison or {}).get("control_commit"),
                 strip_skill_dirs=(
                     [cfg.skill_b] if cfg.is_skill_comparison and cfg.skill_b else None
+                ),
+                pr_touched_skills=(
+                    (comparison or {}).get("touched_skills")
+                    if (comparison and (comparison.get("mode") or "agent") == "agent")
+                    else None
                 ),
             )
             try:
@@ -1506,8 +1582,12 @@ def _format_results(results: dict) -> str:
             try:
                 ba = int(skill_comparison.get("source_bytes_a") or 0)
                 bb = int(skill_comparison.get("source_bytes_b") or 0)
-                red = float(skill_comparison.get("source_reduction_pct") or 0)
-                sections.append(f"Source size: {ba} → {bb} bytes ({red:+.1f}%)")
+                pct = (
+                    (bb - ba) / ba * 100
+                    if ba
+                    else (-float(skill_comparison.get("source_reduction_pct") or 0))
+                )
+                sections.append(f"Source size: {ba} → {bb} bytes ({pct:+.1f}%)")
             except Exception:
                 pass
     elif comparison:
