@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import asdict, dataclass
@@ -1221,6 +1222,7 @@ class ExperimentRunner:
                     "tool_calls": res.tool_calls,
                     "skill_invoked": res.skill_invoked,
                     "skill_available": res.skill_available,
+                    "permission_denials": res.permission_denials,
                     "files_changed": files,
                     "score": grade.score,
                     "success": grade.success,
@@ -1923,6 +1925,23 @@ def _run_warnings(
                 f"{' or '.join(kinds)}; their scores are N/A and excluded from means. "
                 "These are evaluation-infra failures, shown with valid-pair counts."
             )
+    denied_arms = []
+    for arm_name, runs in (("control", control_runs), (treatment_label, treatment_runs),
+                           ("baseline", baseline_runs or [])):
+        denied = [r for r in runs if r.get("permission_denials")]
+        if denied:
+            tools = Counter(str(t) for r in denied for t in r["permission_denials"])
+            named = ", ".join(f"{tool} ×{count}" for tool, count in tools.most_common())
+            denied_arms.append(f"{len(denied)} of {len(runs)} {arm_name} runs ({named})")
+    if denied_arms:
+        warnings.append(
+            "The harness denied tool calls in " + "; ".join(denied_arms) + ". Headless "
+            "sessions cannot answer permission prompts, so those agents worked without the "
+            "denied tools and scores reflect the permission setup as well as the skill. "
+            "Keep the harness permission defaults (`claude.sandbox`, `codex.sandbox`, "
+            "`dangerously_skip_permissions` for OpenCode and Antigravity), allow the needed "
+            "network (`claude.allowed_domains`, `codex.network_access`), then rerun."
+        )
 
     if is_skill_comparison:
         # A/B: both arms are supposed to carry a revision. Flag only genuine

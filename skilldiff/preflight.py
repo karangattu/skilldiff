@@ -31,6 +31,78 @@ def protected_read_paths(config: ExperimentConfig) -> list[str]:
     return paths
 
 
+# Where each harness keeps login and session state it must write during a run.
+HARNESS_STATE_DIRS = {
+    "claude": ("~/.claude",),
+    "codex": ("$CODEX_HOME", "~/.codex"),
+    "opencode": ("$XDG_DATA_HOME/opencode", "~/.local/share/opencode"),
+    "antigravity": ("~/.gemini",),
+}
+
+# How to let the agent that started skilldiff run it outside its own sandbox.
+DRIVER_FIXES = {
+    "claude": "In Claude Code, allow `Bash(skilldiff *)`, add `skilldiff *` to "
+              "`sandbox.excludedCommands`, and call skilldiff as a plain command (no `cd`, "
+              "redirect, or `$(...)`, which keep it sandboxed)",
+    "codex": "In Codex, add `prefix_rule(pattern=[\"skilldiff\"], decision=\"allow\")` to "
+             "~/.codex/rules/default.rules, approve running skilldiff outside the sandbox, "
+             "or start Codex with `--sandbox danger-full-access`",
+    "opencode": "In OpenCode, allow `\"skilldiff *\": \"allow\"` under `permission.bash`",
+    "antigravity": "In Antigravity, add `command(skilldiff)` and `unsandboxed(skilldiff)` to "
+                   "`permissions.allow` in ~/.gemini/antigravity-cli/settings.json",
+}
+
+
+def driving_agent() -> str | None:
+    """The agent CLI whose shell started this process, when it says so."""
+    if os.environ.get("CODEX_SANDBOX") or os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED"):
+        return "codex"
+    if os.environ.get("CLAUDECODE"):
+        return "claude"
+    if os.environ.get("OPENCODE"):
+        return "opencode"
+    if os.environ.get("ANTIGRAVITY_CONVERSATION_ID"):
+        return "antigravity"
+    return None
+
+
+def host_sandbox_problems(harness: str, isolation: str) -> list[str]:
+    """Reasons agent sessions started from this process would fail before doing any work.
+
+    Agents that drive skilldiff often run shell commands in their own sandbox,
+    which blocks the network and the harness's state directory. Every session
+    then fails as a harness error, so detect it before paying for a run.
+    """
+    if isolation in {"docker", "podman"}:
+        return []
+    problems = []
+    if os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED"):
+        problems.append("network access is disabled for this process "
+                        "(CODEX_SANDBOX_NETWORK_DISABLED is set)")
+    elif os.environ.get("CODEX_SANDBOX"):
+        problems.append(f"this process runs inside Codex's {os.environ['CODEX_SANDBOX']} "
+                        "sandbox, where nested agent sandboxes cannot start")
+    for raw in HARNESS_STATE_DIRS.get(harness, ()):
+        if raw.startswith("$") and not os.environ.get(raw[1:].split("/")[0]):
+            continue
+        state = Path(os.path.expandvars(raw)).expanduser()
+        if not state.is_dir():
+            continue
+        try:
+            with tempfile.NamedTemporaryFile(dir=state, prefix=".skilldiff-write-check-"):
+                pass
+        except OSError as exc:
+            problems.append(f"cannot write {state} ({exc.strerror or exc}); "
+                            f"{harness} keeps its login and session state there")
+        break
+    return problems
+
+
+def host_sandbox_fix() -> str:
+    fix = DRIVER_FIXES.get(driving_agent() or "")
+    return (f"{fix}, or run" if fix else "Run") + " skilldiff in your own terminal"
+
+
 def codex_env(config: CodexConfig, isolation: str, scratch: Path | None) -> dict[str, str]:
     env = os.environ.copy()
     if config.auth in {"subscription", "stored"}:

@@ -91,6 +91,7 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
     blast_violations = []
     agent_failures = []
     grader_failures = []
+    permission_denied = []
     token_bloat_tasks = []
     recommendations = []
     unknown_adoption_runs = 0
@@ -117,6 +118,9 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
                         "error": record.get("error"),
                     }
                 )
+            denials = record.get("permission_denials")
+            if isinstance(denials, list) and denials:
+                permission_denied.append(identity | {"tools": [str(t) for t in denials]})
             feedback = str(record.get("feedback") or "")
             blast = record.get("grade_error_kind") == "blast_radius" or is_blast_violation(feedback)
             if blast:
@@ -199,6 +203,16 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         recommendations.append(
             f"Grader failures: {len(grader_failures)} result(s) could not be evaluated. "
             "Fix the grader errors or timeouts and rerun the affected pairs."
+        )
+    if permission_denied:
+        tools = sorted({tool for item in permission_denied for tool in item["tools"]})
+        recommendations.append(
+            f"Permission denials: the harness refused tool calls ({', '.join(tools)}) in "
+            f"{len(permission_denied)} session(s) across "
+            f"{', '.join(sorted({r['arm'] for r in permission_denied}))}. Headless sessions "
+            "cannot answer prompts and sandboxed commands fail, so those agents worked "
+            "without the tools. Fix the harness permissions (see `skilldiff check`) before "
+            "blaming the agent or the skill."
         )
     planned_pairs = _planned_pairs(data)
     expected_keys = _planned_keys(data)
@@ -327,6 +341,7 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         "blast_violations": blast_violations,
         "agent_failures": agent_failures,
         "grader_failures": grader_failures,
+        "permission_denied": permission_denied,
         "token_bloat_tasks": token_bloat_tasks,
         "recommendations": recommendations,
     }

@@ -13,6 +13,7 @@ import yaml
 
 from skilldiff import __version__
 from skilldiff.config import (
+    ExperimentConfig,
     find_skill_dirs,
     load_experiment,
     read_skill_frontmatter,
@@ -29,6 +30,7 @@ from skilldiff.experiment import (
 from skilldiff.grader import Grader
 from skilldiff.host_exposure import host_exposure_warnings
 from skilldiff.persistence import atomic_json, read_json, run_lock
+from skilldiff.preflight import host_sandbox_fix, host_sandbox_problems
 from skilldiff.reporter import (
     _paired_comparison_metrics,
     build_decision_context,
@@ -38,9 +40,14 @@ from skilldiff.reporter import (
 )
 from skilldiff.revisions import resolve_comparison
 from skilldiff.runner import (
+    EXTERNAL_ISOLATION,
+    PROMPTING_MODES,
     AgentRunner,
     auth_login_hint,
+    claude_sandbox_settings,
+    codex_sandbox_args,
     looks_like_auth_error,
+    opencode_approval_flag,
     resolve_container_image,
     validate_container_auth,
 )
@@ -63,18 +70,21 @@ HARNESS_BLOCKS = {
   max_budget_usd: 2.00      # per session
   permission_mode: acceptEdits
   isolate: true             # ignore user-level skills, plugins, and CLAUDE.md
-  allowed_tools: []         # e.g. ["Bash(my-cli *)"] for commands the skill runs
+  sandbox: true             # Bash runs in Claude's sandbox without prompts, inside the workspace
+  allowed_domains: []       # hosts commands may reach, e.g. ["pypi.org", "*.npmjs.org"]
+  allowed_tools: []         # e.g. ["Bash(my-cli *)"] when not using the sandbox
 """,
     "codex": """codex:
   auth: stored
-  sandbox: workspace-write
+  sandbox: workspace-write  # no prompts; writes stay in the workspace
+  network_access: false     # true lets commands install packages or fetch docs
 """,
     "opencode": """opencode:
   service: go
-  dangerously_skip_permissions: true
+  dangerously_skip_permissions: true  # passes --auto (v2) so tools never wait for approval
 """,
     "antigravity": """antigravity:
-  dangerously_skip_permissions: true
+  dangerously_skip_permissions: true  # print mode otherwise soft-denies tools that ask
 """,
 }
 
@@ -550,6 +560,61 @@ grader:
 # ----------------------------------------------------------------------------- check
 
 
+def permission_summary(cfg: ExperimentConfig) -> list[tuple[str, str]]:
+    """What agent sessions may do without asking, as (ok|warn, message) lines.
+
+    Headless sessions cannot answer permission prompts, so anything that would
+    ask is refused. Say up front which tools will run and where they are confined.
+    """
+    harness, isolation = cfg.harness, cfg.isolation
+    external = isolation in EXTERNAL_ISOLATION
+    lines: list[tuple[str, str]] = []
+    if harness == "claude":
+        claude = cfg.claude
+        if claude_sandbox_settings(claude, isolation):
+            network = (", ".join(claude.allowed_domains) if claude.allowed_domains
+                       else "none (set claude.allowed_domains)")
+            lines.append(("ok", "claude permissions: Bash runs in Claude's sandbox without "
+                                "prompts; writes stay in the workspace; graders and skill "
+                                f"sources are unreadable to commands; network hosts: {network}"))
+        elif claude.sandbox and isolation == "macos" and claude.permission_mode in PROMPTING_MODES:
+            lines.append(("ok", "claude permissions: bypassPermissions inside the macOS "
+                                "isolation boundary"))
+        elif claude.permission_mode in PROMPTING_MODES and not claude.allowed_tools:
+            lines.append(("warn", f"claude permission_mode {claude.permission_mode} without "
+                                  "claude.sandbox or allowed_tools: headless sessions deny Bash "
+                                  "commands, so agents cannot run code or tests"
+                          + ("; inside a container use permission_mode: bypassPermissions"
+                             if external else "")))
+    elif harness == "codex":
+        args = codex_sandbox_args(cfg.codex, isolation)
+        if "--dangerously-bypass-approvals-and-sandbox" in args:
+            where = (f"the {isolation} isolation boundary" if external
+                     else "nothing (no sandbox)")
+            lines.append(("ok" if external else "warn",
+                          f"codex permissions: no prompts; commands confined by {where}"))
+        else:
+            network = "on" if "sandbox_workspace_write.network_access=true" in args else (
+                "off (set codex.network_access: true to allow installs)")
+            lines.append(("ok", f"codex permissions: {cfg.codex.sandbox} sandbox, no prompts; "
+                                f"network {network}"))
+    elif harness == "opencode" and not external:
+        lines.append(("ok" if cfg.opencode.dangerously_skip_permissions else "warn",
+                      "opencode permissions: "
+                      + ("tools auto-approved; OpenCode has no OS sandbox, so use "
+                         "isolation: docker to confine commands"
+                         if cfg.opencode.dangerously_skip_permissions
+                         else "prompts are auto-rejected in headless runs")))
+    elif harness == "antigravity":
+        lines.append(("ok" if cfg.antigravity.dangerously_skip_permissions else "warn",
+                      "antigravity permissions: "
+                      + ("tools auto-approved; commands are not confined unless you use "
+                         "isolation: docker"
+                         if cfg.antigravity.dangerously_skip_permissions
+                         else "tools that need approval are soft-denied in print mode")))
+    return lines
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     config_path = Path(args.config)
     ok_count = 0
@@ -665,6 +730,12 @@ def cmd_check(args: argparse.Namespace) -> int:
         if fm_name and fm_name != skill_dir.name:
             warn(f"frontmatter name `{fm_name}` differs from directory `{skill_dir.name}`")
 
+    sandboxed = host_sandbox_problems(cfg.harness, cfg.isolation)
+    for problem in sandboxed:
+        fail(f"host: {problem}")
+    if sandboxed:
+        print(f"        fix: {host_sandbox_fix()}", flush=True)
+
     runner = AgentRunner()
     binary = runner.binary_for(cfg.harness, cfg)
     if image_id:
@@ -711,10 +782,27 @@ def cmd_check(args: argparse.Namespace) -> int:
                     "could not probe `opencode run --help`; optional flags are "
                     "omitted and a rejected flag is recovered at run time"
                 )
-            elif "--dir" not in flags:
-                ok("opencode run probe: no --dir; skilldiff launches in cwd instead")
             else:
-                ok("opencode run probe: --dir supported")
+                if "--dir" not in flags:
+                    ok("opencode run probe: no --dir; skilldiff launches in cwd instead")
+                else:
+                    ok("opencode run probe: --dir supported")
+                approve = opencode_approval_flag(flags)
+                if not cfg.opencode.dangerously_skip_permissions:
+                    warn(
+                        "opencode.dangerously_skip_permissions is false: headless runs "
+                        "cannot answer permission prompts, so tools that ask are refused"
+                    )
+                elif approve:
+                    ok(f"opencode run probe: approves tools with {approve}")
+                else:
+                    fail(
+                        "opencode run has neither --auto nor --dangerously-skip-permissions; "
+                        "tools that ask for permission would be refused in every session"
+                    )
+
+    for level, message in permission_summary(cfg):
+        (ok if level == "ok" else warn)(message)
 
     if cfg.harness == "claude":
         if cfg.claude.auth == "subscription" and os.environ.get("ANTHROPIC_API_KEY"):
@@ -1023,6 +1111,16 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"No tasks match {task_filter}", file=sys.stderr)
             return 1
 
+    sandboxed = (
+        [] if os.environ.get("SKILLDIFF_MOCK_RUNNER")
+        or (exp_config.pr and getattr(exp_config.pr, "mode", "agent") == "correctness")
+        else host_sandbox_problems(exp_config.harness, exp_config.isolation)
+    )
+    if sandboxed:
+        print("Cannot start agent sessions from this process: " + "; ".join(sandboxed)
+              + f". Fix: {host_sandbox_fix()}.", file=sys.stderr)
+        return 1
+
     quiet = bool(getattr(args, "quiet", False))
     resume_arg = getattr(args, "resume", False)
     resume_path = getattr(args, "resume_from", None)
@@ -1292,6 +1390,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     print(f"  Usable score pairs: {report.get('usable_score_pairs')}/{report.get('total_pairs')}")
     print(f"  Agent failures: {len(report.get('agent_failures', []))}")
     print(f"  Grader failures: {len(report.get('grader_failures', []))}")
+    print(f"  Permission denials: {len(report.get('permission_denied', []))} session(s)")
     under = report.get("under_triggered", [])
     over = report.get("over_triggered", [])
     regs = report.get("regressions", [])

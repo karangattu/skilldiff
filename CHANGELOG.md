@@ -6,6 +6,43 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- `claude.sandbox` (default `true`) runs Bash inside Claude Code's own sandbox, so
+  headless sessions run commands without approval prompts, write only to the
+  workspace, and cannot read grader, solution, run, or skill sources from commands.
+  `claude.allowed_domains` lists the hosts sandboxed commands may reach.
+- `codex.network_access` enables network access in the `workspace-write` sandbox.
+- Sessions record `permission_denials` for every harness: Claude's result field,
+  Codex sandbox violations and exec-policy rejections, OpenCode's auto-rejected
+  permission requests, and Antigravity's soft-denied tools. Reports warn per arm and
+  `skilldiff diagnose` lists the sessions, so denied tools cannot pass as low scores.
+- `check` prints what sessions may do without asking for each harness. It fails with
+  `host:` when the process running skilldiff has no network or cannot write the
+  harness's login folder (for example inside Codex's or Claude Code's sandbox), and
+  prints the setting that fixes it for the agent that started skilldiff. `run`
+  refuses to start in that state.
+- The README has an "Ask your agent" section with copy-paste requests and one-time
+  setup for each agent. Detailed reference material moved to `docs/reference.md`.
+
+### Changed
+
+- OpenCode sessions use `--auto` when the CLI advertises it (v2) and
+  `--dangerously-skip-permissions` otherwise.
+- Codex sessions use `--ephemeral` when supported, so local sessions do not persist
+  and feed Codex memories that a later control session could read.
+- Variables that tie a process to the parent agent's session (Claude Code, OpenCode,
+  Antigravity) are removed from every child CLI, not only Claude.
+- `claude.effort` accepts `xhigh`, and `claude.permission_mode` accepts `manual`.
+
+### Fixed
+
+- Under `isolation: macos` (and containers), Codex runs with its own sandbox
+  bypassed. Its seatbelt cannot start inside another sandbox, so every shell command
+  failed with `sandbox_apply: Operation not permitted` while the session still ended
+  `ok`. Claude uses `bypassPermissions` inside macOS isolation for the same reason.
+- Multi-turn sessions keep the failure kind of the turn that failed.
+
 ## [0.16.0] - 2026-10-07
 
 ### Added

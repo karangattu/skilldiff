@@ -156,13 +156,14 @@ environment variables: `SKILLDIFF_RESPONSE_FILE` (the agent's final message),
 `SKILLDIFF_DIFF_FILE` (the agent's git diff), `SKILLDIFF_CHANGED_FILES_FILE` (the
 changed paths, one per line, without `grader_ignore` paths), and `SKILLDIFF_TASK_DIR`.
 
-If the skill runs CLI commands, allow-list them per harness so both arms get the
-same permissions. For Claude use `claude.allowed_tools` (for example
-`["Bash(mytool *)"]`); for Codex use `codex.sandbox` (default
-`workspace-write`); for OpenCode and Antigravity use
-`dangerously_skip_permissions`. Tool permissions and write sandboxes alone do
-not establish read isolation. Use `isolation: docker`/`podman` or an enforced read
-sandbox to keep agents from reading grader files or skills outside the workspace.
+**Permissions.** Sessions run headless, so any tool that would prompt is refused and
+the agent works without it. Keep the defaults (`claude.sandbox: true`,
+`codex.sandbox: workspace-write`, and `dangerously_skip_permissions: true` for
+OpenCode and Antigravity). They avoid prompts and give both arms the same permissions.
+If tasks need the network, set `claude.allowed_domains` or `codex.network_access:
+true`. Reports and `skilldiff diagnose` flag denied tools for every harness; fix
+them and rerun before interpreting scores. For defaults and read-isolation limits, see
+[preflight safeguards](references/preflight.md).
 
 ## 4. Validate, then smoke-test
 
@@ -203,19 +204,21 @@ are no agent sessions to inspect; check the graded revision outputs instead.
 spend. **Confirm with the user before you run more than a smoke test.**
 
 **Running from inside an agent:** skilldiff starts separate, non-interactive agent
-sessions (`claude -p`, `codex exec`, `opencode run`, `agy -p`). They need network
-access and a signed-in CLI for whichever harness the experiment uses. Keep these
-points in mind:
+sessions (`claude -p`, `codex exec`, `opencode run`, `agy -p`) that need network
+access and write access to their login directory.
 
-- A full run usually takes longer than your shell tool's timeout. Start it in the
-  background, redirect its output to a log file, and poll the log or
-  `skilldiff results`.
-- If your sandbox blocks network access or starting other agent CLIs, the sessions
-  fail with auth or connection errors. The report lists them as errors. Don't retry
-  in a loop. Give the user the exact `skilldiff run ...` command to run in their own
-  terminal, then read the results with `skilldiff results`.
-- For Claude, `check` makes one tiny authenticated call (`--no-probe` skips it) and
-  fails with the login hint when the session has expired, before any run starts.
+- Run `skilldiff` as a plain command (paths via `-c`; no `cd`, pipes, redirects, or
+  `$(...)`) so the user's allow rule matches it.
+- If `check` shows `FAIL host: ...`, your shell is sandboxed and every session would
+  fail. Don't retry and don't change the user's agent settings yourself. Show the
+  user the `fix:` line, or give them the exact `skilldiff run ...` command for their
+  own terminal. Read the results afterwards with `skilldiff results`.
+- A full run usually takes longer than your shell tool's timeout. Start
+  `skilldiff run -c skill-eval/skilldiff.yaml` with your shell tool's background
+  option, check its progress output now and then, and read `skilldiff results` when
+  it ends.
+- For Claude, `check` makes one tiny authenticated call (`--no-probe` skips it) to
+  catch an expired login.
 - If `check` reports that the harness CLI is missing, or a smoke run fails with "Not
   logged in", ask the user to sign in with that harness's normal login (for example
   `claude auth login` or `opencode providers login`). Never ask for or handle their

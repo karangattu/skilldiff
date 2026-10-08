@@ -54,6 +54,10 @@ class RunResult:
     # None on ok runs. Kept separate from status so the reporter can refuse to
     # treat "the tool would not start" as a low agent score.
     failure_kind: Optional[str] = None
+    # Tool calls the harness refused (no one answers prompts in headless runs),
+    # e.g. ["Bash", "Edit"] for Claude, "bash" for OpenCode, or
+    # "shell (sandbox: filesystem)" for Codex. None when not reported.
+    permission_denials: Optional[list[str]] = None
 
 
 @dataclass
@@ -66,9 +70,10 @@ class ExecResult:
     cleanup_error: Optional[str] = None
 
 
-# Variables that tie a process to the Claude Code session it runs in. When skilldiff is
-# started from inside Claude Code (e.g. by the skilldiff skill), each agent session must
-# be independent, so these are removed. Auth and provider settings are left alone.
+# Variables that tie a process to the agent session it runs in. When skilldiff is
+# started from inside an agent (e.g. by the skilldiff skill), each agent session must
+# be independent, so these are removed from every child CLI. Auth and provider
+# settings are left alone.
 PARENT_SESSION_VARS = (
     "CLAUDECODE",
     "CLAUDE_PID",
@@ -89,6 +94,29 @@ PARENT_SESSION_VARS = (
     "CLAUDE_CODE_EAGER_FLUSH",
     "CLAUDE_CODE_REPORT_FINDINGS",
     "CLAUDE_CODE_DESKTOP_APP_VERSION",
+    "CLAUDE_CODE_OAUTH_SCOPES",
+    "CLAUDE_CODE_ORGANIZATION_UUID",
+    "CLAUDE_CODE_ACCOUNT_UUID",
+    "CLAUDE_CODE_USER_EMAIL",
+    "CLAUDE_CODE_TERMINAL_MCP_TOOLS",
+    "CLAUDE_CODE_DISABLE_CRON",
+    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE",
+    # A parent started with --bare sets this; children would skip CLAUDE.md and hooks.
+    "CLAUDE_CODE_SIMPLE",
+    "CLAUDE_CODE_SAFE_MODE",
+    "CLAUDE_AGENT_SDK_MCP_NO_PREFIX",
+    "CLAUDE_PREVIEW_CLASSIFIER_FLOOR",
+    "AI_AGENT",
+    # The same applies when OpenCode or Antigravity drives skilldiff: a child CLI
+    # must not attach to the parent's conversation, project, or local server.
+    "OPENCODE",
+    "OPENCODE_SESSION_ID",
+    "OPENCODE_TERMINAL",
+    "ANTIGRAVITY_CONVERSATION_ID",
+    "ANTIGRAVITY_PROJECT_ID",
+    "ANTIGRAVITY_LS_ADDRESS",
+    "ANTIGRAVITY_CSRF_TOKEN",
+    "ANTIGRAVITY_SIDECAR_UI_TOKEN",
 )
 
 # Container CLIs receive only explicit provider credentials/configuration.
@@ -237,6 +265,69 @@ def _opencode_error_message(stdout: str, stderr: str) -> Optional[str]:
     return stderr.strip() or None
 
 
+def opencode_approval_flag(
+    probed: set[str], skip: set[str] | frozenset[str] = frozenset()
+) -> Optional[str]:
+    """The flag that auto-approves tool permissions in this OpenCode version.
+
+    v1 advertises ``--dangerously-skip-permissions``; v2 advertises ``--auto`` and
+    keeps the old name as a hidden alias. Without approval, headless runs cannot
+    answer prompts and tools are refused.
+    """
+    for flag in ("--dangerously-skip-permissions", "--auto"):
+        if flag not in skip and (not probed or flag in probed):
+            return flag
+    return None
+
+
+EXTERNAL_ISOLATION = frozenset({"macos", "docker", "podman"})
+# Claude permission modes that ask before running commands. Headless sessions have
+# no one to answer, so the asks become denials.
+PROMPTING_MODES = frozenset({None, "acceptEdits", "default", "manual"})
+
+
+def claude_sandbox_settings(
+    claude_cfg: ClaudeConfig, isolation: str = "local", protected_paths: Optional[list[str]] = None
+) -> Optional[dict[str, Any]]:
+    """``--settings`` for Claude Code's own Bash sandbox, or None when it does not apply.
+
+    Sandboxed Bash runs without approval, writes only to the workspace and Claude's
+    temp directory, and reaches only ``allowed_domains``. Grader, solution, and skill
+    sources are unreadable to commands. The sandbox cannot start inside another one,
+    so external isolation replaces it.
+    """
+    if not claude_cfg.sandbox or isolation in EXTERNAL_ISOLATION:
+        return None
+    sandbox: dict[str, Any] = {
+        "enabled": True,
+        # Exit instead of silently running commands unsandboxed.
+        "failIfUnavailable": True,
+        "autoAllowBashIfSandboxed": True,
+        "allowUnsandboxedCommands": False,
+    }
+    if protected_paths:
+        sandbox["filesystem"] = {"denyRead": sorted(set(protected_paths))}
+    if claude_cfg.allowed_domains:
+        sandbox["network"] = {"allowedDomains": list(claude_cfg.allowed_domains)}
+    return {"sandbox": sandbox}
+
+
+def codex_sandbox_args(codex_cfg: CodexConfig, isolation: str = "local") -> list[str]:
+    """Codex's own sandbox flags for one session.
+
+    Codex's macOS seatbelt cannot start inside another sandbox
+    (``sandbox_apply: Operation not permitted``), and its Linux sandbox
+    usually lacks namespaces in containers. Under external isolation the
+    outer boundary confines the session, so Codex's sandbox is bypassed.
+    """
+    if codex_cfg.dangerously_bypass_approvals_and_sandbox or isolation in EXTERNAL_ISOLATION:
+        return ["--dangerously-bypass-approvals-and-sandbox"]
+    args = ["-s", codex_cfg.sandbox] if codex_cfg.sandbox else []
+    if codex_cfg.network_access and codex_cfg.sandbox == "workspace-write":
+        args.extend(["-c", "sandbox_workspace_write.network_access=true"])
+    return args
+
+
 def _opencode_unrecognized_flags(stdout: str, stderr: str) -> list[str]:
     """Flags OpenCode rejected, e.g. "Unrecognized flag: --dir in command ..."."""
     text = f"{stdout}\n{stderr}"
@@ -333,23 +424,24 @@ class AgentRunner:
         self._active: set[subprocess.Popen] = set()
         self._active_lock = threading.Lock()
         self._cancelled = False
-        # Cache of `opencode run --help` flags per binary, so capability
-        # detection happens once per process instead of per session.
-        self._opencode_flags: dict[str, set[str]] = {}
+        # Cache of `<cli> <subcommand> --help` flags, so capability detection
+        # happens once per process instead of per session.
+        self._cli_flags: dict[tuple[str, ...], set[str]] = {}
 
-    def opencode_run_flags(self, bin_path: str) -> set[str]:
-        """Long flags `opencode run` advertises, or an empty set if unknown.
+    def cli_flags(self, bin_path: str, *subcommand: str) -> set[str]:
+        """Long flags a CLI subcommand advertises, or an empty set if unknown.
 
         Empty means "could not probe" — callers must then avoid optional flags
-        rather than guess, because the same CLI rejects unknown flags outright.
+        rather than guess, because these CLIs reject unknown flags outright.
         """
-        cached = self._opencode_flags.get(bin_path)
+        key = (bin_path, *subcommand)
+        cached = self._cli_flags.get(key)
         if cached is not None:
             return cached
         flags: set[str] = set()
         try:
             proc = subprocess.run(
-                [bin_path, "run", "--help"],
+                [bin_path, *subcommand, "--help"],
                 capture_output=True,
                 text=True,
                 timeout=20,
@@ -359,8 +451,11 @@ class AgentRunner:
             flags = set(re.findall(r"--[a-z][a-z0-9-]+", text))
         except (OSError, subprocess.SubprocessError):
             flags = set()
-        self._opencode_flags[bin_path] = flags
+        self._cli_flags[key] = flags
         return flags
+
+    def opencode_run_flags(self, bin_path: str) -> set[str]:
+        return self.cli_flags(bin_path, "run")
 
     def terminate_all(self) -> None:
         """Kill running agent sessions and refuse new ones (used on Ctrl-C)."""
@@ -414,6 +509,8 @@ class AgentRunner:
 
         exec_cmd = list(cmd)
         env = dict(env)
+        for var in PARENT_SESSION_VARS:
+            env.pop(var, None)
         # Keep PWD consistent with the working directory we actually launch in.
         # Harnesses that resolve their project directory from PWD (Bun/OpenCode,
         # for example) otherwise operate on the caller's directory.
@@ -631,6 +728,7 @@ class AgentRunner:
         totals = dict.fromkeys(metrics, 0)
         skill_invoked = False
         skill_available = None
+        denials: Optional[list[str]] = None
         transcripts: list[str] = []
         last_res: Optional[RunResult] = None
 
@@ -656,6 +754,8 @@ class AgentRunner:
                 skill_invoked = True
             if res.skill_available is not None:
                 skill_available = res.skill_available
+            if res.permission_denials is not None:
+                denials = (denials or []) + res.permission_denials
             turn_header = (
                 f"--- TURN {idx + 1} ---\nPROMPT: {turn_prompt}\nRESPONSE:\n{res.response}"
             )
@@ -684,6 +784,8 @@ class AgentRunner:
             skill_invoked=skill_invoked,
             skill_available=skill_available,
             status=last_res.status,
+            failure_kind=last_res.failure_kind,
+            permission_denials=denials,
         )
 
     def preflight(self, cwd: Path, config: ExperimentConfig,
@@ -898,7 +1000,14 @@ class AgentRunner:
         detail = (result.error or result.status or "unknown failure").strip().splitlines()
         return False, (detail[0] if detail else "unknown failure")[:300]
 
-    def claude_command(self, prompt: str, model: str, claude_cfg: ClaudeConfig) -> list[str]:
+    def claude_command(
+        self,
+        prompt: str,
+        model: str,
+        claude_cfg: ClaudeConfig,
+        isolation: str = "local",
+        protected_paths: Optional[list[str]] = None,
+    ) -> list[str]:
         cmd = [
             claude_cfg.bin_path or self.claude_bin,
             "-p",
@@ -912,8 +1021,16 @@ class AgentRunner:
         ]
         if claude_cfg.isolate:
             cmd.extend(["--setting-sources", "project,local"])
-        if claude_cfg.permission_mode:
-            cmd.extend(["--permission-mode", claude_cfg.permission_mode])
+        settings = claude_sandbox_settings(claude_cfg, isolation, protected_paths or [])
+        if settings:
+            cmd.extend(["--settings", json.dumps(settings)])
+        permission_mode = claude_cfg.permission_mode
+        if claude_cfg.sandbox and isolation == "macos" and permission_mode in PROMPTING_MODES:
+            # The outer sandbox confines the session and Claude's own seatbelt cannot
+            # nest inside it, so commands would otherwise be denied rather than sandboxed.
+            permission_mode = "bypassPermissions"
+        if permission_mode:
+            cmd.extend(["--permission-mode", permission_mode])
         if claude_cfg.allowed_tools:
             cmd.extend(["--allowedTools", ",".join(claude_cfg.allowed_tools)])
         if claude_cfg.effort:
@@ -938,7 +1055,7 @@ class AgentRunner:
         temp_dir: Optional[Path] = None,
         protected_paths: Optional[list[str]] = None,
     ) -> RunResult:
-        cmd = self.claude_command(prompt, model, claude_cfg)
+        cmd = self.claude_command(prompt, model, claude_cfg, isolation, protected_paths)
         env = os.environ.copy()
         for var in PARENT_SESSION_VARS:
             env.pop(var, None)
@@ -981,6 +1098,7 @@ class AgentRunner:
             num_turns=parsed["num_turns"],
             skill_invoked=parsed["skill_invoked"] if skill_names else None,
             skill_available=parsed["skill_available"] if skill_names else None,
+            permission_denials=parsed["permission_denials"],
         )
         return _finalize_status(result, execution)
 
@@ -998,10 +1116,13 @@ class AgentRunner:
     ) -> RunResult:
         bin_path = codex_cfg.bin_path or self.codex_bin
         cmd = [bin_path, "exec", prompt, "-m", model, "--json"]
-        if codex_cfg.dangerously_bypass_approvals_and_sandbox:
-            cmd.append("--dangerously-bypass-approvals-and-sandbox")
-        elif codex_cfg.sandbox:
-            cmd.extend(["-s", codex_cfg.sandbox])
+        cmd.extend(codex_sandbox_args(codex_cfg, isolation))
+        # Persisted sessions feed Codex memories, which a later control session
+        # could read. Keep each session off disk when the CLI supports it.
+        if isolation not in {"docker", "podman"} and "--ephemeral" in self.cli_flags(
+            bin_path, "exec"
+        ):
+            cmd.append("--ephemeral")
 
         if codex_cfg.extra_args:
             cmd.extend(codex_cfg.extra_args)
@@ -1129,6 +1250,7 @@ class AgentRunner:
                 else None
             ),
             num_turns=num_turns or None,
+            permission_denials=codex_permission_denials(execution.stderr),
         )
         return _finalize_status(result, execution)
 
@@ -1164,11 +1286,9 @@ class AgentRunner:
             cmd = [bin_path, "run"]
             if "--format" not in skip:
                 cmd.extend(["--format", "json"])
-            if (
-                opencode_cfg.dangerously_skip_permissions
-                and "--dangerously-skip-permissions" not in skip
-            ):
-                cmd.append("--dangerously-skip-permissions")
+            approve = opencode_approval_flag(probed, skip)
+            if opencode_cfg.dangerously_skip_permissions and approve:
+                cmd.append(approve)
             if opencode_cfg.variant:
                 if "--variant" in skip or (probed and "--variant" not in probed):
                     # v2 carries the variant in the model id instead of a flag.
@@ -1309,6 +1429,7 @@ class AgentRunner:
             skill_invoked=(
                 detect_opencode_skill_load(stdout, skill_names) if skill_names else None
             ),
+            permission_denials=opencode_permission_denials(stdout, execution.stderr),
         )
         return _finalize_status(result, execution)
 
@@ -1426,6 +1547,7 @@ class AgentRunner:
             exit_code=exit_code,
             error=execution.stderr if exit_code != 0 else None,
             num_turns=num_turns,
+            permission_denials=antigravity_permission_denials(data, execution.stderr),
         )
         return _finalize_status(result, execution)
 
@@ -1483,6 +1605,7 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
         "error": None,
         "skill_invoked": False,
         "skill_available": None,
+        "permission_denials": None,
     }
     last_text: Optional[str] = None
     saw_result = False
@@ -1549,6 +1672,12 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             parsed["num_turns"] = (
                 int(event["num_turns"]) if event.get("num_turns") is not None else None
             )
+            denials = event.get("permission_denials")
+            if isinstance(denials, list):
+                parsed["permission_denials"] = [
+                    str(d.get("tool_name") or "unknown") if isinstance(d, dict) else "unknown"
+                    for d in denials
+                ]
             subtype = str(event.get("subtype") or "")
             if event.get("is_error") or subtype.startswith("error"):
                 parsed["is_error"] = True
@@ -1562,3 +1691,84 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             parsed["is_error"] = True
             parsed["error"] = "Claude exited without a result event"
     return parsed
+
+
+# `codex exec` logs each blocked operation on stderr, e.g.
+#   WARN codex_sandboxing::violation: recorded sandbox violation: resource=filesystem ...
+#   ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { message:
+#     "Rejected(\"`rm -rf x` rejected: rm -f style commands are not permitted ...\")" }
+_CODEX_SANDBOX_VIOLATION = re.compile(r"recorded sandbox violation: resource=(\w+)")
+_CODEX_POLICY_REJECTION = re.compile(r"exec_command failed: .*Rejected\(.*` rejected: ")
+
+
+def codex_permission_denials(stderr: str) -> list[str]:
+    """Shell commands Codex's sandbox or exec policy blocked, one label per event."""
+    denials = []
+    for line in stderr.splitlines():
+        violation = _CODEX_SANDBOX_VIOLATION.search(line)
+        if violation:
+            denials.append(f"shell (sandbox: {violation.group(1)})")
+        elif _CODEX_POLICY_REJECTION.search(line):
+            denials.append("shell (exec policy)")
+    return denials
+
+
+# Without --auto, `opencode run` prints "permission requested: <action> (<resources>);
+# auto-rejecting" on stderr and fails the tool with one of these messages
+# (v2 headless notice, v1 rejection, and a configured deny rule).
+_OPENCODE_AUTO_REJECT = re.compile(r"permission requested: (\S+) \(")
+_OPENCODE_REJECTION_ERRORS = (
+    "cannot ask the user for permission",
+    "rejected permission",
+    "specified a rule which prevents",
+)
+
+
+def opencode_permission_denials(stdout: str, stderr: str) -> list[str]:
+    """Tools OpenCode refused, from failed ``tool_use`` events or the stderr notice."""
+    from_stream = []
+    for line in stdout.splitlines():
+        try:
+            item = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        part = item.get("part") if isinstance(item, dict) else None
+        state = part.get("state") if isinstance(part, dict) else None
+        if not isinstance(state, dict) or state.get("status") != "error":
+            continue
+        error = state.get("error")
+        message = str(error.get("message") if isinstance(error, dict) else error).lower()
+        if any(marker in message for marker in _OPENCODE_REJECTION_ERRORS):
+            from_stream.append(str(part.get("tool") or "unknown"))
+    # v1 interrupts the session after a rejection without emitting the failed tool,
+    # so the stderr notice can be the only record.
+    from_notice = _OPENCODE_AUTO_REJECT.findall(stderr)
+    return from_stream if len(from_stream) >= len(from_notice) else from_notice
+
+
+# `agy -p` soft-denies tools that need approval, lists them as `denied_actions` in
+# JSON output, and prints one of these notices on stderr.
+_AGY_TOOLS_NOTICE = re.compile(r"the (.+?) tool\(s\) required approval that headless mode")
+_AGY_RULE_NOTICE = re.compile(r"(\S+) required the .+? that headless mode cannot prompt for")
+
+
+def antigravity_permission_denials(data: Any, stderr: str) -> list[str]:
+    """Tools Antigravity soft-denied in print mode."""
+    actions = data.get("denied_actions") if isinstance(data, dict) else None
+    if isinstance(actions, list) and actions:
+        return [
+            str(next((a[k] for k in ("tool_name", "tool", "name", "action") if a.get(k)),
+                     "unknown")) if isinstance(a, dict) else str(a)
+            for a in actions
+        ]
+    denials = []
+    for line in stderr.splitlines():
+        tools = _AGY_TOOLS_NOTICE.search(line)
+        if tools:
+            names = re.split(r",\s*|\s+and\s+", tools.group(1))
+            denials.extend(n.strip("`'\"") for n in names if n.strip("`'\""))
+            continue
+        rule = _AGY_RULE_NOTICE.search(line)
+        if rule:
+            denials.append(rule.group(1).strip("`'\"") or "unknown")
+    return denials

@@ -18,6 +18,13 @@ sessions, and plugins are omitted. Graders remain on the host. Review allowed
 roots; OS library paths remain readable and networking is not isolated. Use
 Docker/Podman for a complete filesystem boundary or non-macOS execution.
 
+Under `isolation: macos`, Codex runs with `--dangerously-bypass-approvals-and-sandbox`
+and Claude with `bypassPermissions` (when `claude.sandbox` is true). Their own
+seatbelt sandboxes fail inside another sandbox (`sandbox_apply: Operation not
+permitted`), so every command would otherwise fail while the session still ends
+`ok`. Containers bypass Codex's sandbox the same way. In a container, set Claude's
+`permission_mode: bypassPermissions` yourself.
+
 Add a task `runtime_probe:` for imports, versions, or a short browser launch
 under the actual agent execution boundary. It has a 30-second limit and runs
 before any model session. Validate the grader separately on the host for native
@@ -42,4 +49,33 @@ POSIX cleanup tracks observed child processes by PID and launch time, including
 servers that create new sessions. Never kill unrelated servers by name or port.
 Very fast reparenting can escape observation; use containers for stronger cleanup.
 
-For setup examples and native boundary limits, read the repository README.
+For setup examples and native boundary limits, read the [SkillDiff reference](https://github.com/karangattu/skilldiff/blob/main/docs/reference.md#harness-setup-and-commands).
+
+## Permissions in agent sessions
+
+Nobody can answer a permission prompt in a headless session. Anything that would
+ask is refused, and the session still ends `ok`. The defaults avoid prompts:
+
+| Harness | Default | When the tasks need the network |
+|---|---|---|
+| `claude` | `sandbox: true`: Bash runs in Claude's own sandbox without prompts | `allowed_domains: ["pypi.org", ...]` |
+| `codex` | `sandbox: workspace-write`, no prompts | `network_access: true` |
+| `opencode` | `dangerously_skip_permissions: true` (passes `--auto`) | already allowed |
+| `antigravity` | `dangerously_skip_permissions: true` | already allowed |
+
+Claude's sandbox keeps commands, but not its Read tool, away from grader and skill
+sources. OpenCode and Antigravity do not confine commands. Use `isolation: docker`/`podman`
+(or `macos` for Claude and Codex) when reads outside the workspace must be blocked.
+Codex sessions use `--ephemeral` when the CLI supports it, so they do not feed Codex
+memories that a later control session could read.
+
+## Host sandbox and permission checks
+
+`check` prints one line per harness that says what sessions may do without asking.
+It fails with `host:` when the process running skilldiff cannot reach the network
+(`CODEX_SANDBOX_NETWORK_DISABLED`) or cannot write the harness's state directory
+(`~/.claude`, `$CODEX_HOME`, `~/.local/share/opencode`, `~/.gemini`). Both usually
+mean the agent that started skilldiff is sandboxing it. `run` refuses to start in
+that state. The `fix:` line names the setting for the agent that started skilldiff.
+Variables that tie a process to that agent's session are removed from every child CLI.
+

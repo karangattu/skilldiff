@@ -49,6 +49,8 @@ CLAUDE_KEYS = frozenset(
         "permission_mode",
         "allowed_tools",
         "isolate",
+        "sandbox",
+        "allowed_domains",
         "bin_path",
         "extra_args",
         "read_paths",
@@ -60,6 +62,7 @@ CODEX_KEYS = frozenset(
         "sandbox",
         "verify_skills",
         "read_paths",
+        "network_access",
         "dangerously_bypass_approvals_and_sandbox",
         "bin_path",
         "extra_args",
@@ -185,22 +188,25 @@ def validate_experiment_values(data: dict[str, Any]) -> None:
         for key in ("bin_path", "variant", "provider"):
             if key in values:
                 validate_string(values[key], f"{block}.{key}", nullable=key != "provider")
-        for key in ("extra_args", "allowed_tools", "read_paths"):
+        for key in ("extra_args", "allowed_tools", "read_paths", "allowed_domains"):
             if key in values:
                 validate_string_list(values[key], f"{block}.{key}")
         for key in ("isolate", "dangerously_skip_permissions",
-                    "dangerously_bypass_approvals_and_sandbox", "verify_skills"):
+                    "dangerously_bypass_approvals_and_sandbox", "verify_skills",
+                    "network_access"):
             if key in values:
                 validate_boolean(values[key], f"{block}.{key}")
+        if block == "claude" and "sandbox" in values:
+            validate_boolean(values["sandbox"], "claude.sandbox")
     claude = data.get("claude") or {}
     if "max_turns" in claude and claude["max_turns"] is not None:
         validate_integer(claude["max_turns"], "claude.max_turns", positive=True)
     if "max_budget_usd" in claude and claude["max_budget_usd"] is not None:
         validate_number(claude["max_budget_usd"], "claude.max_budget_usd", positive=True)
     for key, choices in (
-        ("effort", {"low", "medium", "high", "max"}),
-        ("permission_mode", {"acceptEdits", "bypassPermissions", "default", "dontAsk", "plan",
-                             "auto"}),
+        ("effort", {"low", "medium", "high", "xhigh", "max"}),
+        ("permission_mode", {"acceptEdits", "bypassPermissions", "default", "manual", "dontAsk",
+                             "plan", "auto"}),
     ):
         if key in claude:
             validate_enum(claude[key], f"claude.{key}", choices, nullable=True)
@@ -275,6 +281,11 @@ class ClaudeConfig:
     # Load only project/local settings so user-level skills, plugins, and CLAUDE.md
     # cannot leak into either arm. Disable to test against your everyday setup.
     isolate: bool = True
+    # Run Bash inside Claude Code's own OS sandbox so commands need no approval
+    # (headless sessions deny anything that would prompt) but stay in the workspace.
+    sandbox: bool = True
+    # Hosts sandboxed commands may reach, e.g. ["pypi.org", "*.npmjs.org"].
+    allowed_domains: list[str] = field(default_factory=list)
     bin_path: Optional[str] = None
     extra_args: list[str] = field(default_factory=list)
     # Readable roots for isolation: macos (the runtime the agent must execute).
@@ -285,6 +296,8 @@ class ClaudeConfig:
 class CodexConfig:
     auth: str = "stored"
     sandbox: Optional[str] = "workspace-write"
+    # workspace-write blocks network by default; enable for installs and docs.
+    network_access: bool = False
     dangerously_bypass_approvals_and_sandbox: bool = False
     bin_path: Optional[str] = None
     extra_args: list[str] = field(default_factory=list)
@@ -857,6 +870,8 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         permission_mode=claude_data.get("permission_mode", "acceptEdits"),
         allowed_tools=claude_data.get("allowed_tools", []),
         isolate=claude_data.get("isolate", True),
+        sandbox=claude_data.get("sandbox", True),
+        allowed_domains=claude_data.get("allowed_domains", []),
         bin_path=claude_data.get("bin_path"),
         extra_args=claude_data.get("extra_args", []),
         read_paths=[str((experiment_path.parent / Path(p).expanduser()).resolve())
@@ -873,6 +888,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
                     for p in codex_data.get("read_paths", [])],
         auth=codex_auth,
         sandbox=codex_data.get("sandbox", "workspace-write"),
+        network_access=codex_data.get("network_access", False),
         dangerously_bypass_approvals_and_sandbox=codex_data.get(
             "dangerously_bypass_approvals_and_sandbox", False
         ),
