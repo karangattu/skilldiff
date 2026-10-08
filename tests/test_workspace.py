@@ -43,3 +43,20 @@ def test_workspace_diff_tracking(tmp_path: Path):
 
     assert "solution.py" in changed_files
     assert "+print('hello')" in diff_text
+
+
+def test_workspace_diff_binary(tmp_path: Path):
+    ws_dir = tmp_path / "ws_bin"
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# Skill")
+
+    ws = Workspace(root=ws_dir, is_treatment=False, skill_dir=skill_dir)
+    ws.setup()
+
+    (ws_dir / "data.bin").write_bytes(b"\x00\x01\x02\x03\xff")
+    diff_text, changed_files = ws.get_diff()
+
+    assert "data.bin" in changed_files
+    assert "GIT binary patch" in diff_text
+

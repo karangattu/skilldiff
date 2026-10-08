@@ -1468,9 +1468,10 @@ class ExperimentRunner:
 
         self._baseline_runs = raw.get("baseline", [])
         warnings = list(old_results.get("warnings") or [])
-        if regraded:
+        if regraded or skipped:
+            skip_msg = f"; skipped {len(skipped)} (binary diff)" if skipped else ""
             warnings.append(
-                f"Regraded {regraded} run(s) on {now} for task(s) "
+                f"Regraded {regraded} run(s){skip_msg} on {now} for task(s) "
                 f"{', '.join(summary['tasks'])} with updated graders; {len(changes)} run(s) "
                 "scored differently than in the original run. Previous grades are kept in "
                 "each run record under regrade_history."
@@ -1782,7 +1783,7 @@ def _rebuild_workspace(fixture: Path | None, diff_text: str, destination: Path) 
     if not diff_text.strip():
         return
     proc = subprocess.run(
-        ["git", "apply", "--whitespace=nowarn", "-"],
+        ["git", "apply", "--binary", "--whitespace=nowarn", "-"],
         input=diff_text, cwd=destination, capture_output=True, text=True,
     )
     if proc.returncode != 0:

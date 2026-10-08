@@ -463,6 +463,7 @@ def test_regrade_keeps_run_when_diff_cannot_be_rebuilt(tmp_path, monkeypatch, ca
         patch.write_text("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n")
     assert cmd_regrade(Args(run_dir=None, config="skilldiff.yaml", task=None, dry_run=True)) == 0
     captured = capsys.readouterr()
+    assert "skipped 1 (binary diff)" in captured.out
     assert "skipped" in captured.err and "could not apply the saved diff" in captured.err
     assert _results(tmp_path)["overall"]["skill"]["task_score"] == 1.0
 

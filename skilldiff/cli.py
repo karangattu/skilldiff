@@ -1302,8 +1302,10 @@ def cmd_regrade(args: argparse.Namespace) -> int:
         return 1
 
     verb = "would change" if args.dry_run else "changed"
+    skipped_count = len(summary.get("skipped", []))
+    skipped_part = f"; skipped {skipped_count} (binary diff)" if skipped_count else ""
     print(
-        f"Regraded {summary['runs_regraded']} run(s) for task(s) "
+        f"Regraded {summary['runs_regraded']} run(s){skipped_part} for task(s) "
         f"{', '.join(summary['tasks'])}; {verb} {summary['runs_changed']}."
     )
     for change in summary["changes"]:

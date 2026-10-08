@@ -328,7 +328,7 @@ class Workspace:
                 ["git", "add", "--all", "--force", "."],
             ):
                 subprocess.run(command, cwd=self.root, env=env, check=True, capture_output=True)
-            base = ["git", "diff", "--cached", "--no-renames", self.initial_commit]
+            base = ["git", "diff", "--cached", "--no-renames", "--binary", self.initial_commit]
             paths = ["--", *([] if self.source_commit else GIT_DIFF_EXCLUDES)]
             patch = subprocess.check_output(base + paths, cwd=self.root, env=env, text=True)
             names = subprocess.check_output(
