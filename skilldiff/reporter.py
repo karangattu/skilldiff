@@ -658,6 +658,7 @@ def render_report_table(
     preset: str | None = None,
     decision: dict[str, Any] | None = None,
     include_recommendation: bool = True,
+    control_label: str = "Control",
 ) -> str:
     """Plain-text summary for the terminal.
 
@@ -782,10 +783,13 @@ def render_report_table(
         )
     )
 
+    if control_label == "Control" and preset in {"revision", "compression"}:
+        control_label = "Skill A"
+
     lines = [
         title,
         "",
-        f"{'Metric':<20} {'Control':>8} {treatment_label:>10} "
+        f"{'Metric':<20} {control_label:>8} {treatment_label:>10} "
         f"{'Paired mean Δ':>16} {'Reading':<28}",
         row("Task score", c_score_txt, s_score_txt, diff_score_txt, score_reading),
         row("Success", c_succ, s_succ,
@@ -891,11 +895,18 @@ def render_report_table(
                 _term_reading(key, key, paired_diff, False, fallback=median_diff),
             )
         )
-    if skill_metrics.get("skill_known_count"):
+    if skill_metrics.get("skill_known_count") or (
+        control_metrics.get("skill_known_count") and preset in {"revision", "compression"}
+    ):
+        ctrl_used = (
+            _skill_usage(control_metrics)
+            if (preset in {"revision", "compression"} and control_metrics.get("skill_known_count"))
+            else "-"
+        )
         lines.append(
             row(
                 "Skill used",
-                "-",
+                ctrl_used,
                 _skill_usage(skill_metrics),
                 "",
                 adoption_reading(
@@ -923,8 +934,12 @@ def render_report_table(
             preset=preset,
             control_score=c_score,
             treatment_score=t_score,
+            control_denials=decision.get("control_denials", 0) if decision is not None else 0,
+            treatment_denials=decision.get("treatment_denials", 0) if decision is not None else 0,
         )
         lines.append(_strip_inline(verdict))
+        if preset == "revision":
+            lines.append("Both arms have a skill installed; this comparison is between revisions.")
     if include_recommendation:
         if decision is not None:
             if decision["basis_note"]:
@@ -962,6 +977,8 @@ def _verdict(
     preset: str | None = None,
     control_score: float | None = None,
     treatment_score: float | None = None,
+    control_denials: int = 0,
+    treatment_denials: int = 0,
 ) -> tuple[str, str]:
     """Return (sentence, callout kind) for the task-score effect."""
     total = int(paired.get("pairs", 0))
@@ -1001,7 +1018,20 @@ def _verdict(
             f"only {tasks_count} task(s) — repetitions measure those tasks, "
             "not general skill effect"
         )
+    asymmetric_denials = bool(control_denials or treatment_denials) and (
+        control_denials != treatment_denials
+    )
+    if control_denials or treatment_denials:
+        if control_denials != treatment_denials:
+            cautions.append(
+                f"denials: control {control_denials}, treatment {treatment_denials} (confound)"
+            )
+        else:
+            cautions.append(f"denials: control {control_denials}, treatment {treatment_denials}")
     caution_txt = f" ({'; '.join(cautions)})" if cautions else ""
+
+    def _out(msg: str, k: str) -> tuple[str, str]:
+        return msg, ("warning" if asymmetric_denials else k)
 
     practical_txt = ""
     if thresholds:
@@ -1010,32 +1040,34 @@ def _verdict(
     if n_valid < 2:
         if mean_pp == 0:
             if control_score is not None and control_score >= 0.95:
-                return (
+                return _out(
                     f"Tasks at ceiling: control already scores {round(control_score * 100)}%; "
                     f"tasks cannot discriminate.{caution_txt}",
                     "note",
                 )
-            return f"No task-score difference in {pairs_txt}. Add repetitions.{caution_txt}", "note"
-        return (
+            return _out(
+                f"No task-score difference in {pairs_txt}. Add repetitions.{caution_txt}", "note"
+            )
+        return _out(
             f"Task score changed by **{format_pp_diff(mean_pp)}** in {pairs_txt}. "
             f"One pair can't separate a real effect from noise.{caution_txt}",
             "note",
         )
     if effect == "better":
-        return (
+        return _out(
             f"The {subject} improved task score by **{format_pp_diff(mean_pp)}** "
             f"(95% CI {ci}, {pairs_txt}){caution_txt}.{practical_txt}".replace("..", "."),
             "tip",
         )
     if effect == "worse":
-        return (
+        return _out(
             f"The {subject} reduced task score by **{abs(mean_pp)} pp** "
             f"(95% CI {ci}, {pairs_txt}){caution_txt}.{practical_txt}".replace("..", "."),
             "warning",
         )
     if mean_pp == 0 and lo == hi == 0:
         if control_score is not None and control_score >= 0.95:
-            return (
+            return _out(
                 f"Tasks at ceiling: control already scores {round(control_score * 100)}%; "
                 f"tasks cannot discriminate.{caution_txt}",
                 "note",
@@ -1044,33 +1076,33 @@ def _verdict(
             control_score is not None and control_score <= 0.05
             and (treatment_score is None or treatment_score <= 0.05)
         ):
-            return (
+            return _out(
                 f"Tasks at floor: both arms score ~0%; tasks cannot discriminate.{caution_txt}",
                 "note",
             )
         if thresholds:
             if preset == "compression":
-                return (
+                return _out(
                     f"Quality preserved: both arms scored the same in all {pairs_txt} "
                     f"(95% CI {ci}){caution_txt}.{practical_txt}".replace("..", "."),
                     "tip" if "meets compression criteria" in practical_txt else "note",
                 )
-            return (
+            return _out(
                 f"No task-score difference: both arms scored the same in all {pairs_txt} "
                 f"{caution_txt}.{practical_txt}".replace("..", "."),
                 "note",
             )
-        return (
+        return _out(
             f"No task-score difference: both arms scored the same in all {pairs_txt}.{caution_txt}",
             "note",
         )
     if control_score is not None and control_score >= 0.95 and abs(mean_pp) <= 5:
-        return (
+        return _out(
             f"Tasks at ceiling: control already scores {round(control_score * 100)}%; "
             f"tasks cannot discriminate.{caution_txt}",
             "note",
         )
-    return (
+    return _out(
         f"No clear task-score effect: **{format_pp_diff(mean_pp)}**, but the 95% CI "
         f"({ci}) includes zero ({pairs_txt}){caution_txt}.{practical_txt}".replace("..", "."),
         "note",
@@ -1741,11 +1773,14 @@ def build_decision_context(
         control_score=selected_metrics[0].get("task_score"),
         treatment_score=selected_metrics[1].get("task_score"),
     )
+    control_denials = sum(1 for r in (control_runs or []) if r.get("permission_denials"))
+    treatment_denials = sum(1 for r in (treatment_runs or []) if r.get("permission_denials"))
     return {
         "overall_control": control, "overall_skill": skill, "overall_paired": paired,
         "control": selected_metrics[0], "skill": selected_metrics[1],
         "paired": selected_paired, "held_out": held, "tasks_count": tasks_count,
         "basis_note": note, "coverage": coverage, "recommendation": recommendation,
+        "control_denials": control_denials, "treatment_denials": treatment_denials,
     }
 
 
@@ -2248,11 +2283,11 @@ def _tokens_cell(run: dict[str, Any]) -> str:
     return _fmt_tokens(val) if val is not None else "N/A"
 
 
-def _skill_cell(run: dict[str, Any]) -> Cell:
+def _skill_cell(run: dict[str, Any], preset: str | None = None) -> Cell:
     invoked = run.get("skill_invoked")
     if invoked is None:
         return "?"
-    if run.get("arm") == "control":
+    if run.get("arm") == "control" and preset not in {"revision", "compression"}:
         return ("yes", "bad") if invoked else "no"
     return "yes" if invoked else ("no", "bad")
 
@@ -2331,7 +2366,20 @@ def _evaluation_rows(
         "Skill B" if preset == "revision" or results.get("skill_comparison") else
         "Treatment" if results.get("comparison") else "Skill"
     )
-    default_labels = {"control": "Control", "treatment": treatment_label, "baseline": "Baseline"}
+    control_label = (
+        "Original" if preset == "compression" else
+        "Skill A" if preset == "revision" or results.get("skill_comparison") else
+        "Control"
+    )
+    if labels.get("control"):
+        control_label = str(labels["control"])
+    if labels.get("treatment"):
+        treatment_label = str(labels["treatment"])
+    default_labels = {
+        "control": control_label,
+        "treatment": treatment_label,
+        "baseline": "Baseline",
+    }
     pricing = results.get("pricing") or {}
     currency = str(pricing.get("currency") or "USD")
     rows: list[list[Cell]] = []
@@ -2450,6 +2498,8 @@ def _build_runs_table(
     multi_model: bool = False,
     link_artifacts: bool = True,
     treatment_label: str = "Skill",
+    control_label: str = "Control",
+    preset: str | None = None,
 ) -> tuple[list[str], list[list[Cell]]]:
     headers = [
         "Task",
@@ -2479,7 +2529,8 @@ def _build_runs_table(
 
     rows: list[list[Cell]] = []
     for k in ordered_keys:
-        for arm_label, run in (("Control", ctrl_map.get(k)), (treatment_label, treat_map.get(k))):
+        arm_pairs = ((control_label, ctrl_map.get(k)), (treatment_label, treat_map.get(k)))
+        for arm_label, run in arm_pairs:
             if run is None:
                 continue
             row: list[Cell] = [
@@ -2489,7 +2540,7 @@ def _build_runs_table(
                 _run_status(run),
                 _score_cell(run),
                 _format_checks_passed(run),
-                _skill_cell(run),
+                _skill_cell(run, preset=preset),
                 _cost_cell(run),
                 _time_cell(run),
                 _turns_cell(run),
@@ -2504,7 +2555,7 @@ def _build_runs_table(
                     f"[transcript]({art}/transcript.txt) · [diff]({art}/diff.patch)" if art else ""
                 )
             rows.append(row)
-    if treatment_label != "Skill":
+    if treatment_label != "Skill" and preset not in {"revision", "compression"}:
         index = headers.index("Skill used")
         headers.pop(index)
         for row in rows:
@@ -2685,12 +2736,16 @@ def build_report_blocks(
     if preset == "compression":
         label = "Minified"
         subject = "minified"
+        default_ctrl = "Original"
     elif preset == "revision" or skill_comparison:
         label = "Skill B"
         subject = "skill B"
+        default_ctrl = "Skill A"
     else:
         label = "Treatment" if comparison else "Skill"
         subject = label.lower()
+        default_ctrl = "Control"
+    control_label = str(arm_labels.get("control") or default_ctrl)
     # Prefer stored arm labels when present.
     if arm_labels.get("treatment"):
         label = str(arm_labels["treatment"])
@@ -2748,6 +2803,8 @@ def build_report_blocks(
             preset=preset,
             control_score=headline_control.get("task_score"),
             treatment_score=headline_skill.get("task_score"),
+            control_denials=decision.get("control_denials", 0),
+            treatment_denials=decision.get("treatment_denials", 0),
         )
     else:
         diff = _score_difference(headline_control, headline_skill)
@@ -2765,6 +2822,8 @@ def build_report_blocks(
         verdict = "INVALID: no clean baseline. " + verdict
         kind = "warning"
     body = [verdict]
+    if preset == "revision":
+        body.append("Both arms have a skill installed; this comparison is between revisions.")
     efficiency = (
         _efficiency_sentence(headline_paired, subject)
         if headline_paired.get("pairs")
@@ -2804,7 +2863,7 @@ def build_report_blocks(
     blocks.append(
         (
             "table",
-            ["Metric", "Control", label, "Paired mean Δ", "95% CI", "Reading"],
+            ["Metric", control_label, label, "Paired mean Δ", "95% CI", "Reading"],
             _metric_rows(control, skill, paired),
             ["l", "r", "r", "r", "r", "l"],
         )
@@ -2907,7 +2966,7 @@ def build_report_blocks(
                 _fmt_money(api["cost"], currency),
             ]
 
-        diff_row: list[Cell] = [f"Change ({label} − Control)"]
+        diff_row: list[Cell] = [f"Change ({label} − {control_label})"]
         for field, _rate_key in _API_TOKEN_FIELDS:
             diff_row.append(
                 _signed_tokens(s_api["totals"][field] - c_api["totals"][field])
@@ -2930,7 +2989,7 @@ def build_report_blocks(
                     "Output",
                     "API-equivalent cost",
                 ],
-                [_api_row("Control", c_api), _api_row(label, s_api), diff_row],
+                [_api_row(control_label, c_api), _api_row(label, s_api), diff_row],
                 ["l", "r", "r", "r", "r", "r"],
             )
         )
@@ -2992,7 +3051,16 @@ def build_report_blocks(
                     show_usage=not comparison,
                 )
             )
-        blocks.append(("table", _group_headers("Split", label), split_rows, group_align))
+        blocks.append(
+            (
+                "table",
+                _group_headers(
+                    "Split", label, control_label=control_label, show_usage=not comparison
+                ),
+                split_rows,
+                group_align,
+            )
+        )
         if held_out_pairs:
             blocks.append(
                 (
@@ -3026,7 +3094,16 @@ def build_report_blocks(
                 m_skill = by_model.get(model, {}).get("skill", {})
                 m_paired = {}
             rows.append(_group_row(model, m_control, m_skill, m_paired, show_usage=not comparison))
-        blocks.append(("table", _group_headers("Model", label), rows, group_align))
+        blocks.append(
+            (
+                "table",
+                _group_headers(
+                    "Model", label, control_label=control_label, show_usage=not comparison
+                ),
+                rows,
+                group_align,
+            )
+        )
 
     blocks.append(("h", 2, "By task"))
     task_rows: list[list[Cell]] = []
@@ -3054,7 +3131,16 @@ def build_report_blocks(
             task_rows.append(
                 _group_row(task_label, t_control, t_skill, t_paired, show_usage=not comparison)
             )
-    blocks.append(("table", _group_headers("Task", label), task_rows, group_align))
+    blocks.append(
+        (
+            "table",
+            _group_headers(
+                "Task", label, control_label=control_label, show_usage=not comparison
+            ),
+            task_rows,
+            group_align,
+        )
+    )
 
     # Per-check comparison: which requirements the skill helps or hurts.
     if control_runs or treatment_runs:
@@ -3079,7 +3165,7 @@ def build_report_blocks(
                     [
                         "Task",
                         "Check",
-                        "Control",
+                        control_label,
                         label,
                         "Δ",
                         "Better/worse/tie",
@@ -3123,7 +3209,7 @@ def build_report_blocks(
                     [
                         "Category",
                         "Tasks",
-                        "Control",
+                        control_label,
                         label,
                         "Δ score",
                         "Skill used",
@@ -3225,13 +3311,13 @@ def build_report_blocks(
         try:
             ba = int(sc.get("source_bytes_a") or 0)
             bb = int(sc.get("source_bytes_b") or 0)
-            red = float(sc.get("source_reduction_pct") or 0)
+            pct = (bb - ba) / ba * 100 if ba else (-float(sc.get("source_reduction_pct") or 0))
             blocks.append(("h", 2, "Source size"))
             blocks.append(
                 (
                     "p",
                     f"Static skill size: original {ba} bytes → minified {bb} bytes "
-                    f"({red:+.1f}% reduction). This is separate from session tokens, "
+                    f"({pct:+.1f}%). This is separate from session tokens, "
                     "cost, and time measured per run.",
                 )
             )
@@ -3245,6 +3331,8 @@ def build_report_blocks(
             multi_model=len(models) > 1,
             link_artifacts=run_root is not None,
             treatment_label=label,
+            control_label=control_label,
+            preset=preset,
         )
         blocks.append(("h", 2, "Run details"))
         randomized = any("run_order" in r for r in control_runs)
@@ -3350,10 +3438,12 @@ def build_report_blocks(
             try:
                 ba = int(skill_comparison.get("source_bytes_a") or 0)
                 bb = int(skill_comparison.get("source_bytes_b") or 0)
-                red = float(skill_comparison.get("source_reduction_pct") or 0)
-                setup_items.append(
-                    f"**Source size:** {ba} → {bb} bytes ({red:+.1f}% static reduction)"
+                pct = (
+                    (bb - ba) / ba * 100
+                    if ba
+                    else (-float(skill_comparison.get("source_reduction_pct") or 0))
                 )
+                setup_items.append(f"**Source size:** {ba} → {bb} bytes ({pct:+.1f}%)")
             except Exception:
                 pass
     if comparison:
@@ -3477,7 +3567,7 @@ def build_report_blocks(
     blocks.append(
         (
             "table",
-            ["Metric", "Control", label, "Paired change", "95% CI", "Reading"],
+            ["Metric", control_label, label, "Paired change", "95% CI", "Reading"],
             _decision_rows(headline_control, headline_skill, headline_paired),
             ["l", "r", "r", "r", "r", "l"],
         )
@@ -3489,16 +3579,21 @@ def build_report_blocks(
 _NUMERIC_RUN_COLUMNS = {"Run", "Score", "Checks", "Cost", "Time", "Turns", "Tokens", "Files"}
 
 
-def _group_headers(first: str, treatment_label: str = "Skill") -> list[str]:
+def _group_headers(
+    first: str,
+    treatment_label: str = "Skill",
+    control_label: str = "Control",
+    show_usage: bool = True,
+) -> list[str]:
     return [
         first,
-        "Control",
+        control_label,
         treatment_label,
         "Δ score (paired mean)",
         "Better/worse/tie",
         "Δ cost (mean)",
         "Δ time (mean)",
-        *(["Skill used"] if treatment_label == "Skill" else []),
+        *(["Skill used"] if show_usage else []),
         "Reading",
     ]
 
