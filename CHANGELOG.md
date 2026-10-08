@@ -6,6 +6,29 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-08
+
+### Added
+
+- In PR mode, skills modified by the PR diff are automatically discovered and installed into agent workspaces across all harness roots (`.claude/skills/`, `.codex/skills/`, etc.), with support for skills outside standard roots.
+- `skilldiff check` validates task graders against reference solutions and detects deprecated Python APIs in fixtures and graders.
+- `skilldiff check` runs a lightweight sandbox canary command before experiments start to detect restricted or misconfigured sandbox environments early.
+- `skilldiff check` warns when fixture directories contain Python files while `allowed_domains` is empty.
+- `skilldiff diagnose` inspects agent transcripts to count direct reads of `SKILL.md` and skill files to detect over-reading and instruction token bloat.
+- `skilldiff regrade` supports binary diffs and surfaces skipped / non-graded runs in summary headlines.
+
+### Changed
+
+- Placeholder grader template scaffolded by `skilldiff init` fails by default (`checks = [False]`) to prevent false-positive initial passes, with check warnings for unmodified templates.
+- Source-size comparison reports signed percentage changes directly without mislabeling size increases as reductions.
+- Arm labels in CLI output and markdown reports are unified (`Control`/`Skill A` vs `Treatment`/`Skill B`) and avoid no-skill labels for revision presets.
+- Verdict and recommendations distinguish ceiling (100%) and floor (0%) effects from sample-size noise instead of recommending more runs.
+
+### Fixed
+
+- Excluded `__pycache__`, `.pyc`, and compiled Python bytecode artifacts from blast radius scope checks and diff summaries.
+- Tracked sandbox denials per arm to identify asymmetric environment permissions.
+
 ## [0.17.0] - 2026-10-07
 
 ### Added
