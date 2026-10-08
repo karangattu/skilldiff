@@ -259,6 +259,81 @@ def test_codex_missing_cache_write_count_is_zero_for_cost_accounting(tmp_path: P
     assert res.output_tokens == 20
 
 
+def test_codex_reports_skill_availability_separately_from_use(tmp_path: Path):
+    skill = tmp_path / ".agents" / "skills" / "sample-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: sample-skill\ndescription: sample\n---\n", encoding="utf-8"
+    )
+    runner = AgentRunner(codex_bin="codex-mock")
+    cfg = CodexConfig()
+    mock_stdout = "\n".join(
+        [
+            json.dumps(
+                {"type": "thread.started", "thread_id": "t", "skills": ["sample-skill"]}
+            ),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "command_execution",
+                        "command": "rg --files",
+                    },
+                }
+            ),
+            json.dumps({"type": "turn.completed", "usage": {
+                "input_tokens": 100, "cached_input_tokens": 50, "output_tokens": 10
+            }}),
+        ]
+    )
+
+    with patch.object(AgentRunner, "_exec") as mock_subproc:
+        mock_subproc.return_value = ExecResult(
+            stdout=mock_stdout, stderr="", exit_code=0, duration=1.0
+        )
+        res = runner.run("Do task", tmp_path, "gpt-6-luna", cfg)
+
+    assert res.skill_available is True
+    assert res.skill_invoked is False
+
+
+def test_codex_detects_skill_file_read_as_adoption(tmp_path: Path):
+    skill = tmp_path / ".agents" / "skills" / "sample-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: sample-skill\ndescription: sample\n---\n", encoding="utf-8"
+    )
+    runner = AgentRunner(codex_bin="codex-mock")
+    mock_stdout = "\n".join(
+        [
+            json.dumps(
+                {"type": "thread.started", "thread_id": "t", "skills": ["sample-skill"]}
+            ),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "command_execution",
+                        "command": "cat .agents/skills/sample-skill/SKILL.md",
+                    },
+                }
+            ),
+            json.dumps({"type": "turn.completed", "usage": {
+                "input_tokens": 100, "cached_input_tokens": 50, "output_tokens": 10
+            }}),
+        ]
+    )
+
+    with patch.object(AgentRunner, "_exec") as mock_subproc:
+        mock_subproc.return_value = ExecResult(
+            stdout=mock_stdout, stderr="", exit_code=0, duration=1.0
+        )
+        res = runner.run("Do task", tmp_path, "gpt-6-luna", CodexConfig())
+
+    assert res.skill_available is True
+    assert res.skill_invoked is True
+
+
 def test_agent_runner_dispatches_opencode(tmp_path: Path):
     runner = AgentRunner(opencode_bin="opencode-mock")
     cfg = OpenCodeConfig(
