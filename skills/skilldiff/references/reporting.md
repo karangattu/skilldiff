@@ -71,6 +71,7 @@ are audit evidence; incomplete pairs do not enter this table or the decision.
 The report itself ends with a **Closing decision** table — score, cost, time,
 tokens, tool calls, turns, and adoption, each with paired change, 95% CI, and
 one plain reading — followed by the bottom line: SHIP, DO NOT SHIP, or
-NEEDS MORE RUNS, plus one sentence that states why. End your summary with that
+NEEDS MORE RUNS (with ceiling or floor effects noted when tasks cannot discriminate),
+plus one sentence that states why. End your summary with that
 same bottom line and reason; do not invent a different verdict from the one the
 report computed.

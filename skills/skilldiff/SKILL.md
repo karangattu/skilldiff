@@ -145,11 +145,11 @@ Other rules:
   Add them as `validation: {good: ..., broken: [...]}` in the task file so `check`
   grades all three. `good` takes a list: give two differently shaped valid solutions
   (another API call, an alias, a different structure) so `check` can tell a strict
-  grader from a correct one; it warns when there is only one. A grader that fails everything is broken, not strict. Crashing
-  graders report `error` (N/A), never a plain zero.
   A broken fixture that crashes or times out does not validate the grader: fix
-  the infrastructure until it returns a graded failing result. For an LLM/rubric
-  grader, supply a judge `command:`; SkillDiff has no built-in judge.
+  the infrastructure until it returns a graded failing result. `check` also flags
+  deprecated Python APIs in fixtures and graders, and warns when a Python fixture has
+  an empty `allowed_domains`. For an LLM/rubric grader, supply a judge `command:`;
+  SkillDiff has no built-in judge.
 
 Graders run with the workspace as the working directory. They also get these
 environment variables: `SKILLDIFF_RESPONSE_FILE` (the agent's final message),
@@ -267,7 +267,8 @@ isolation mode and immutable container image identity.
 Read `report.md` (for pull requests) or `report.html`. Then run
 `skilldiff diagnose` on the run directory: it names the common failure modes —
 a skill that never triggered on intended tasks, one that triggered on
-irrelevant tasks, regressions, blast-radius violations, agent failures, and
+irrelevant tasks, regressions, blast-radius violations, agent failures,
+instruction over-reading (direct file reads of `SKILL.md`), and
 token bloat without score gains — each with a suggested fix. Check its findings
 against the report before you write your summary. Report these results:
 
@@ -284,7 +285,8 @@ against the report before you write your summary. Report these results:
    inside the noise. On subscription auth the real spend is $0 at the margin, so
    the API-equivalent cost is the comparison that matters. The report ends with
    a **Closing decision** table and one bottom line: SHIP, DO NOT SHIP, or
-   NEEDS MORE RUNS. End your summary with that same bottom line and reason; do
+   NEEDS MORE RUNS (with ceiling or floor effects noted when tasks cannot discriminate).
+   End your summary with that same bottom line and reason; do
    not invent a different verdict from the one the report computed.
 
    Before you write the final summary, read
@@ -308,8 +310,9 @@ commands: `skilldiff results --markdown` prints a Markdown summary for a PR, and
 **Before you trust a surprising per-run difference, read the diff.** Open the
 `diff.patch` of any run that scored below its pair and confirm the grader judged real
 work. If the grader was wrong, fix it, run `skilldiff regrade <run> --dry-run`, then
-`skilldiff regrade <run>`: it re-runs the current graders on the saved diffs without
-any agent session, keeps the previous grades under `regrade_history`, and adds a
+`skilldiff regrade <run>`: it re-runs the current graders on the saved diffs
+(including binary diffs) without any agent session, surfaces skipped runs in the
+headline, keeps the previous grades under `regrade_history`, and adds a
 visible warning to the report. Report the regrade openly and do not hand-compute
 replacement scores. Say which grader change you made and why.
 
@@ -335,16 +338,18 @@ only. Strict comparison refuses differing failure policies.
 
 For compression: keep the skill name and trigger description identical so
 adoption changes do not confound the body comparison. Record source-size
-reduction separately from session tokens, cost, and time. Fix acceptable loss
-before running (for example: at most 2pp loss with at least 20% fewer
-tokens) and require bounds to support it. Tune on dev tasks, then compare
-frozen versions on held-out tasks.
+change (reported as a signed percentage) separately from session tokens, cost,
+and time. Fix acceptable loss before running (for example: at most 2pp loss with
+at least 20% fewer tokens) and require bounds to support it. Tune on dev tasks,
+then compare frozen versions on held-out tasks.
 
 ## 7. Evaluate a PR
 
 Pick the workflow first:
 
-- **Agent effectiveness (`mode: agent`).** Agents work on each revision.
+- **Agent effectiveness (`mode: agent`).** Agents work on each revision. Skills
+  modified by the PR diff are automatically discovered and installed into workspaces
+  (even when located outside standard skill roots).
 - **PR correctness (`mode: correctness`).** Graders run on untouched revisions, no agents.
 
 Pick the revisions:
