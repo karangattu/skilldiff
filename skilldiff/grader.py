@@ -596,15 +596,10 @@ def validate_grader_against_directories(
     untouched_dir: Path,
     good_dir: "Path | list[Path] | None" = None,
     broken_dirs: list[Path] | None = None,
+    reference_dirs: list[Path] | None = None,
+    deprecated_patterns: list[str] | None = None,
 ) -> dict[str, object]:
-    """Grade untouched, known-good, and deliberately broken workspaces.
-
-    Checking only that the untouched fixture fails is insufficient: a broken
-    grader can fail everything. `good_dir` may be one workspace or a list of
-    different valid solutions; a grader that rejects any of them is too strict,
-    which would otherwise show up as a false skill improvement.
-    Returns a report with scores and a verdict.
-    """
+    """Grade untouched, known-good, and deliberately broken workspaces."""
     report: dict[str, object] = {"checks": []}
     checks: list[str] = report["checks"]  # type: ignore
     untouched = grader.grade_workspace(untouched_dir)
@@ -631,6 +626,23 @@ def validate_grader_against_directories(
         [] if good_dir is None else [good_dir] if isinstance(good_dir, Path) else list(good_dir)
     )
     from skilldiff.snapshots import tree_contents
+
+    if deprecated_patterns:
+        for sol_dir in good_dirs + (reference_dirs or []):
+            for path in sol_dir.rglob("*"):
+                if path.is_file() and not path.name.startswith("."):
+                    try:
+                        content = path.read_text(encoding="utf-8", errors="ignore")
+                    except Exception:
+                        continue
+                    for dep in deprecated_patterns:
+                        if dep in content:
+                            rel = path.relative_to(sol_dir)
+                            checks.append(
+                                f"solution in {sol_dir.name} uses deprecated API '{dep}' in {rel}"
+                            )
+                            report["verdict"] = "deprecated-api-used"
+                            return report
 
     scoped = bool(grader.allowed_paths or grader.forbidden_paths)
     original = {entry["path"]: entry for entry in tree_contents(untouched_dir)
@@ -663,6 +675,28 @@ def validate_grader_against_directories(
                 "(grader rejects valid work)"
             )
             report["verdict"] = "grader-too-strict"
+            return report
+        checks.append(f"{label} scores 100%")
+
+    n_ref = len(reference_dirs or [])
+    for i, directory in enumerate(reference_dirs or []):
+        label = "reference solution" if n_ref == 1 else f"reference solution {i}"
+        ref = grader.grade_workspace(directory)
+        report[f"ref_{i}"] = {
+            "score": ref.score,
+            "grade_status": ref.grade_status,
+            "feedback": ref.feedback,
+        }
+        if ref.grade_status != "graded" or ref.score is None or not math.isfinite(ref.score):
+            checks.append(f"{label} could not be graded: {ref.feedback or 'No feedback'}")
+            report["verdict"] = "grader-broken"
+            return report
+        if ref.score < 0.99:
+            checks.append(
+                f"{label} scores only {round(ref.score * 100)}% "
+                "(grader rejects independent reference solution)"
+            )
+            report["verdict"] = "grader-rejects-reference"
             return report
         checks.append(f"{label} scores 100%")
 

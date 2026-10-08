@@ -991,13 +991,20 @@ def cmd_check(args: argparse.Namespace) -> int:
                 broken = validation.get("broken") or validation.get("bad") or []
                 if isinstance(broken, str):
                     broken = [broken]
+                reference = validation.get("reference")
+                references = [reference] if isinstance(reference, str) else list(reference or [])
+                deprecated = validation.get("deprecated")
+                deprecated_list = (
+                    [deprecated] if isinstance(deprecated, str) else list(deprecated or [])
+                )
                 good_dirs = [(task_dir / g).resolve() for g in goods]
                 broken_dirs = [(task_dir / b).resolve() for b in (broken or [])]
-                missing = [str(d) for d in good_dirs + broken_dirs if not d.exists()]
+                ref_dirs = [(task_dir / r).resolve() for r in references]
+                missing = [str(d) for d in good_dirs + broken_dirs + ref_dirs if not d.exists()]
                 if missing:
                     fail(f"task {task.id}: validation paths not found: {', '.join(missing)}")
                     continue
-                if len(good_dirs) == 1:
+                if len(good_dirs) == 1 and not ref_dirs:
                     warn(
                         f"task {task.id}: only one validation.good solution; a grader that "
                         "accepts your solution but rejects an equivalent one (another API "
@@ -1005,7 +1012,11 @@ def cmd_check(args: argparse.Namespace) -> int:
                         "skill improvement. List a second, differently-shaped valid "
                         "solution under `good:`"
                     )
-                report = _validate(grader, ws.root, good_dirs or None, broken_dirs)
+                report = _validate(
+                    grader, ws.root, good_dirs or None, broken_dirs,
+                    reference_dirs=ref_dirs or None,
+                    deprecated_patterns=deprecated_list or None,
+                )
                 log = (config_path.resolve().parent / "runs" / "preflight"
                        / safe_path_component(task.id))
                 log.mkdir(parents=True, exist_ok=True)
@@ -1018,7 +1029,10 @@ def cmd_check(args: argparse.Namespace) -> int:
                         f"{'; '.join(report.get('checks', []))}"
                     )
                     continue
-                ok(f"task {task.id}: grader validation ok (untouched/good/broken)")
+                ok(
+                    f"task {task.id}: grader validation ok (untouched/good/broken; "
+                    "proves self-consistency with provided solutions, not real-world API currency)"
+                )
             # Grader isolation note: outside the fixture is not isolation by itself.
             try:
                 from skilldiff.grader import grader_isolation_note as _gin

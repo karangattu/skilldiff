@@ -471,3 +471,59 @@ def test_regrade_requires_a_run_and_a_config(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert cmd_regrade(Args(run_dir=None, config=None, task=None, dry_run=False)) == 1
     assert "No experiment run" in capsys.readouterr().err
+
+
+def test_validate_grader_with_reference_solutions(tmp_path):
+    untouched = tmp_path / "untouched"
+    untouched.mkdir()
+    (untouched / "app.py").write_text("old = 1")
+
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "app.py").write_text("new = 2")
+
+    ref = tmp_path / "ref"
+    ref.mkdir()
+    (ref / "app.py").write_text("ref = 3")
+
+    class MockGrader:
+        allowed_paths = []
+        forbidden_paths = []
+        grader_ignore = []
+
+        def grade_workspace(self, ws):
+            content = (ws / "app.py").read_text()
+            if "old" in content:
+                return GradeResult(score=0.0, success=False, label="ctrl")
+            return GradeResult(score=1.0, success=True, label="pass")
+
+    report = validate_grader_against_directories(
+        MockGrader(), untouched, good_dir=good, reference_dirs=[ref]
+    )
+    assert report["verdict"] == "ok"
+    assert "reference solution scores 100%" in report["checks"]
+
+
+def test_validate_grader_flags_deprecated_api(tmp_path):
+    untouched = tmp_path / "untouched"
+    untouched.mkdir()
+    (untouched / "app.py").write_text("old = 1")
+
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "app.py").write_text("@render.download\ndef foo(): pass")
+
+    class MockGrader:
+        allowed_paths = []
+        forbidden_paths = []
+        grader_ignore = []
+
+        def grade_workspace(self, ws):
+            return GradeResult(score=1.0, success=True, label="pass")
+
+    report = validate_grader_against_directories(
+        MockGrader(), untouched, good_dir=good, deprecated_patterns=["render.download"]
+    )
+    assert report["verdict"] == "deprecated-api-used"
+    assert any("uses deprecated API 'render.download'" in c for c in report["checks"])
+
