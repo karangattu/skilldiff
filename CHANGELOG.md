@@ -6,6 +6,16 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-07
+
+### Added
+
+- Opt-in native macOS isolation (`isolation: macos`) using `sandbox-exec` with private session scratch directories.
+- Codex preflight safeguards and discovery probes (`app-server skills/list`) with `codex.verify_skills` configuration.
+- Task-level `runtime_probe` execution checks before agent sessions begin.
+- Decision cost basis configuration (`cost_basis: api-equivalent` vs `harness`) and incomplete trial tracking.
+- Robust POSIX descendant process tracking (`OwnedDescendants`) across sessions.
+
 ## [0.15.0] - 2026-10-07
 
 ### Added
