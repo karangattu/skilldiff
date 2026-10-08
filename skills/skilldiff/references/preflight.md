@@ -31,6 +31,18 @@ before any model session. Validate the grader separately on the host for native
 runs. Grader validation retains feedback in `runs/preflight/<task>/grader.json`;
 fix missing browser/runtime dependencies before running agents.
 
+`skilldiff check --scan-home` matches directory/frontmatter names or identical
+`SKILL.md` contents. Scans stop after 20000 entries, 5 seconds, or 20 matches,
+report skipped/unreadable paths, exclude `.git`, `.venv`, `venv`, `node_modules`,
+`__pycache__`, and `.cache`, skip files over 1 MiB, and do not follow symlinks.
+No matches cannot certify a clean host. Host checks are skipped for agent
+containers, whose image must also be clean.
+
+Container execution needs a locally available image containing the harness CLI,
+graders, and dependencies. `bin_path` refers to an executable inside that image.
+Claude and Codex container runs require API authentication; host login directories
+are not mounted. Run `skilldiff check` first. Resume also requires the same
+isolation mode and immutable container image identity.
 
 ## Trial evidence and cost decisions
 

@@ -145,6 +145,9 @@ Other rules:
   Add them as `validation: {good: ..., broken: [...]}` in the task file so `check`
   grades all three. `good` takes a list: give two differently shaped valid solutions
   (another API call, an alias, a different structure) so `check` can tell a strict
+  grader from a correct one; it warns when there is only one. A grader that fails
+  everything is broken, not strict. Crashing graders report `error` (N/A), never a
+  plain zero.
   A broken fixture that crashes or times out does not validate the grader: fix
   the infrastructure until it returns a graded failing result. `check` also flags
   deprecated Python APIs in fixtures and graders, and warns when a Python fixture has
@@ -181,12 +184,9 @@ input snapshots, even when automatic user-level loading is disabled. These are
 possible exposure paths, not proof of contamination; they do not make a run
 INVALID. Runs save exposure warnings in results and reports.
 
-For a broader advisory check, use `skilldiff check --scan-home`. It matches
-directory/frontmatter names or identical `SKILL.md` contents. Scans stop after
-20000 entries, 5 seconds, or 20 matches, report skipped/unreadable paths, exclude
-`.git`, `.venv`, `venv`, `node_modules`, `__pycache__`, and `.cache`, skip files
-over 1 MiB, and do not follow symlinks. No matches cannot certify a clean host.
-Host checks are skipped for agent containers, whose image must also be clean.
+For a broader advisory check, use `skilldiff check --scan-home`; see
+[preflight safeguards](references/preflight.md) for its limits. No matches cannot
+certify a clean host.
 
 Then run one pair per task:
 
@@ -258,11 +258,8 @@ Use `--parallel N` only if the user's rate limits allow it. Use `--resume` (or
 reused only when skill, task, PR revision, and execution settings match, and a
 mismatch refuses instead of silently mixing results.
 
-Container execution needs a locally available image containing the harness CLI,
-graders, and dependencies. `bin_path` refers to an executable inside that image.
-Claude and Codex container runs require API authentication; host login directories
-are not mounted. Run `skilldiff check` first. Resume also requires the same
-isolation mode and immutable container image identity.
+Container execution needs a local image with the harness CLI, graders, and
+dependencies; see [preflight safeguards](references/preflight.md).
 
 Read `report.md` (for pull requests) or `report.html`. Then run
 `skilldiff diagnose` on the run directory: it names the common failure modes —
