@@ -6,6 +6,8 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-07
+
 ### Added
 
 - `claude.sandbox` (default `true`) runs Bash inside Claude Code's own sandbox, so
