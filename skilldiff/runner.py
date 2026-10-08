@@ -515,6 +515,7 @@ class AgentRunner:
         # Harnesses that resolve their project directory from PWD (Bun/OpenCode,
         # for example) otherwise operate on the caller's directory.
         env["PWD"] = str(cwd.resolve())
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         if temp_dir is not None:
             for key in ("TMPDIR", "TMP", "TEMP"):
                 env[key] = str(temp_dir.resolve())
@@ -571,7 +572,7 @@ class AgentRunner:
                 exec_cmd.extend(["-v", f"{source.resolve()}:{target}:ro"])
             container_env = {
                 key: env[key]
-                for key in (*CONTAINER_AUTH_VARS, *(forward_env or []),
+                for key in (*CONTAINER_AUTH_VARS, "PYTHONDONTWRITEBYTECODE", *(forward_env or []),
                             *(("TMPDIR", "TMP", "TEMP") if temp_dir is not None else ()))
                 if key in env
             }
@@ -1000,6 +1001,31 @@ class AgentRunner:
         detail = (result.error or result.status or "unknown failure").strip().splitlines()
         return False, (detail[0] if detail else "unknown failure")[:300]
 
+    def probe_claude_sandbox_canary(
+        self, model: str, claude_cfg: ClaudeConfig, timeout: float = 90
+    ) -> tuple[bool, list[str]]:
+        import dataclasses
+
+        probe_cfg = dataclasses.replace(
+            claude_cfg,
+            max_turns=2,
+            max_budget_usd=0.10,
+            effort=None,
+        )
+        prompt = (
+            "Run each of these 4 commands using the Bash tool:\n"
+            "1. cat << 'EOF'\nhello\nEOF\n"
+            "2. python3 -c \"print('canary')\"\n"
+            "3. VAR='test'; echo \"$VAR\"\n"
+            "4. echo \"quoted string test\""
+        )
+        with tempfile.TemporaryDirectory(prefix="skilldiff-canary-probe-") as tmp:
+            result = self._run_claude(
+                prompt, Path(tmp), model, probe_cfg, timeout=timeout
+            )
+        denials = result.permission_denials or []
+        return result.status == "ok", denials
+
     def claude_command(
         self,
         prompt: str,
@@ -1152,6 +1178,9 @@ class AgentRunner:
         input_complete = output_complete = cache_complete = True
         cache_write_complete = True
         saw_cache_write = False
+        skill_names = _codex_skill_names(cwd)
+        skill_available: Optional[bool] = None
+        skill_invoked = False
 
         for line in stdout.splitlines():
             line = line.strip()
@@ -1165,6 +1194,14 @@ class AgentRunner:
                 continue
             item_type = str(item.get("type", ""))
 
+            # `codex exec --json` identifies skills available to the session
+            # in its thread.started event. Keep availability distinct from use:
+            # a skill can be installed without the agent opening or invoking it.
+            if item_type == "thread.started" and skill_names:
+                skills = item.get("skills")
+                if isinstance(skills, list):
+                    skill_available = any(_skill_matches(s, skill_names) for s in skills)
+
             # Current `codex exec --json` wraps work in item.* events.
             inner = item.get("item")
             if isinstance(inner, dict):
@@ -1176,6 +1213,16 @@ class AgentRunner:
                             response_texts.append(text)
                     elif inner_type not in {"reasoning", "todo_list", "error"}:
                         tool_calls += 1
+                    if inner_type == "command_execution" and skill_names:
+                        skill_invoked = skill_invoked or detect_skill_reference(
+                            str(inner.get("command") or ""), skill_names
+                        )
+                elif item_type == "item.started" and skill_names:
+                    inner_type = str(inner.get("type", ""))
+                    if inner_type == "command_execution":
+                        skill_invoked = skill_invoked or detect_skill_reference(
+                            str(inner.get("command") or ""), skill_names
+                        )
                 continue
 
             if item_type == "turn.completed":
@@ -1251,6 +1298,8 @@ class AgentRunner:
             ),
             num_turns=num_turns or None,
             permission_denials=codex_permission_denials(execution.stderr),
+            skill_available=skill_available,
+            skill_invoked=skill_invoked,
         )
         return _finalize_status(result, execution)
 
@@ -1590,6 +1639,22 @@ def _skill_matches(value: Any, skill_names: list[str]) -> bool:
     return candidate in skill_names
 
 
+def _codex_skill_names(workspace: Path) -> list[str]:
+    """Read installed workspace skill names for Codex event parsing."""
+    names: list[str] = []
+    for root in (workspace / ".agents" / "skills", workspace / ".codex" / "skills"):
+        if not root.is_dir():
+            continue
+        for path in root.glob("*/SKILL.md"):
+            name = path.parent.name
+            if name not in names:
+                names.append(name)
+            frontmatter_name = read_skill_name(path.parent)
+            if frontmatter_name and frontmatter_name not in names:
+                names.append(frontmatter_name)
+    return names
+
+
 def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     """Parse `claude -p --output-format stream-json` (or plain `json`) output."""
     parsed: dict[str, Any] = {
@@ -1674,10 +1739,17 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             )
             denials = event.get("permission_denials")
             if isinstance(denials, list):
-                parsed["permission_denials"] = [
-                    str(d.get("tool_name") or "unknown") if isinstance(d, dict) else "unknown"
-                    for d in denials
-                ]
+                parsed["permission_denials"] = []
+                for d in denials:
+                    if isinstance(d, dict):
+                        tool = str(d.get("tool_name") or "unknown")
+                        reason = d.get("reason") or d.get("message")
+                        if reason:
+                            parsed["permission_denials"].append(f"{tool} ({reason})")
+                        else:
+                            parsed["permission_denials"].append(tool)
+                    else:
+                        parsed["permission_denials"].append(str(d))
             subtype = str(event.get("subtype") or "")
             if event.get("is_error") or subtype.startswith("error"):
                 parsed["is_error"] = True
