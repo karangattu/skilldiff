@@ -7,10 +7,10 @@ Availability and actual loading are separate measurements. Custom wrappers must
 support `app-server --stdio`; disable `codex.verify_skills` only if discovery is
 unsupported and explicitly disclose that availability was not verified.
 
-On macOS, use `isolation: macos` with Codex and specific `codex.read_paths` for
-external runtimes or editable packages. Native discovery and agent execution
-share the sandbox policy; a sibling-read probe verifies the boundary. Host user
-files and temporary siblings are blocked; own workspace and scratch are usable.
+On macOS, use `isolation: macos` with Codex or Claude and specific `codex.read_paths`
+or `claude.read_paths` for external runtimes or editable packages. Native discovery
+and agent execution share the sandbox policy; a sibling-read probe verifies the boundary.
+Host user files and temporary siblings are blocked; own workspace and scratch are usable.
 Target sources, conventional grader/solution/run directories, host skills and
 plugins, and skills bundled in allowed runtimes remain blocked. Native sessions
 use private `CODEX_HOME` with only the login's `auth.json` copied; host config,

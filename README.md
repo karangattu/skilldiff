@@ -565,7 +565,7 @@ forwarded. Host login directories are not mounted. Claude and Codex container
 runs require API authentication; their host subscription logins are unavailable
 inside the image. Run `skilldiff check` to verify the image, executable,
 authentication configuration, and graders before starting an evaluation.
-For Codex skill experiments, `check` queries `app-server skills/list` in fresh workspaces to verify skill discovery prior to paid sessions. Codex also supports opt-in macOS native isolation (`isolation: macos`) via `sandbox-exec` with private session directories, and tasks can declare a `runtime_probe` command. See [preflight reference](skills/skilldiff/references/preflight.md) for details.
+For Codex skill experiments, `check` queries `app-server skills/list` in fresh workspaces to verify skill discovery prior to paid sessions. Codex and Claude also support opt-in macOS native isolation (`isolation: macos`) via `sandbox-exec` with private session directories; Claude takes its runtime root from `claude.read_paths`, as Codex does from `codex.read_paths`. Tasks can declare a `runtime_probe` command. See [preflight reference](skills/skilldiff/references/preflight.md) for details.
 
 
 Running these from inside an agent needs a few things too:

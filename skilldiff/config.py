@@ -51,6 +51,7 @@ CLAUDE_KEYS = frozenset(
         "isolate",
         "bin_path",
         "extra_args",
+        "read_paths",
     }
 )
 CODEX_KEYS = frozenset(
@@ -276,6 +277,8 @@ class ClaudeConfig:
     isolate: bool = True
     bin_path: Optional[str] = None
     extra_args: list[str] = field(default_factory=list)
+    # Readable roots for isolation: macos (the runtime the agent must execute).
+    read_paths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -856,6 +859,8 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         isolate=claude_data.get("isolate", True),
         bin_path=claude_data.get("bin_path"),
         extra_args=claude_data.get("extra_args", []),
+        read_paths=[str((experiment_path.parent / Path(p).expanduser()).resolve())
+                    for p in claude_data.get("read_paths", [])],
     )
 
     codex_data = data.get("codex") or {}
@@ -947,8 +952,10 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     isolation = str(data.get("isolation", "local") or "local").strip().lower()
     if codex_cfg.read_paths and isolation != "macos":
         raise ValueError("codex.read_paths requires isolation: macos")
-    if isolation == "macos" and harness != "codex":
-        raise ValueError("isolation: macos currently supports the Codex harness only")
+    if claude_cfg.read_paths and isolation != "macos":
+        raise ValueError("claude.read_paths requires isolation: macos")
+    if isolation == "macos" and harness not in {"codex", "claude"}:
+        raise ValueError("isolation: macos supports the Codex and Claude harnesses only")
     container_image = data.get("container_image")
 
     exp_config = ExperimentConfig(

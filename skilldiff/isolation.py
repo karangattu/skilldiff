@@ -22,9 +22,9 @@ def macos_command(
     reads = [Path(p).expanduser().resolve() for p in read_paths]
     for root in reads:
         if not root.exists():
-            raise ValueError(f"codex.read_paths does not exist: {root}")
+            raise ValueError(f"read_paths root does not exist: {root}")
         if root in cwd.resolve().parents or root == Path.home() or root in Path.home().parents:
-            raise ValueError(f"codex.read_paths is too broad for isolation: {root}")
+            raise ValueError(f"read_paths root is too broad for isolation: {root}")
     binary = shutil.which(cmd[0]) or cmd[0]
     # Executables and OS libraries are readable; user content is opt-in.
     reads += [Path(p) for p in ("/System", "/Library", "/usr", "/bin", "/sbin", "/opt", "/dev")]
@@ -39,6 +39,19 @@ def macos_command(
         rules.append(f"(deny file-read* file-write* (subpath {json.dumps(value)}))")
     for root in roots:
         rules.append(f"(allow file-read* file-write* (subpath {json.dumps(str(root))}))")
+    # Claude Code keeps its per-user scratch directory at /tmp/claude-<uid> (not TMPDIR), and
+    # creating it needs write access on the parent. Allow only that name pattern.
+    # Stat (not list) the /tmp parents so path lookups through them resolve.
+    rules.append('(allow file-read-metadata (literal "/tmp") (literal "/private/tmp") '
+                 '(literal "/private"))')
+    rules.append(
+        '(allow file-read* file-write* (regex #"^/(private/)?tmp/claude-[0-9]+(/.*)?$"))'
+    )
+    claude_json = Path.home() / ".claude.json"
+    if claude_json.is_file():
+        rules.append(f"(allow file-read* (literal {json.dumps(str(claude_json))}))")
+        for parent in claude_json.parents:
+            rules.append(f"(allow file-read-metadata (literal {json.dumps(str(parent))}))")
     for root in reads:
         rules.append(f"(allow file-read* (subpath {json.dumps(str(root))}))")
     for root in [*roots, *reads]:
@@ -47,7 +60,7 @@ def macos_command(
     # Runtime packages can bundle skills several levels below the declared root.
     for value in read_paths:
         root = Path(value).expanduser().resolve()
-        pattern = "^" + re.escape(str(root)) + r"/(.*/)?\.(agents|codex)(/|$)"
+        pattern = "^" + re.escape(str(root)) + r"/(.*/)?\.(agents|codex|claude)(/|$)"
         rules.append(f'(deny file-read* (regex {json.dumps(pattern)}))')
     # Even an explicit runtime root must not expose bundled skills or graders.
     for value in protected_paths:

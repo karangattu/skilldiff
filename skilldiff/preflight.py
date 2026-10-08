@@ -21,10 +21,13 @@ def protected_read_paths(config: ExperimentConfig) -> list[str]:
         )
     paths.extend(
         str(Path.home() / name)
-        for name in (".agents/skills", ".codex/skills", ".codex/plugins", ".codex/memories")
+        for name in (".agents/skills", ".codex/skills", ".codex/plugins", ".codex/memories",
+                     ".claude/skills", ".claude/plugins")
     )
     for root in config.codex.read_paths:
         paths.extend(str(Path(root) / name) for name in (".agents", ".codex"))
+    for root in config.claude.read_paths:
+        paths.extend(str(Path(root) / name) for name in (".agents", ".claude"))
     return paths
 
 
@@ -52,11 +55,14 @@ def probe_workspace(
     runtime_probe: str | None = None,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {"expected_skills": expected_skills}
+    read_paths = (
+        config.claude.read_paths if config.harness == "claude" else config.codex.read_paths
+    )
     kwargs = dict(
         isolation=config.isolation,
         container_image=config.container_image,
         temp_dir=scratch,
-        read_paths=config.codex.read_paths,
+        read_paths=read_paths,
         protected_paths=protected_read_paths(config),
     )
     if config.isolation == "macos":
@@ -70,7 +76,9 @@ def probe_workspace(
             result = runner._exec(
                 ["/bin/sh", "-c", command],
                 cwd,
-                codex_env(config.codex, config.isolation, scratch),
+                codex_env(config.codex, config.isolation, scratch)
+                if config.harness == "codex"
+                else os.environ.copy(),
                 10,
                 **kwargs,
             )

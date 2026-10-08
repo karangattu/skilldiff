@@ -739,8 +739,8 @@ class ExperimentRunner:
         if self.config.isolation not in {"local", "docker", "podman", "macos"}:
             raise ValueError(f"Unsupported isolation mode: {self.config.isolation}")
         if self.config.isolation == "macos":
-            if platform.system() != "Darwin" or self.config.harness != "codex":
-                raise ValueError("isolation: macos requires macOS and the Codex harness")
+            if platform.system() != "Darwin" or self.config.harness not in {"codex", "claude"}:
+                raise ValueError("isolation: macos requires macOS and the Codex or Claude harness")
         validate_container_auth(self.config)
         if self.config.isolation in {"docker", "podman"}:
             self._container_image_id = resolve_container_image(

@@ -864,6 +864,8 @@ class AgentRunner:
                 isolation=isolation,
                 container_image=container_image,
                 temp_dir=temp_dir,
+                protected_paths=(protected_read_paths(config)
+                                 if isinstance(config, ExperimentConfig) else []),
             )
 
         if result.skill_invoked is None and names and result.transcript:
@@ -934,6 +936,7 @@ class AgentRunner:
         isolation: str = "local",
         container_image: Optional[str] = None,
         temp_dir: Optional[Path] = None,
+        protected_paths: Optional[list[str]] = None,
     ) -> RunResult:
         cmd = self.claude_command(prompt, model, claude_cfg)
         env = os.environ.copy()
@@ -947,7 +950,8 @@ class AgentRunner:
         try:
             execution = self._exec(
                 cmd, cwd, env, timeout, isolation=isolation, container_image=container_image,
-                temp_dir=temp_dir,
+                temp_dir=temp_dir, read_paths=claude_cfg.read_paths,
+                protected_paths=protected_paths,
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
