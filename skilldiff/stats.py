@@ -77,6 +77,24 @@ def bootstrap_ci(
     return lo, hi
 
 
+def relative_bootstrap_ci(
+    pairs: list[tuple[float, float]],
+) -> Optional[tuple[float, float]]:
+    """95% interval for change in totals, resampling matched pairs together."""
+    if len(pairs) < 2:
+        return None
+    rng = random.Random(BOOTSTRAP_SEED)
+    changes = []
+    for _ in range(BOOTSTRAP_RESAMPLES):
+        sample = rng.choices(pairs, k=len(pairs))
+        baseline = sum(c for c, _ in sample)
+        if baseline <= 0:
+            return None  # A percentage cannot be established against a zero baseline.
+        changes.append(sum(t - c for c, t in sample) / baseline)
+    changes.sort()
+    return changes[int(0.025 * BOOTSTRAP_RESAMPLES)], changes[int(0.975 * BOOTSTRAP_RESAMPLES)]
+
+
 def _get_score(run: dict[str, Any]) -> Optional[float]:
     if not usable_agent_run(run):
         return None
@@ -186,6 +204,12 @@ def paired_comparison(
             # Valid pairs for this metric; total pairs is result["pairs"].
             "n": len(valid),
         }
+        if name in ("cost", "tokens"):
+            relative_ci = relative_bootstrap_ci(valid)
+            result[name].update(
+                relative_ci_low=relative_ci[0] if relative_ci else None,
+                relative_ci_high=relative_ci[1] if relative_ci else None,
+            )
     # Wins/losses/ties use only pairs where both scores are known.
     score_pairs = [
         (METRICS["score"](c), METRICS["score"](t)) for c, t in pairs

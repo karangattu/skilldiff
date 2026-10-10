@@ -149,3 +149,74 @@ def test_denials_in_verdict_headline_and_confound_callout():
     assert kind == "tip"
 
 
+
+
+@pytest.mark.parametrize("summary_only", [False, True])
+def test_planned_but_unrun_heldout_never_falls_back_to_dev(summary_only):
+    from skilldiff.reporter import build_decision_context
+
+    results = evaluation()
+    results["task_details"] = [
+        {"id": task, "split": "dev"} for task in results["tasks"]
+    ] + [{"id": "unrun", "split": "held-out"}]
+    results["interrupted"] = True
+    if summary_only:
+        decision = build_decision_context(evaluation())
+        results["overall"] = {
+            "control": decision["control"], "skill": decision["skill"],
+            "paired": decision["paired"],
+        }
+        results.pop("runs")
+    for build in (_format_results, build_markdown_report, build_html_report, build_quarto_report):
+        output = build(results)
+        assert recommendations(output) == ["NEEDS MORE RUNS"]
+        assert "held-out" in output
+
+
+@pytest.mark.parametrize("metric,threshold", [
+    ("cost", "required_cost_reduction_pct"),
+    ("input_tokens", "required_token_reduction_pct"),
+])
+@pytest.mark.parametrize("savings,expected", [
+    ([50, None, None, None, None, None], "NEEDS MORE RUNS"),
+    ([50, 50, 50, 50, None, None], "NEEDS MORE RUNS"),
+    ([1, 1, 1, 90, 90, 90], "NEEDS MORE RUNS"),
+    ([50, 51, 52, 53, 54, 55], "SHIP"),
+])
+def test_savings_need_enough_pairs_and_bound_above_required_percentage(
+    metric, threshold, savings, expected,
+):
+    results = evaluation()
+    results["thresholds"] = {"meaningful_score_gain_pp": 5, threshold: 40}
+    for i, saving in enumerate(savings):
+        results["runs"]["control"][i][metric] = 100 if saving is not None else None
+        results["runs"]["treatment"][i][metric] = 100 - saving if saving is not None else None
+    for build in (_format_results, build_markdown_report, build_html_report, build_quarto_report):
+        output = build(results)
+        assert recommendations(output) == [expected]
+
+
+@pytest.mark.parametrize("thresholds", [{}, {"meaningful_score_gain_pp": 5}])
+@pytest.mark.parametrize("case", ["small", "collapsed"])
+def test_thresholds_do_not_bypass_evidence_safeguards(thresholds, case):
+    results = evaluation()
+    results["thresholds"] = thresholds
+    if case == "small":
+        results["runs"] = {arm: runs[:3] for arm, runs in results["runs"].items()}
+    else:
+        for run in results["runs"]["treatment"]:
+            run["score"] = 0.6
+    for build in (_format_results, build_markdown_report, build_html_report, build_quarto_report):
+        assert recommendations(build(results)) == ["NEEDS MORE RUNS"]
+
+
+def test_saving_exactly_at_threshold_is_not_rejected_by_float_rounding():
+    from skilldiff.reporter import build_decision_context
+
+    results = evaluation()
+    results["thresholds"] = {"required_cost_reduction_pct": 10}
+    for run in results["runs"]["control"]:
+        run["cost"] = 1.0
+    for run in results["runs"]["treatment"]:
+        run["cost"] = 0.9
+    assert build_decision_context(results)["recommendation"][1] == "SHIP"

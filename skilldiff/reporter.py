@@ -1151,104 +1151,67 @@ def _practical_assessment(
     except (TypeError, ValueError):
         ci_low_pp = None
 
-    def _saving(key: str) -> tuple[Optional[float], bool, Any, Any]:
-        metric = (paired or {}).get(key) or {}
-        rel = metric.get("relative_change", None)
-        pct: Optional[float] = None
-        if rel is not None:
-            try:
-                pct = -float(rel) * 100
-            except (TypeError, ValueError):
-                pct = None
-        lo, hi = metric.get("ci_low"), metric.get("ci_high")
-        proven = False
-        try:
-            if lo is not None and hi is not None and float(hi) < 0:
-                proven = True
-        except (TypeError, ValueError):
-            proven = False
-        return pct, proven, lo, hi
-
-    saving_pct, cost_proven_saving, cost_lo, _ = _saving("cost")
-    token_pct, token_proven_saving, token_lo, _ = _saving("tokens")
-
-    # Regression gate uses the lower confidence bound, not the mean.
-    if ci_low_pp is not None:
-        score_ok = ci_low_pp >= -allowed_loss
-        gain_ok = (ci_low_pp >= meaningful_gain) if meaningful_gain else (ci_low_pp > 0)
-    else:
-        # No interval (n<2): fall back to point but flag as provisional.
-        score_ok = mean_pp >= -allowed_loss
-        gain_ok = mean_pp >= meaningful_gain if meaningful_gain else mean_pp > 0
-    cost_ok = True
-    if required_saving and saving_pct is None:
-        cost_ok = False  # required saving but no cost data
-    elif required_saving and saving_pct is not None:
-        # Point estimate must meet the bar AND the interval must exclude cost increases.
-        cost_ok = (saving_pct >= required_saving) and (
-            cost_proven_saving or cost_lo is None
-        )
-    token_ok = True
-    if required_tokens and token_pct is None:
-        token_ok = False
-    elif required_tokens and token_pct is not None:
-        token_ok = (token_pct >= required_tokens) and (
-            token_proven_saving or token_lo is None
-        )
-
+    # Score and resource thresholds must be supported by intervals, never point fallbacks.
+    if ci_low_pp is None:
+        return "Practical check: score interval missing, cannot verify required quality."
+    score_ok = ci_low_pp >= -allowed_loss
+    gain_ok = (ci_low_pp >= meaningful_gain) if meaningful_gain else (ci_low_pp > 0)
     if not score_ok:
-        bound_txt = (
-            f"{ci_low_pp:+.0f} pp lower bound"
-            if ci_low_pp is not None
-            else f"{mean_pp:+d} pp"
-        )
         return (
-            f"Practical check: {bound_txt} does not clear the allowed regression "
-            f"(-{allowed_loss:g} pp). Do not ship on point estimates."
+            f"Practical check: {ci_low_pp:+.0f} pp lower bound does not clear the allowed "
+            f"regression (-{allowed_loss:g} pp). Do not ship on point estimates."
         )
-    if required_saving and saving_pct is None:
-        return "Practical check: cost data missing, cannot verify required saving."
-    if required_tokens and token_pct is None:
-        return "Practical check: token data missing, cannot verify required saving."
-    if required_saving and saving_pct is not None and not cost_ok:
-        if not cost_proven_saving and cost_lo is not None:
+
+    savings: dict[str, float] = {}
+    for key, required in (("cost", required_saving), ("tokens", required_tokens)):
+        if not required:
+            continue
+        metric = (paired or {}).get(key) or {}
+        relative = metric.get("relative_change")
+        if relative is None:
+            return f"Practical check: {key} data missing, cannot verify required saving."
+        try:
+            savings[key] = -float(relative) * 100
+            count = int(metric.get("n", 0))
+            upper = metric.get("relative_ci_high")
+            upper = float(upper) if upper is not None else None
+        except (TypeError, ValueError):
+            return f"Practical check: {key} data invalid, cannot verify required saving."
+        if not math.isfinite(savings[key]) or (upper is not None and not math.isfinite(upper)):
+            return f"Practical check: {key} data invalid, cannot verify required saving."
+        if count < 5 or upper is None:
             return (
-                f"Practical check: cost saving {saving_pct:+.0f}% meets "
-                f"{required_saving:g}% on average "
-                "but the cost interval includes zero — saving not established."
+                f"Practical check: insufficient {key} evidence ({count} usable pairs); "
+                "need at least 5 pairs and a percentage interval to verify required saving."
             )
-        return (
-            f"Practical check: cost saving {saving_pct:+.0f}% is below required "
-            f"{required_saving:g}%."
-        )
-    if required_tokens and token_pct is not None and not token_ok:
-        if not token_proven_saving and token_lo is not None:
+        lower_saving = -float(upper) * 100
+        if lower_saving < required and not math.isclose(
+            lower_saving, required, rel_tol=1e-12, abs_tol=1e-12
+        ):
+            if savings[key] < required:
+                return (
+                    f"Practical check: {key} saving {savings[key]:+.0f}% is below required "
+                    f"{required:g}%."
+                )
             return (
-                f"Practical check: token saving {token_pct:+.0f}% meets "
-                f"{required_tokens:g}% on average "
-                "but the token interval includes zero — saving not established."
+                f"Practical check: {key} saving averages {savings[key]:+.0f}%, but its "
+                f"95% lower bound ({lower_saving:+.0f}%) does not establish the required "
+                f"{required:g}% saving."
             )
-        return (
-            f"Practical check: token saving {token_pct:+.0f}% is below required "
-            f"{required_tokens:g}%."
-        )
+    saving_pct = savings.get("cost")
+    token_pct = savings.get("tokens")
     # Compression decision: preserved quality + proven resource reduction.
     if preset == "compression" and (required_saving or required_tokens):
-        if score_ok and cost_ok and token_ok:
-            parts = [f"{mean_pp:+d} pp"]
-            if required_saving and saving_pct is not None:
-                parts.append(f"cost {saving_pct:+.0f}%")
-            if required_tokens and token_pct is not None:
-                parts.append(f"tokens {token_pct:+.0f}%")
-            return (
-                "Practical check: meets compression criteria — quality preserved "
-                f"({', '.join(parts)}; bounds clear)."
-            )
+        parts = [f"{mean_pp:+d} pp"]
+        if required_saving and saving_pct is not None:
+            parts.append(f"cost {saving_pct:+.0f}%")
+        if required_tokens and token_pct is not None:
+            parts.append(f"tokens {token_pct:+.0f}%")
         return (
-            "Practical check: compression not established — quality must be preserved "
-            "by bounds and resource savings proven by intervals."
+            "Practical check: meets compression criteria — quality preserved "
+            f"({', '.join(parts)}; bounds clear)."
         )
-    if gain_ok and cost_ok and token_ok:
+    if gain_ok:
         if (required_saving and saving_pct is not None) or (
             required_tokens and token_pct is not None
         ):
@@ -1264,8 +1227,6 @@ def _practical_assessment(
         if meaningful_gain:
             bound_note = (
                 f"lower bound {ci_low_pp:+.0f} pp clears +{meaningful_gain:g} pp"
-                if ci_low_pp is not None
-                else f"mean {mean_pp:+d} pp (no interval)"
             )
             return f"Practical check: meets criteria — {bound_note} gain criterion."
         return "Practical check: meets criteria — bounds clear."
@@ -1735,12 +1696,15 @@ def build_decision_context(
     }
     held_control = [r for r in control_runs if _run_split(r, splits) == "held-out"]
     held_treatment = [r for r in treatment_runs if _run_split(r, splits) == "held-out"]
-    held = paired_comparison(held_control, held_treatment) if held_control or held_treatment else {}
+    has_held_out = bool(held_control or held_treatment) or any(
+        split.strip().lower() in _HELD_OUT_ALIASES for split in splits.values()
+    )
+    held = paired_comparison(held_control, held_treatment) if has_held_out else {}
     if control_runs or treatment_runs:
         control, skill = _paired_comparison_metrics(control_runs, treatment_runs)
         paired = paired_comparison(control_runs, treatment_runs)
         selected_control, selected_treatment = control_runs, treatment_runs
-        if held_control or held_treatment:
+        if has_held_out:
             # Even an unmatched held-out arm must not fall back to development evidence.
             selected_control, selected_treatment = held_control, held_treatment
         selected_paired = paired_comparison(selected_control, selected_treatment)
@@ -1753,11 +1717,15 @@ def build_decision_context(
         paired = overall.get("paired") or {}
         selected_paired, selected_metrics = paired, (control, skill)
         tasks_count = None  # Legacy summary-only records cannot establish task coverage.
+        if has_held_out:
+            selected_paired = held
+            selected_metrics = _paired_comparison_metrics(held_control, held_treatment)
+            tasks_count = 0
     pairs = int(held.get("pairs", 0))
     scored = int((held.get("score") or {}).get("n", 0))
     coverage = f"{scored}/{pairs} usable score pair(s)"
     note = ""
-    if held_control or held_treatment:
+    if has_held_out:
         note = (
             f"Headline and closing decision use held-out data only ({coverage}). "
             "Dev pairs are for iteration."
@@ -1769,7 +1737,7 @@ def build_decision_context(
     recommendation = _recommendation(
         selected_paired, treatment_label.lower(), thresholds=thresholds,
         tasks_count=tasks_count, preset=preset, valid=results.get("valid") is not False,
-        paired_held_out=held if held.get("pairs") else None,
+        paired_held_out=held if has_held_out else None,
         control_score=selected_metrics[0].get("task_score"),
         treatment_score=selected_metrics[1].get("task_score"),
     )
@@ -1806,7 +1774,7 @@ def _recommendation(
 
     basis = ""
     use = paired or {}
-    if paired_held_out and paired_held_out.get("pairs"):
+    if paired_held_out is not None:
         use = paired_held_out
         basis = (
             f"Decision uses the {use.get('pairs')} held-out pair(s) only; "
@@ -1834,11 +1802,17 @@ def _recommendation(
         return f"The {subject} {change} (95% CI {ci}, {pairs_txt})"
 
     if total == 0:
+        reason = (
+            "No paired held-out results are available. Complete the planned held-out "
+            "evaluation; development results cannot replace validation."
+            if paired_held_out is not None else
+            "No paired runs in this result, so there is nothing to decide yet. "
+            "Run the experiment to get paired scores with a confidence interval."
+        )
         return (
             _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
             "NEEDS MORE RUNS",
-            "No paired runs in this result, so there is nothing to decide yet. "
-            "Run the experiment to get paired scores with a confidence interval.",
+            reason,
         )
     if mean_raw is None or n == 0:
         return (
@@ -1859,17 +1833,27 @@ def _recommendation(
     effect = classify_effect(score)
     collapsed = lo is not None and hi is not None and lo == hi
     mean_pp = round(float(mean_raw) * 100)
+    evidence_cautions: list[str] = []
+    if n < 5:
+        evidence_cautions.append(f"only {n} graded pairs")
+    if collapsed:
+        evidence_cautions.append(
+            "the CI collapsed (identical differences), so uncertainty is understated"
+        )
+    if tasks_count is not None and tasks_count < 3:
+        evidence_cautions.append(f"only {tasks_count} task(s), which limits generalization")
     practical = ""
     if thresholds and mean_raw is not None:
         practical = _practical_assessment(use, thresholds, mean_pp, preset=preset)
 
     if practical:
         if practical.startswith("Practical check: meets"):
-            if tasks_count is not None and tasks_count < 3:
+            if evidence_cautions:
                 return (
                     _RECOMMENDATION_KIND["NEEDS MORE RUNS"], "NEEDS MORE RUNS",
-                    f"{basis}Only {tasks_count} task(s) contributed usable paired scores. "
-                    "Add representative tasks before shipping.",
+                    f"{basis}{effect_sentence('up' if mean_pp >= 0 else 'down')}, but "
+                    f"{'; '.join(evidence_cautions)}. "
+                    "Treat the result as preliminary; add representative tasks or runs.",
                 )
             return (
                 _RECOMMENDATION_KIND["SHIP"],
@@ -1932,15 +1916,7 @@ def _recommendation(
             "but the sample is too small to rule out an effect. Add repetitions.",
         )
     if effect == "better":
-        cautions: list[str] = []
-        if n < 5:
-            cautions.append(f"only {n} graded pairs")
-        if collapsed:
-            cautions.append(
-                "the CI collapsed (identical differences), so uncertainty is understated"
-            )
-        if tasks_count is not None and tasks_count < 3:
-            cautions.append(f"only {tasks_count} task(s), which limits generalization")
+        cautions = evidence_cautions
         if cautions:
             joined = (
                 cautions[0]
@@ -2774,7 +2750,6 @@ def build_report_blocks(
         if isinstance(td, dict) and td.get("id")
     }
     paired_held_out = decision["held_out"]
-    held_out_pairs = int(paired_held_out.get("pairs", 0))
     held_out_coverage = decision["coverage"]
     rec_tasks_count = decision["tasks_count"]
     headline_paired = decision["paired"]
@@ -3061,7 +3036,7 @@ def build_report_blocks(
                 group_align,
             )
         )
-        if held_out_pairs:
+        if paired_held_out:
             blocks.append(
                 (
                     "p",

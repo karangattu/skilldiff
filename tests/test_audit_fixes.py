@@ -285,6 +285,8 @@ def test_compression_verdict_on_equal_scores_with_savings():
         "tokens": {
             "mean_diff": -500,
             "relative_change": -0.5,
+            "relative_ci_low": -0.7,
+            "relative_ci_high": -0.3,
             "ci_low": -700,
             "ci_high": -300,
             "n": 6,

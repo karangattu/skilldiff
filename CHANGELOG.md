@@ -6,6 +6,13 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Planned held-out tasks must supply decision evidence; interrupted runs cannot ship on development results alone.
+- Required cost and token savings now need five usable pairs and a percentage confidence bound meeting the target.
+- Pre-registered thresholds no longer bypass small-sample, task-coverage, or collapsed-score-interval safeguards.
+- Smoke-test guidance uses `run --split dev --runs 1` to keep held-out outcomes unseen while tuning. The new `--split` filter combines with task selection and rejects empty selections.
+
 ## [0.18.0] - 2026-10-08
 
 ### Added

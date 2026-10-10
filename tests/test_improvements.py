@@ -159,6 +159,8 @@ def test_verdict_practical_thresholds():
         "cost": {
             "mean_diff": -0.1,
             "relative_change": -0.2,
+            "relative_ci_low": -0.3,
+            "relative_ci_high": -0.1,
             "ci_low": -0.15,
             "ci_high": -0.05,
             "n": 6,

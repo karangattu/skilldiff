@@ -231,8 +231,8 @@ The report shows adoption and results for each group in By category.
 Splits separate development from validation. `split` is `dev` or `held-out`
 (it is inferred from `tasks/dev/` and `tasks/heldout/` directories and may be
 omitted; a contradiction refuses). The report shows a By split table, and when
-held-out pairs exist the headline and closing decision use them only, so
-development results cannot stand in for validation.
+held-out tasks are planned the headline and closing decision require their results.
+Missing held-out pairs cannot be replaced with development evidence.
 
 A grader runs in the workspace after the agent stops:
 
@@ -294,7 +294,22 @@ failure_policy:
   missing: exclude
 ```
 
-Shipping needs bounds to clear the limits, not point estimates. The verdict checks the lower confidence bound for score and requires the cost and token intervals to exclude increases. It separates a useful gain from a small but real gain. For compression, equal scores still evaluate thresholds: quality preserved plus proven resource savings is the win.
+Shipping needs bounds to clear the limits, not point estimates. The verdict checks
+score's lower confidence bound. Required cost and token savings each need at
+least five usable paired measurements and a 95% lower bound on percentage savings
+that meets the requested percentage. The percentage interval resamples matched
+pairs and compares their totals; it is unavailable if a resampled control total
+is zero. Saved paired metrics include `relative_ci_low` and `relative_ci_high`
+for cost and tokens, expressed as fractional changes (negative means savings).
+Older summary-only results without those bounds cannot establish required savings;
+reports with raw runs recompute them.
+
+Every SHIP decision also needs at least five scored pairs, at least three usable
+tasks when task coverage is known, and a non-collapsed score interval. Thresholds
+do not bypass these checks. Compression still checks quality preservation and
+resource savings, but identical score differences remain preliminary.
+When held-out tasks are planned, missing held-out results produce NEEDS MORE RUNS;
+dev evidence cannot substitute for them.
 
 The report ends with one bottom line applying these rules: **SHIP**, **DO NOT
 SHIP**, or **NEEDS MORE RUNS**, with the reason. A confidence interval that
@@ -347,7 +362,7 @@ skilldiff init --pr 42 --repo /path/to/repo --base origin/main --dir evaluations
 # --pr-pair merge-base (merge-base vs head) or base-merge (base tip vs synthetic merge)
 cd evaluations/pr-42
 skilldiff check
-skilldiff run --runs 1
+skilldiff run --split dev --runs 1
 ```
 
 Each template still needs representative tasks, fixtures, and graders. Tune on dev tasks, then compare frozen versions on held-out tasks.
@@ -393,7 +408,7 @@ Keep the entire run directory, including `inputs/`, for recovery. A small siblin
 | `skilldiff init --skill-a A --skill-b B [--include-baseline] [--preset revision\|compression] [--dir D]` | Make a skill A/B test with paired results |
 | `skilldiff init --pr N --repo PATH [--base REF] [--pr-mode M] [--pr-pair P]` | Make a PR test from local refs |
 | `skilldiff check [-c CONFIG] [--no-probe] [--no-grade] [--scan-home]` | Check config, CLI, skill exposure, and graders; optionally scan HOME for copies. `--no-probe` skips the Claude login call; `--no-grade` skips graders. |
-| `skilldiff run [-c CONFIG] [--runs N] [-j N] [-m MODEL] [-t TASK] [--resume \| --resume-from DIR] [--seed N]` | Run the test (resume reuses pairs only when hashes match) |
+| `skilldiff run [-c CONFIG] [--runs N] [--split dev\|held-out] [-j N] [-m MODEL] [-t TASK] [--resume \| --resume-from DIR] [--seed N]` | Run the test (resume reuses pairs only when hashes match) |
 | `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run |
 | `skilldiff report [RUN_DIR]` | Rebuild reports for a run |
 | `skilldiff regrade [RUN_DIR] [-c CONFIG] [-t TASK] [--dry-run]` | Re-run the current graders on a finished run without any agent session |
@@ -451,3 +466,11 @@ Running these from inside an agent needs a few things too:
 - A signed-in CLI. SkillDiff starts separate agent runs with your normal login. Sign in once in a terminal with `claude auth login`.
 - Network and login-folder access. `check` fails with `host:` and prints the fix when the agent's sandbox would block them; `run` refuses to start.
 - Time. A full test can exceed the agent timeout. Then run it in the background and check it with `skilldiff results`.
+
+### Development-only smoke tests
+
+Use `skilldiff run --split dev --runs 1` while fixing prompts and graders.
+`--split` accepts `dev` or `held-out`, combines with `--task`, and fails before
+starting sessions when no tasks match. Unlabelled tasks are development tasks.
+After the smoke test, start a new full run without `--split` or `--resume`.
+Do not inspect held-out outcomes until the design is frozen.

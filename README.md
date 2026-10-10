@@ -105,7 +105,7 @@ Once the skill is installed, ask in plain words. Paste a request like this:
 ```text
 Use skilldiff to test whether the skill at ~/code/my-pkg/skills/my-skill helps.
 Use the claude harness with sonnet. Set up the experiment outside the skill's
-repo, run skilldiff check and a 1-run smoke test, then show me the full-run
+repo, run skilldiff check and a 1-run dev-only smoke test, then show me the full-run
 cost and wait for my OK before running it.
 ```
 
@@ -123,7 +123,7 @@ The agent then:
 1. Reads and lints the skill (`skilldiff lint`).
 2. Creates the experiment (`skilldiff init`) and writes tasks, test projects, and graders.
 3. Runs `skilldiff check` and fixes what it reports.
-4. Runs a smoke test (`skilldiff run --runs 1`) and reads some transcripts.
+4. Runs a dev-only smoke test (`skilldiff run --split dev --runs 1`) and reads some transcripts.
 5. Shows you the session count and maximum cost, and waits for your OK.
 6. Runs the full test, then explains the report and `skilldiff diagnose` output.
 
@@ -152,8 +152,8 @@ cd my-skill-eval
 # 2. Describe a real task in tasks/ (do not name the skill in the prompt)
 # 3. Write a grader in graders/ that scores the result
 skilldiff check          # validates config, CLI login, permissions, and graders
-skilldiff run --runs 1   # smoke test: one pair per task
-skilldiff run            # full run
+skilldiff run --split dev --runs 1   # smoke test: one pair per dev task
+skilldiff run            # new full run, including frozen held-out tasks
 skilldiff results        # show the latest run
 ```
 
@@ -210,7 +210,7 @@ a broken permission setup cannot pass as a low score. To block reads outside the
 
 - Write tasks that need what only the skill knows, such as obscure APIs, recent changes, or house rules. If control already scores 100%, the task is too easy.
 - Include tasks where the skill should stay out of the way (`category: irrelevant`).
-- Tune on `tasks/dev/`, then freeze `tasks/heldout/`. The decision uses held-out pairs only.
+- Tune on `tasks/dev/`, then freeze `tasks/heldout/`. When held-out tasks are planned, the decision requires held-out pairs, even if none have run yet.
 - Start with 5 or more runs per arm, and fix that number before you look at results.
 - Give each grader a known-good and a broken solution (`validation:`), so `check` can prove the grader works.
 

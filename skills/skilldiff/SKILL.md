@@ -16,9 +16,7 @@ any other words as extra instructions, such as the models or harness to use.
 
 ## 1. Install and locate
 
-A git install is pinned to the commit that was current when it was installed, so an
-existing `skilldiff` will not pick up later fixes on its own. Install it if missing and
-refresh it otherwise:
+Git installs do not update automatically. Install or refresh the tool:
 
 ```bash
 command -v skilldiff >/dev/null || uv tool install git+https://github.com/karangattu/skilldiff
@@ -73,10 +71,8 @@ right revision into each fresh workspace per harness (`.claude/skills` for
 Claude, `.codex/skills` plus `.agents/skills` for Codex, `.opencode/skills`
 plus `.agents/skills` for OpenCode, `.agents/skills` for Antigravity).
 
-A complete worked example — a skill, dev and held-out tasks, fixtures, a
-deterministic grader, and a committed sample report — lives in
-[examples/csv-totals](https://github.com/karangattu/skilldiff/tree/main/examples/csv-totals).
-Copy its shape whenever you are unsure how a piece fits together.
+Use [examples/csv-totals](https://github.com/karangattu/skilldiff/tree/main/examples/csv-totals)
+for dev and held-out tasks, fixtures, a grader, and a sample report.
 
 ## 3. Design tasks (the important part)
 
@@ -103,8 +99,9 @@ Split tasks before you run:
 
 The split is recorded per task (`split: dev` or `split: held-out`, or inferred
 from the `dev/`/`heldout/` directory) and shown in the report's **By split**
-table. The closing recommendation uses held-out pairs only when they exist, so
-development results cannot stand in for validation.
+table. When held-out tasks are planned, the closing recommendation requires held-out
+pairs, even if those tasks have not run yet. Development results cannot stand
+in for missing validation.
 
 Other rules:
 
@@ -188,20 +185,23 @@ For a broader advisory check, use `skilldiff check --scan-home`; see
 [preflight safeguards](references/preflight.md) for its limits. No matches cannot
 certify a clean host.
 
-Then run one pair per task:
+Then run one pair per development task only:
 
 ```bash
-skilldiff run -c skill-eval/skilldiff.yaml --runs 1
+skilldiff run -c skill-eval/skilldiff.yaml --split dev --runs 1
 ```
+
+Inspect and fix dev results only; add dev tasks if absent. Start the full
+evaluation without `--split dev` or `--resume`. Never tune against held-out results.
 
 Open some transcripts under `runs/<timestamp>/<model>/<task>/{control,treatment}/`
 (plus `{baseline}/` when the baseline arm is enabled). Did the skill arm load
 the skill? Did the grader score what you expected? In PR correctness mode there
 are no agent sessions to inspect; check the graded revision outputs instead.
 
-**Cost:** each run starts `models × tasks × runs × 2` agent sessions (`×3` with
-`include_baseline`). `check` prints this count and, for Claude, the maximum
-spend. **Confirm with the user before you run more than a smoke test.**
+**Cost:** each run starts `models × selected tasks × runs × 2` agent sessions (`×3` with
+`include_baseline`). `run` prints the selected count; `check` prints full-run
+count and Claude maximum spend. **Confirm with the user before you run more than a smoke test.**
 
 **Running from inside an agent:** skilldiff starts separate, non-interactive agent
 sessions (`claude -p`, `codex exec`, `opencode run`, `agy -p`) that need network

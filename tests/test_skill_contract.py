@@ -64,3 +64,20 @@ def test_shipped_skill_passes_own_linter():
 
 def test_skill_md_points_to_reporting_reference():
     assert "references/reporting.md" in SKILL_MD.read_text(encoding="utf-8")
+
+
+def test_documented_smoke_commands_select_dev_tasks():
+    import shlex
+
+    parser = cli.build_parser()
+    root = SKILL_DIR.parents[1]
+    smoke_docs = ALL_DOCS + "\n" + "\n".join(
+        (root / path).read_text() for path in (
+            "README.md", "docs/reference.md", "examples/csv-totals/README.md",
+        )
+    )
+    commands = re.findall(r"^skilldiff run .*--runs 1.*$", smoke_docs, re.MULTILINE)
+    assert commands
+    for command in commands:
+        args = parser.parse_args(shlex.split(command, comments=True)[1:])
+        assert args.split == "dev", "The skill's smoke command must not run held-out tasks"

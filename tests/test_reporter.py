@@ -470,9 +470,8 @@ def test_closing_decision_rejects_contaminated_control():
     assert "Control contamination" in md
 
 
-def test_closing_decision_honors_preregistered_thresholds():
-    # Identical gains in every pair (collapsed CI) still ship when the
-    # pre-registered bounds clear; without thresholds the collapse is caution.
+def test_closing_decision_thresholds_cannot_override_collapsed_interval():
+    # Pre-registered targets do not establish uncertainty for identical gains.
     control = _runs("control", [0.0] * 6, 0.5)
     treatment = _runs("treatment", [1.0] * 6, 0.25, skill_invoked=True)
     for runs in (control, treatment):
@@ -490,8 +489,8 @@ def test_closing_decision_honors_preregistered_thresholds():
             thresholds={"acceptable_score_regression_pp": 5},
         )
     )
-    assert "> **Recommendation: SHIP**" in with_th
-    assert "meets criteria" in with_th
+    assert "> **Recommendation: NEEDS MORE RUNS**" in with_th
+    assert "CI collapsed" in with_th
 
 
 def test_closing_decision_uses_held_out_pairs_only():

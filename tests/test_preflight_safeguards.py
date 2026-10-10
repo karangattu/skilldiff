@@ -46,7 +46,7 @@ def test_known_good_solution_must_obey_the_scope_given_to_agents(tmp_path):
     assert "warehouse.py" in " ".join(report["checks"])
 
 
-def cost_results(basis):
+def cost_results(basis, repetitions=1):
     runs = {"control": [], "treatment": []}
     for i in range(3):
         for arm, tokens in [("control", 1_000_000), ("treatment", 500_000)]:
@@ -67,6 +67,14 @@ def cost_results(basis):
                     "output_tokens": 0,
                 }
             )
+    if repetitions > 1:
+        for arm, records in runs.items():
+            runs[arm] = [
+                {**run, "repetition": rep,
+                 "score": 0.8 if arm == "control" else 0.8 + 0.02 * (int(run["task_id"]) + rep),
+                 "success": False}
+                for rep in range(1, repetitions + 1) for run in records
+            ]
     return {
         "name": "cost",
         "preset": "compression",
@@ -82,9 +90,9 @@ def cost_results(basis):
 
 
 def test_recorded_api_cost_is_used_in_the_decision_and_reports():
-    results = cost_results("api-equivalent")
+    results = cost_results("api-equivalent", repetitions=2)
     decision = build_decision_context(results)
-    assert decision["paired"]["cost"]["n"] == 3
+    assert decision["paired"]["cost"]["n"] == 6
     assert decision["paired"]["cost"]["mean_diff"] == -1
     assert decision["recommendation"][1] == "SHIP"
     assert "API-equivalent" in build_markdown_report(results)
@@ -225,14 +233,14 @@ def test_cost_decision_is_consistent_across_cli_and_reports():
     from skilldiff.cli import _format_results
     from skilldiff.reporter import build_html_report
 
-    results = cost_results("api-equivalent")
-    results.update(models=["m"], tasks=["0", "1", "2"], tasks_count=3, runs_per_arm=1)
+    results = cost_results("api-equivalent", repetitions=2)
+    results.update(models=["m"], tasks=["0", "1", "2"], tasks_count=3, runs_per_arm=2)
     for output in (
         _format_results(results),
         build_markdown_report(results),
         build_html_report(results),
     ):
-        assert "SHIP" in output
+        assert "Recommendation: SHIP" in output
         assert "API-equivalent" in output
         assert "cost data missing" not in output
         assert "Held-out data only" not in output

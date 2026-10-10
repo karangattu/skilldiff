@@ -82,3 +82,14 @@ def test_paired_comparison_tool_calls_and_turns():
     assert res["turns"]["median_diff"] == -2.0
     assert classify_effect(res["turns"], higher_is_better=False) == "better"
 
+
+
+def test_relative_interval_resamples_matched_pairs_and_handles_zero_baseline():
+    control = [_run("control", i, .4, cost=value) for i, value in enumerate([1, 10, 100])]
+    treatment = [{**run, "cost": run["cost"] / 2} for run in control]
+    result = paired_comparison(control, treatment)["cost"]
+    assert result["relative_ci_low"] == result["relative_ci_high"] == -0.5
+    assert paired_comparison(control[:1], treatment[:1])["cost"]["relative_ci_high"] is None
+    for run in control:
+        run["cost"] = 0
+    assert paired_comparison(control, treatment)["cost"]["relative_ci_high"] is None

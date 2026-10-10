@@ -429,12 +429,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         print("  1. Put a small test project in fixtures/my-project/.")
         print("  2. Fill in tasks/my-first-task.yaml and graders/my_first_task.py.")
         print("  3. skilldiff check      # validate the setup and graders")
-        print("  4. skilldiff run --runs 1")
+        print("  4. skilldiff run --split dev --runs 1")
     else:
         print("This is a runnable demo: a made-up changelog convention the agent can only")
         print("follow if it reads the skill.")
         print("  skilldiff check")
-        print("  skilldiff run --runs 1")
+        print("  skilldiff run --split dev --runs 1")
     return 0
 
 
@@ -583,7 +583,7 @@ grader:
     print(f"Ensure base ref {base!r} is available (use a pre-merge base for merged PRs).")
     print("Fill in tasks/my-first-task.yaml and graders/my_first_task.py, then run")
     print(f"  skilldiff check -c {shlex.quote(str(root / 'skilldiff.yaml'))}")
-    print(f"  skilldiff run -c {shlex.quote(str(root / 'skilldiff.yaml'))} --runs 1")
+    print(f"  skilldiff run -c {shlex.quote(str(root / 'skilldiff.yaml'))} --split dev --runs 1")
     return 0
 
 
@@ -1224,6 +1224,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"No tasks match {task_filter}", file=sys.stderr)
             return 1
 
+    split_filter = getattr(args, "split", None)
+    if split_filter:
+        tasks = [t for t in tasks if t.split == split_filter]
+        if not tasks:
+            print(f"No tasks match split {split_filter!r} and the selected task IDs",
+                  file=sys.stderr)
+            return 1
+
     sandboxed = (
         [] if os.environ.get("SKILLDIFF_MOCK_RUNNER")
         or (exp_config.pr and getattr(exp_config.pr, "mode", "agent") == "correctness")
@@ -1760,6 +1768,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--task", "-t", action="append", help="Only run this task id (repeatable)"
+    )
+    run_parser.add_argument(
+        "--split", choices=("dev", "held-out"),
+        help="Only run this task split (use dev for smoke tests; combines with --task)",
     )
     run_parser.add_argument("--quiet", "-q", action="store_true", help="Hide per-run progress")
     run_parser.add_argument(

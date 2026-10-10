@@ -20,7 +20,7 @@ csv-totals/
 
 - **Honest splits.** `tasks/dev/` is for iteration; `tasks/heldout/` is frozen
   before the full run. The report's **By split** table separates them, and the
-  headline and closing decision use held-out pairs only when they exist.
+  headline and closing decision require held-out pairs when held-out tasks are planned.
 - **Evaluation completeness.** The sample includes one agent timeout and one
   grader error, so the completeness row shows planned/completed pairs, usable
   score pairs, and failure counts together.
@@ -44,8 +44,8 @@ The numbers in `sample/` are synthetic. Do not quote them as findings.
 
 ```bash
 skilldiff check -c skilldiff.yaml --scan-home # advisory host exposure check
-skilldiff run -c skilldiff.yaml          # full run (paid agent sessions)
-skilldiff run -c skilldiff.yaml --runs 1 # cheap smoke test
+skilldiff run -c skilldiff.yaml --split dev --runs 1 # dev-only smoke test
+skilldiff run -c skilldiff.yaml          # new full run (paid agent sessions)
 cp -R sample /tmp/csv-totals-report      # preserve the historical sample
 skilldiff report /tmp/csv-totals-report  # inspect the current report format
 ```

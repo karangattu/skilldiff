@@ -75,3 +75,10 @@ NEEDS MORE RUNS (with ceiling or floor effects noted when tasks cannot discrimin
 plus one sentence that states why. End your summary with that
 same bottom line and reason; do not invent a different verdict from the one the
 report computed.
+
+When held-out tasks were planned but have no results, the decision must remain
+NEEDS MORE RUNS; development results cannot replace them. Shipping requires at
+least five scored pairs, three usable tasks when coverage is known, and a
+non-collapsed score interval, even with pre-registered thresholds. Required cost
+or token savings each need five usable metric pairs and a percentage-saving
+confidence bound that meets the required percentage, not just a favorable mean.

@@ -250,4 +250,31 @@ def test_cli_check_warns_placeholder_grader_and_python_domains(tmp_path: Path, m
     assert "is a placeholder template that fails until replaced" in out
     assert "allowed_domains is empty; add 'pypi.org' and 'files.pythonhosted.org'" in out
 
+def test_run_split_filters_before_sessions_and_empty_selection_fails(tmp_path, monkeypatch, capsys):
+    from skilldiff.cli import build_parser
 
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    assert cmd_init(Args(force=False)) == 0
+    task_path = tmp_path / "tasks/changelog-entry.yaml"
+    heldout = yaml.safe_load(task_path.read_text())
+    heldout.update(id="heldout-secret", split="held-out")
+    (tmp_path / "tasks/heldout.yaml").write_text(yaml.safe_dump(heldout))
+    parser = build_parser()
+    args = parser.parse_args(["run", "--runs", "1", "--split", "dev"])
+    assert cmd_run(args) == 0
+    result_files = list((tmp_path / "runs").glob("*/results.json"))
+    assert len(result_files) == 1
+    results = json.loads(result_files[0].read_text())
+    assert results["tasks"] == ["changelog-entry"]
+    assert "heldout-secret" not in capsys.readouterr().out
+    args = parser.parse_args(["run", "--split", "dev", "-t", "heldout-secret"])
+    assert cmd_run(args) == 1
+    assert "No tasks match" in capsys.readouterr().err
+    assert len(list((tmp_path / "runs").glob("*/results.json"))) == 1
+    args = parser.parse_args(["run", "--runs", "1", "--split", "held-out"])
+    assert cmd_run(args) == 0
+    result_files = list((tmp_path / "runs").glob("*/results.json"))
+    assert len(result_files) == 2
+    selected = [json.loads(path.read_text())["tasks"] for path in result_files]
+    assert ["heldout-secret"] in selected
