@@ -15,6 +15,7 @@ This project uses semantic versioning.
 
 ### Changed
 
+- Agent-led setup and evaluation are the main README workflow, with shorter requests and an installed guide for defaults and JSON outputs.
 - Treatment skills are installed once in each agent's native workspace directory.
 - AGY installation uses `antigravity-cli --copy`, and discovery scans include its native global and plugin skill directories.
 - OpenCode requires V2 commands and permissions. Missing capabilities stop execution before paid sessions.

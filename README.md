@@ -2,53 +2,102 @@
 
 ![SkillDiff — paired agent terminals, with and without a skill, joined by a delta comparison symbol](assets/skill_diff_logo.png)
 
-Does your Agent Skill actually help? SkillDiff gives an agent the same tasks with and
-without your skill. It grades both and reports the difference in score, cost, time,
-and tokens. It ends with one bottom line: **SHIP**, **DO NOT SHIP**, or
-**NEEDS MORE RUNS**.
+Tell your coding agent which skill to evaluate. SkillDiff runs matched tasks with
+and without the skill and measures what changes. Your agent prepares the tests,
+runs the evaluation, and explains whether the evidence supports keeping the skill.
 
-Native adapters target Claude Code, Codex, OpenCode V2, and Antigravity CLI (AGY).
-It can test one skill, a folder of skills, two versions of a skill, or a pull request.
-See [verified releases and limits](docs/compatibility.md#verification): OpenCode
-v2.0.23 currently omits the required completion event and is rejected.
+SkillDiff is designed to be used through Claude Code, Codex, Antigravity CLI (AGY),
+or OpenCode V2. You provide the goal and skill path. The installed SkillDiff skill
+gives your agent the setup, evaluation, and reporting instructions.
 
-## How it works
+## Set up once through your agent
 
-```mermaid
-flowchart TB
-    T["📦 Your skill<br/>+ tasks + graders"] --> W["🗂️ Fresh copy of the<br/>test project per run<br/><i>same agent · model · task</i>"]
-    subgraph PAIR [" "]
-        direction LR
-        C["🚫 Agent <b>without</b><br/>the skill (control)"]
-        S["✨ Agent <b>with</b><br/>the skill (treatment)"]
-    end
-    W --> C
-    W --> S
-    C --> G["🙈 Grader scores<br/>anonymous work"]
-    S --> G
-    G --> R["📊 Repeat and compare<br/>pairs (95% intervals)"]
-    R --> V(["✅ SHIP · ⛔ DO NOT SHIP<br/>🔁 NEEDS MORE RUNS"])
+Paste this into your coding agent:
 
-    classDef input fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a8a
-    classDef control fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
-    classDef treatment fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
-    classDef grade fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#4c1d95
-    classDef verdict fill:#fef3c7,stroke:#d97706,stroke-width:3px,color:#78350f
-    class T,W input
-    class C control
-    class S treatment
-    class G,R grade
-    class V verdict
-    style PAIR fill:transparent,stroke:#64748b,stroke-width:2px,stroke-dasharray:6 4
+```text
+Set up SkillDiff for this agent from https://github.com/karangattu/skilldiff.
+Read the repository's skills/skilldiff/SKILL.md and follow its setup instructions.
+Install the command and SkillDiff skill for this agent only.
 ```
 
-- Both arms use the same agent, model, task, and starting files. Only the skill differs.
-- Each run gets its own throwaway workspace. Control receives no installed target
-  copy; confirmed discovery or loading invalidates the baseline.
-- Graders see `candidate-A` and `candidate-B`, never which arm is which.
-- Arm order alternates from a recorded seed. Inputs are frozen and hashed, so results are reproducible.
+Your agent handles installation and uses your normal CLI login. If it needs a login
+or shell permission, it tells you the exact step. You need Python 3.10+, Git, and a
+signed-in agent CLI. See [manual setup](#manual-setup) if you prefer to install it yourself.
 
-## Install
+## Ask your agent
+
+Once setup is complete, give your agent a short request. Replace the example paths
+with your skill folders. The agent uses the current CLI and an available model,
+and asks only when it cannot establish a necessary choice.
+
+### Try the demo
+
+No skill or test files of your own are needed:
+
+```text
+Use skilldiff to try its changelog demo and explain the result.
+```
+
+### Test your skill
+
+Point to the folder that contains your SKILL.md:
+
+```text
+Use skilldiff to test ~/code/my-project/skills/my-skill. Start with a small trial and explain the result.
+```
+
+### Compare two skill versions
+
+Point to the original and updated skill folders:
+
+```text
+Use skilldiff to compare ~/skills/v1/my-skill with ~/skills/v2/my-skill.
+Start with a small trial and tell me whether there is enough evidence to choose a version.
+```
+
+The agent prepares the test files and automatic checks, then runs one small
+comparison. You do not need to write YAML, choose flags, or run commands yourself.
+Tests use your agent account or API credits. The agent asks before a larger
+paid evaluation unless you already authorized it.
+
+## What you get
+
+Your agent explains the score, skill use, cost, time, and tokens. It links the
+report and gives SkillDiff's decision: **SHIP**, **DO NOT SHIP**, or
+**NEEDS MORE RUNS**, with the evidence and uncertainty. A first trial checks setup;
+it does not establish a shipping decision. Missing measurements stay `N/A`.
+
+Reports include JSON for agent analysis, Markdown for summaries, and HTML for
+optional viewing. See [reports and outputs](docs/reference.md#reports-and-outputs)
+for the full format.
+
+## Agent instructions
+
+Start with [skills/skilldiff/SKILL.md](skills/skilldiff/SKILL.md).
+The [agent workflow](skills/skilldiff/references/agent-workflow.md) covers setup,
+harness selection, small trials, and the existing JSON commands for reading results.
+Use the saved report's decision when explaining the outcome.
+
+## Agent support
+
+SkillDiff checks the CLI version, required commands, and structured formats inside
+the selected execution environment before paid work. Each treatment skill is
+installed once in the native workspace directory. Follow-up `prompts:` share one
+conversation, workspace, and deadline; arms and repetitions have separate sessions.
+
+Empty output, malformed streams, explicit failures, and missing completion events
+are harness errors even when the CLI exits zero. Partial telemetry is retained,
+and these sessions do not enter paired decisions. Unknown usage and cost stay `N/A`.
+Claude subscription authentication remains the default; SkillDiff does not use
+`--bare`. See [the compatibility contract and verification limits](docs/compatibility.md).
+
+OpenCode v2.0.23 currently omits the required completion event and is rejected.
+See [verified releases and limits](docs/compatibility.md#verification) before running.
+
+## Manual setup
+
+<details>
+<summary>Installation commands and updates</summary>
 
 You need Python 3.10+, Git, and a signed-in agent CLI (`claude`, `codex`, `opencode`, or `agy`).
 
@@ -106,59 +155,7 @@ Claude Code users can instead install the plugin, which adds a
 You install only the skilldiff skill. SkillDiff copies the skill *under test* into
 each run's workspace itself.
 
-## Ask your agent
-
-After installation, open your agent and paste one request below. Start with the
-demo if you do not have a skill to test yet. Tests use your agent account or API
-credits. Each example starts with one small comparison.
-
-### 1. Try the included demo
-
-You do not need to write a skill or prepare test files for this example.
-
-```text
-Use the skilldiff skill to try the built-in changelog demo.
-Use my current agent's CLI and a model I can access.
-Create the demo with skilldiff init in a new folder outside my current project.
-Check the setup, then run one development task once with the demo skill and once without it.
-Open the report and explain whether the skill was used and what changed.
-Stop after this small test.
-```
-
-### 2. Test your own skill
-
-Replace `~/code/my-project/skills/my-skill` with the folder that contains your
-`SKILL.md` file.
-
-```text
-Use the skilldiff skill to test ~/code/my-project/skills/my-skill.
-Use my current agent's CLI and a model I can access.
-Set up the evaluation outside the skill's repository.
-Write one realistic development task and an automatic check of its result.
-Check the setup, then run the task once with my skill and once without it.
-Open the report and explain the score, skill use, time, and tokens in plain English.
-Ask me before running a larger evaluation.
-```
-
-### 3. Compare two versions of a skill
-
-Replace the two paths with your original and updated skill folders.
-
-```text
-Use the skilldiff skill to compare ~/skills/v1/my-skill with ~/skills/v2/my-skill.
-Use my current agent's CLI and a model I can access.
-Create the evaluation outside both skill folders.
-Use the same small development task for both versions.
-Check the setup, then run each version once.
-Open the report and tell me what changed and whether there is enough evidence to pick a version.
-Ask me before running a larger evaluation.
-```
-
-Your agent handles the files, commands, and automatic checks. The first small
-test checks the setup. Review the report before asking for a larger evaluation.
-
-If your agent cannot identify its CLI or an available model, tell it which one
-you use. Harness names are `claude`, `codex`, `antigravity` (AGY), and `opencode`.
+</details>
 
 <details>
 <summary>If your agent cannot start SkillDiff</summary>
@@ -181,7 +178,8 @@ run it in the background.
 
 </details>
 
-## Or run it yourself
+<details>
+<summary>Manual CLI workflow and commands</summary>
 
 ```bash
 skilldiff init --skill ~/code/my-pkg/skills/my-skill --harness claude --dir my-skill-eval
@@ -212,24 +210,49 @@ copy. It has a skill, dev and held-out tasks, fixtures, a grader, and a sample r
 | `skilldiff compare` | Compare two runs |
 | `skilldiff lint` | Lint a `SKILL.md` before you spend anything |
 
-## Reading the result
+</details>
 
-Each run writes `report.html`, `report.md` (for pull requests), `report.qmd`, and
-`results.json`, plus each session's transcript and diff. The core table looks like
-this (the numbers are examples):
+<details>
+<summary>How the comparison works</summary>
 
-| **App** | **Arm** | **Score** | **Time** | **Input** | **Cached input** | **Output** | **Total tokens** | **Tool calls** | **Turns** | **Skill loaded** | **API-equivalent cost** |
-| ------- | ------- | --------- | -------- | --------- | ---------------- | ---------- | ---------------- | -------------- | --------- | ---------------- | ----------------------- |
-| csv-totals | Control | 60% | 450s | 100,000 | 500,000 | 70,000 | 670,000 | 30 | 15 | 0/5 | $1.50 |
-| csv-totals | Skill | 80% | 375s | 80,000 | 400,000 | 56,000 | 536,000 | 25 | 10 | 5/5 | $1.20 |
-| csv-totals | Δ (Skill - Control) | +20 pp | -75s | -20,000 | -100,000 | -14,000 | -134,000 | -5 | -5 | | -$0.30 |
+```mermaid
+flowchart TB
+    T["📦 Your skill<br/>+ tasks + graders"] --> W["🗂️ Fresh copy of the<br/>test project per run<br/><i>same agent · model · task</i>"]
+    subgraph PAIR [" "]
+        direction LR
+        C["🚫 Agent <b>without</b><br/>the skill (control)"]
+        S["✨ Agent <b>with</b><br/>the skill (treatment)"]
+    end
+    W --> C
+    W --> S
+    C --> G["🙈 Grader scores<br/>anonymous work"]
+    S --> G
+    G --> R["📊 Repeat and compare<br/>pairs (95% intervals)"]
+    R --> V(["✅ SHIP · ⛔ DO NOT SHIP<br/>🔁 NEEDS MORE RUNS"])
 
-- **Δ** is the paired change, skill minus control. If its 95% interval includes zero, the difference may be noise.
-- **Skill loaded** counts runs where the agent actually used the skill. Low adoption usually means the skill's `description` does not match how people ask.
-- **`N/A`** means unknown, never zero. Failed sessions and grader errors are reported apart from low scores.
-- The report ends with a **Closing decision** table and one bottom line, with the reason.
+    classDef input fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a8a
+    classDef control fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+    classDef treatment fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
+    classDef grade fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#4c1d95
+    classDef verdict fill:#fef3c7,stroke:#d97706,stroke-width:3px,color:#78350f
+    class T,W input
+    class C control
+    class S treatment
+    class G,R grade
+    class V verdict
+    style PAIR fill:transparent,stroke:#64748b,stroke-width:2px,stroke-dasharray:6 4
+```
 
-## Permissions in agent sessions
+- Both arms use the same agent, model, task, and starting files. Only the skill differs.
+- Each run gets its own throwaway workspace. Control receives no installed target
+  copy; confirmed discovery or loading invalidates the baseline.
+- Graders see `candidate-A` and `candidate-B`, never which arm is which.
+- Arm order alternates from a recorded seed. Inputs are frozen and hashed, so results are reproducible.
+
+</details>
+
+<details>
+<summary>Evaluation details and permissions</summary>
 
 The agent sessions skilldiff starts run headless, so nobody can answer a permission
 prompt. A tool that asks is refused, and the agent quietly works without it. The
@@ -255,6 +278,8 @@ a broken permission setup cannot pass as a low score. To block reads outside the
 - Start with 5 or more runs per arm, and fix that number before you look at results.
 - Give each grader a known-good and a broken solution (`validation:`), so `check` can prove the grader works.
 
+</details>
+
 ## More detail
 
 The [reference](docs/reference.md) has the exact rules:
@@ -269,7 +294,8 @@ The [reference](docs/reference.md) has the exact rules:
 - [Harness setup and commands](docs/reference.md#harness-setup-and-commands)
 - [Preflight safeguards](skills/skilldiff/references/preflight.md) and [reporting rules](skills/skilldiff/references/reporting.md)
 
-## Development
+<details>
+<summary>Development</summary>
 
 ```bash
 git clone https://github.com/karangattu/skilldiff && cd skilldiff
@@ -280,15 +306,4 @@ pytest && ruff check skilldiff tests
 
 See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.18.0.
 
-### Current agent compatibility
-
-SkillDiff checks the CLI version, required commands, and structured formats inside
-the selected execution environment before paid work. Each treatment skill is
-installed once in the native workspace directory. Follow-up `prompts:` share one
-conversation, workspace, and deadline; arms and repetitions have separate sessions.
-
-Empty output, malformed streams, explicit failures, and missing completion events
-are harness errors even when the CLI exits zero. Partial telemetry is retained,
-and these sessions do not enter paired decisions. Unknown usage and cost stay `N/A`.
-Claude subscription authentication remains the default; SkillDiff does not use
-`--bare`. See [the compatibility contract and verification limits](docs/compatibility.md).
+</details>

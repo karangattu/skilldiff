@@ -1,5 +1,9 @@
 # SkillDiff reference
 
+For agent-led setup, execution, and structured output commands, see the
+[agent workflow](../skills/skilldiff/references/agent-workflow.md). The installed
+skill contains the evaluation instructions; the user can provide a goal and path.
+
 Detailed reference for [SkillDiff](../README.md). Start with the README; come back
 here for exact rules, config keys, and edge cases.
 
@@ -470,7 +474,7 @@ For Codex skill experiments, `check` queries `app-server skills/list` in fresh w
 
 Running these from inside an agent needs a few things too:
 
-- Shell access. The agent must run `skilldiff` outside its own sandbox. See [Ask your agent](../README.md#ask-your-agent) for the one-time setup per agent.
+- Shell access. The agent must run `skilldiff` outside its own sandbox. See [setup details](../README.md#manual-setup) for the one-time setup per agent.
 - A signed-in CLI. SkillDiff starts separate agent runs with your normal login. Sign in once in a terminal with `claude auth login`.
 - Network and login-folder access. `check` fails with `host:` and prints the fix when the agent's sandbox would block them; `run` refuses to start.
 - Time. A full test can exceed the agent timeout. Then run it in the background and check it with `skilldiff results`.

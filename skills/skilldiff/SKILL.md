@@ -10,24 +10,31 @@ runs without the skill and the **skill** arm runs with it. Then skilldiff grades
 and reports the paired difference in score, cost, time, tokens, and skill adoption.
 Your job: design a fair experiment, run it, and explain the result honestly.
 
+Own the setup, task files, graders, execution, and interpretation. The user can
+give a goal and a skill path. Reuse their current harness and an available model
+when established; ask only for missing choices. For setup, short requests, demos,
+and structured outputs, read [agent workflow](references/agent-workflow.md).
+
 If the user invoked this skill with arguments (for example `/skilldiff ./skills/my-skill`
 or `$skilldiff ./skills/my-skill`), treat the first path as the skill under test. Treat
 any other words as extra instructions, such as the models or harness to use.
 
 ## 1. Install and locate
 
-Git installs do not update automatically. Install or refresh the tool:
+Install the tool if missing:
 
 ```bash
 command -v skilldiff >/dev/null || uv tool install git+https://github.com/karangattu/skilldiff
-uv tool upgrade skilldiff
 ```
 
-If `uv` is not available, use `pipx install git+https://github.com/karangattu/skilldiff`
-and `pipx upgrade skilldiff`. Don't run `pip install skilldiff`: that name on PyPI is a
-different project.
+If `uv` is unavailable, use `pipx install git+https://github.com/karangattu/skilldiff`.
+Reuse a working installation. Git installs do not update automatically; use
+`uv tool upgrade skilldiff` or `pipx upgrade skilldiff` when an update is requested
+or needed for compatibility. Do not use PyPI's unrelated `skilldiff` package.
+Stop after installation for setup-only requests.
 
-Find the skill under test. This is a directory with `SKILL.md`, or a folder of skill
+For a demo, use `init` without `--skill` and lint its generated skill. Otherwise,
+find the skill under test. This is a directory with `SKILL.md`, or a folder of skill
 directories, such as a package's `.claude/skills/` or `skills/`. Read its `SKILL.md`.
 Understand what the skill claims to improve before you write any task.
 
@@ -76,7 +83,8 @@ for dev and held-out tasks, fixtures, a grader, and a sample report.
 
 ## 3. Design tasks (the important part)
 
-Write 4–8 tasks in `tasks/*.yaml`. Each task has a `repo` fixture, a `prompt`, a
+For a full evaluation, write 4–8 tasks in `tasks/*.yaml`. A first small trial can
+use one development task. Each task has a `repo` fixture, a `prompt`, a
 `category`, and a `grader`. Cover all four kinds:
 
 - **Intended (`intended`).** Target what the skill uniquely knows: obscure or
