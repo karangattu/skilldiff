@@ -6,6 +6,8 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-12
+
 ### Added
 
 - The README has copy-and-paste requests for the included demo, a first skill evaluation, and a comparison of two skill versions.
@@ -22,6 +24,8 @@ This project uses semantic versioning.
 
 ### Fixed
 
+- OpenCode falls back to session export for completion and token/cost telemetry when the final step finish event is omitted.
+- OpenCode isolates global configuration, plugin discovery, and updates when isolation is enabled.
 - AGY CI installation uses the bootstrapper's supported `--dir` option.
 - Empty, malformed, failed, or unfinished sessions are harness errors, even when the process exits successfully.
 - Harness errors retain partial evidence but never enter paired decisions, including with `agent_failure: zero`.
