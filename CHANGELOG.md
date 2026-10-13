@@ -21,6 +21,7 @@ This project uses semantic versioning.
 
 ### Fixed
 
+- AGY CI installation uses the bootstrapper's supported `--dir` option.
 - Empty, malformed, failed, or unfinished sessions are harness errors, even when the process exits successfully.
 - Harness errors retain partial evidence but never enter paired decisions, including with `agent_failure: zero`.
 - Telemetry uses native counter scopes, avoids duplicate cached tokens, and retains reported totals when details are incomplete.

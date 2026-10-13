@@ -76,8 +76,8 @@ jobs:
             codex) npm install -g @openai/codex@latest ;;
             antigravity)
               curl -fsSL https://antigravity.google/cli/install.sh -o "$RUNNER_TEMP/agy-install.sh"
-              bash "$RUNNER_TEMP/agy-install.sh" --skip-aliases --skip-path
-              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+              bash "$RUNNER_TEMP/agy-install.sh" --dir "$RUNNER_TEMP/agy"
+              echo "$RUNNER_TEMP/agy" >> "$GITHUB_PATH"
               ;;
             opencode)
               curl -fsSL https://opencode.ai/v2/install -o "$RUNNER_TEMP/opencode-install.sh"
