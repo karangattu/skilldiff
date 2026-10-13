@@ -1,5 +1,4 @@
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -196,40 +195,17 @@ def test_harnesses_key_is_rejected(tmp_path: Path):
         load_experiment(exp_file)
 
 
-def test_runner_multi_turn(tmp_path: Path, monkeypatch):
+def test_runner_multi_turn(tmp_path: Path, monkeypatch, conversation_cli, capable_cli):
     monkeypatch.delenv("SKILLDIFF_MOCK_RUNNER", raising=False)
-    agent = tmp_path / "agent"
-    agent.write_text(
-        f"#!{sys.executable}\n"
-        "import json,pathlib\n"
-        "state=pathlib.Path('turn.txt')\n"
-        "turn=int(state.read_text())+1 if state.exists() else 1\n"
-        "state.write_text(str(turn))\n"
-        "if turn==1:\n"
-        " print(json.dumps({'type':'assistant','message':{'content':[{"
-        "'type':'tool_use','name':'Skill','input':{'skill':'my-skill'}}]}}))\n"
-        "print(json.dumps({'type':'result','result':'Created' if turn==1 else 'Modified',"
-        "'total_cost_usd':0.01 if turn==1 else 0.02,'num_turns':1,"
-        "'usage':{'input_tokens':100 if turn==1 else 150,"
-        "'output_tokens':50 if turn==1 else 80}}))\n",
-        encoding="utf-8",
-    )
-    agent.chmod(0o755)
     config = ExperimentConfig(name="test", skill=None, models=["sonnet"], tasks_patterns=[])
-    config.claude.bin_path = str(agent)
-    result = AgentRunner().run(
-        ["Step 1: Create file", "Step 2: Modify file"], tmp_path, "test-model", config,
-        skill_names=["my-skill"],
-    )
+    config.claude.bin_path = conversation_cli
+    result = AgentRunner().run(["remember saved-context", "recall"], tmp_path, "m", config)
     assert result.status == "ok"
-    assert result.skill_invoked is True
-    assert result.cost == 0.03
-    assert result.input_tokens == 250
-    assert result.output_tokens == 130
+    assert result.cost == 0.02
+    assert result.input_tokens == 200
+    assert result.output_tokens == 30
     assert result.num_turns == 2
-    assert result.response == "Modified"
-    assert "TURN 1" in result.transcript
-    assert "TURN 2" in result.transcript
+    assert result.response == "saved-context"
 
 
 def test_measure_skill_footprint(tmp_path: Path):

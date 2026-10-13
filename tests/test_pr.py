@@ -84,7 +84,7 @@ def test_pr_pipeline_isolates_revisions_and_reports_treatment(pr_experiment, mon
     assert "Treatment" in _format_results(results)
 
 
-def test_pr_check_uses_control_revision(pr_experiment, monkeypatch, capsys):
+def test_pr_check_uses_control_revision(pr_experiment, monkeypatch, capsys, capable_cli):
     from argparse import Namespace
 
     path, _, base, _ = pr_experiment
@@ -305,7 +305,9 @@ def test_resolve_comparison_populates_touched_skills(tmp_path):
     assert res.get("touched_skills") == ["skills/bar"]
 
 
-def test_cli_check_pr_touched_skills_warnings_and_messages(tmp_path, monkeypatch, capsys):
+def test_cli_check_pr_touched_skills_warnings_and_messages(
+    tmp_path, monkeypatch, capsys, capable_cli
+):
     from argparse import Namespace
 
     from skilldiff.cli import cmd_check

@@ -28,6 +28,8 @@ from skilldiff.stats import (
 
 
 def _total_tokens(run: dict[str, Any]) -> int:
+    if run.get("reported_total_tokens") is not None:
+        return int(run["reported_total_tokens"])
     return (
         int(run.get("input_tokens", 0) or 0)
         + int(run.get("cache_read_tokens", 0) or 0)
@@ -37,6 +39,12 @@ def _total_tokens(run: dict[str, Any]) -> int:
 
 
 def _total_tokens_opt(run: dict[str, Any]) -> Optional[int]:
+    if run.get("reported_total_tokens") is not None:
+        try:
+            total = int(run["reported_total_tokens"])
+            return total if total >= 0 else None
+        except (TypeError, ValueError):
+            return None
     keys = ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens")
     if all(k not in run or run.get(k) is None for k in keys):
         return None
@@ -2416,6 +2424,8 @@ def _evaluation_rows(
             if known and known < eligible_count:
                 loaded += f" ({eligible_count - known} unknown)"
             time_known = not standalone or metrics["time_known_count"] == len(group)
+            total_known = bool(metrics["tokens_known_count"]) and (
+                not standalone or metrics["tokens_known_count"] == len(group))
             v: dict[str, Any] = {
                 "score": _score_percent(metrics),
                 "time": metrics["total_duration"] if time_known else None,
@@ -2426,7 +2436,7 @@ def _evaluation_rows(
                     if tokens_known else None
                 ),
                 "output": total("output_tokens", token_group),
-                "tokens": token_metrics["total_tokens"] if tokens_known else None,
+                "tokens": metrics["total_tokens"] if total_known else None,
                 "tool_calls": total("tool_calls", group),
                 "turns": total("num_turns", group),
                 "cost": (
@@ -2495,6 +2505,9 @@ def _build_runs_table(
         headers.insert(0, "Model")
     if link_artifacts:
         headers.append("Artifacts")
+    has_sessions = any(r.get("session_id") for r in control_runs + treatment_runs)
+    if has_sessions:
+        headers.append("Session")
 
     def key(r: dict[str, Any]) -> tuple[str, str, int]:
         return (str(r.get("model", "")), str(r.get("task_id", "")), int(r.get("repetition", 1)))
@@ -2530,6 +2543,8 @@ def _build_runs_table(
                 row.append(
                     f"[transcript]({art}/transcript.txt) · [diff]({art}/diff.patch)" if art else ""
                 )
+            if has_sessions:
+                row.append(str(run.get("session_id") or "N/A"))
             rows.append(row)
     if treatment_label != "Skill" and preset not in {"revision", "compression"}:
         index = headers.index("Skill used")
@@ -2825,7 +2840,7 @@ def build_report_blocks(
         body.append(
             "Failure policy (pre-registered): "
             + ", ".join(f"{k}={v}" for k, v in failure_policy.items())
-            + ". Grader timeouts/errors are always N/A."
+            + ". Harness errors are always excluded; grader timeouts/errors are always N/A."
         )
     blocks.append(("callout", kind, "Verdict", body))
 
@@ -3468,6 +3483,13 @@ def build_report_blocks(
             f"**Retries:** {len(results['retries'])} retry record(s) preserved with costs"
         )
     prov = results.get("provenance") or {}
+    cli_probes = sorted({
+        f"{run.get('cli', {}).get('version')} ({run.get('cli', {}).get('isolation')})"
+        for runs in (results.get("runs") or {}).values() for run in runs
+        if isinstance(run.get("cli"), dict)
+    })
+    if cli_probes:
+        setup_items.append("**CLI capability probes:** " + ", ".join(cli_probes))
     if prov:
         if prov.get("skill_hash"):
             setup_items.append(f"**Skill hash:** `{prov['skill_hash'][:12]}`")

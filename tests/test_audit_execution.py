@@ -67,23 +67,22 @@ def test_actual_judge_can_reject_empty_candidate(tmp_path, monkeypatch):
     assert result.success is False
 
 
-@pytest.mark.parametrize(
-    "harness,payload",
-    [
-        ("claude", '{"type":"result","result":"ok"}'),
-        ("codex", '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'),
-        ("opencode", '{"type":"text","part":{"text":"ok"}}'),
-    ],
-)
+@pytest.mark.parametrize("harness,payload", [
+    ("claude", '{"type":"result","result":"ok"}\n' * 2),
+    ("codex", '{"type":"turn.completed"}\n' * 2),
+    ("opencode", '{"type":"step_finish","part":{"reason":"stop"}}'),
+])
 def test_other_harnesses_preserve_missing_multiturn_measurements(tmp_path, harness, payload):
-    binary = executable(tmp_path / "fake-cli", "print(" + repr(payload) + ")\n")
-    config = ExperimentConfig(
-        name="t", skill=tmp_path, models=["m"], tasks_patterns=[], harness=harness
-    )
-    getattr(config, harness).bin_path = binary
-    result = AgentRunner().run(["one", "two"], tmp_path, "m", config)
+    from unittest.mock import patch
+
+    from skilldiff.config import ClaudeConfig, CodexConfig, OpenCodeConfig
+
+    cfg = {"claude": ClaudeConfig, "codex": CodexConfig,
+           "opencode": OpenCodeConfig}[harness]()
+    with patch.object(AgentRunner, "_exec", return_value=ExecResult(payload, "", 0, 0)):
+        result = AgentRunner().run(["one", "two"], tmp_path, "m", cfg)
     assert result.status == "ok"
-    for name in ("cost", "input_tokens", "output_tokens", "num_turns", "cache_read_tokens"):
+    for name in ("cost", "input_tokens", "output_tokens", "cache_read_tokens"):
         assert getattr(result, name) is None, name
 
 
@@ -243,8 +242,8 @@ def test_antigravity_failure_keeps_first_attempt_and_edits(tmp_path):
         tmp_path / "agy",
         "import pathlib,json,sys\np=pathlib.Path('attempts')\n"
         "n=int(p.read_text())+1 if p.exists() else 1;p.write_text(str(n))\n"
-        "print(json.dumps({'status':'ERROR','error':'Unavailable','retryable':True,"
-        "'cost':.75,'usage':{'input_tokens':100}}));sys.exit(1)\n",
+        "print(json.dumps({'event':'result','result':{'status':'ERROR','error':'Unavailable',"
+        "'cost':.75,'usage':{'input_tokens':100,'cache_read_tokens':0}}}));sys.exit(1)\n",
     )
     result = AgentRunner(antigravity_bin=fake).run("x", tmp_path, "m", AntigravityConfig())
     assert (tmp_path / "attempts").read_text() == "1"
@@ -255,64 +254,33 @@ def test_antigravity_failure_keeps_first_attempt_and_edits(tmp_path):
 
 @pytest.mark.parametrize("partial", [False, True])
 def test_multi_turn_preserves_unknown_metrics(tmp_path, partial):
-    payload = "{'status':'SUCCESS','response':'ok'}"
     body = (
-        "import pathlib,json\np=pathlib.Path('count')\n"
-        "n=int(p.read_text())+1 if p.exists() else 1;p.write_text(str(n))\nd=" + payload + "\n"
+        "import sys,json\nn=0\nfor line in sys.stdin:\n"
+        " n+=1;d={'status':'SUCCESS','response':'ok'}\n"
     )
     if partial:
-        body += (
-            "if n == 1:d.update(cost=.1,usage={'input_tokens':10,'output_tokens':2},"
-            "tool_calls_count=1,num_turns=1)\n"
-        )
-    body += "print(json.dumps(d))\n"
+        body += (" if n==1:d.update(cost=.1,usage={'input_tokens':10,'cache_read_tokens':0,"
+                 "'output_tokens':2},num_turns=1)\n")
+    body += " print(json.dumps({'event':'result','result':d}),flush=True)\n"
     fake = executable(tmp_path / "agy", body)
     result = AgentRunner(antigravity_bin=fake).run(
-        ["one", "two"], tmp_path, "m", AntigravityConfig()
-    )
-    for name in (
-        "cost",
-        "input_tokens",
-        "output_tokens",
-        "tool_calls",
-        "num_turns",
-        "cache_read_tokens",
-    ):
+        ["one", "two"], tmp_path, "m", AntigravityConfig())
+    assert result.status == "ok"
+    for name in ("cost", "input_tokens", "output_tokens", "num_turns", "cache_read_tokens"):
         assert getattr(result, name) is None, name
 
 
-def test_multi_turn_config_timeout_bounds_whole_task(tmp_path, monkeypatch):
-    elapsed = 0.0
-    monkeypatch.setattr("skilldiff.runner.time.monotonic", lambda: elapsed)
-
-    class TimedExecution(AgentRunner):
-        # Replace the external paid process boundary with deterministic clock progression.
-        def _exec(self, cmd, cwd, env, timeout, **kwargs):
-            nonlocal elapsed
-            timed_out = timeout < 0.6
-            duration = min(timeout, 0.6)
-            elapsed += duration
-            return ExecResult(
-                '{"status":"SUCCESS","response":"ok"}',
-                "",
-                -1 if timed_out else 0,
-                duration,
-                timed_out,
-            )
-
-    config = ExperimentConfig(
-        name="t",
-        skill=tmp_path,
-        models=["m"],
-        tasks_patterns=[],
-        harness="antigravity",
-        timeout_seconds=1,
-    )
-    result = TimedExecution().run(["one", "two", "three"], tmp_path, "m", config)
+def test_multi_turn_config_timeout_bounds_whole_task(
+    tmp_path, monkeypatch, conversation_cli, capable_cli
+):
+    monkeypatch.delenv("SKILLDIFF_MOCK_RUNNER", raising=False)
+    config = ExperimentConfig(name="t", skill=None, models=["m"], tasks_patterns=[],
+                              harness="antigravity", timeout_seconds=0.5)
+    config.antigravity.bin_path = conversation_cli
+    result = AgentRunner().run(["remember kept", "hang", "forbidden"], tmp_path, "m", config)
     assert result.status == "timeout"
-    assert result.duration == 1
-    assert "TURN 1" in result.transcript and "TURN 2" in result.transcript
-    assert "TURN 3" not in result.transcript
+    assert result.duration < 3
+    assert "kept" in result.transcript and "forbidden" not in result.transcript
 
 
 @pytest.mark.parametrize("forbidden", [False, True])

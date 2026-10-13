@@ -278,8 +278,8 @@ class ClaudeConfig:
     max_budget_usd: Optional[float] = 2.0
     permission_mode: Optional[str] = "acceptEdits"
     allowed_tools: list[str] = field(default_factory=list)
-    # Load only project/local settings so user-level skills, plugins, and CLAUDE.md
-    # cannot leak into either arm. Disable to test against your everyday setup.
+    # Select project/local settings. Global skill/plugin availability still needs
+    # runtime discovery checks; this does not establish filesystem isolation.
     isolate: bool = True
     # Run Bash inside Claude Code's own OS sandbox so commands need no approval
     # (headless sessions deny anything that would prompt) but stay in the workspace.

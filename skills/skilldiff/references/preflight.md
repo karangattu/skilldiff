@@ -78,8 +78,9 @@ ask is refused, and the session still ends `ok`. The defaults avoid prompts:
 Claude's sandbox keeps commands, but not its Read tool, away from grader and skill
 sources. OpenCode and Antigravity do not confine commands. Use `isolation: docker`/`podman`
 (or `macos` for Claude and Codex) when reads outside the workspace must be blocked.
-Codex sessions use `--ephemeral` when the CLI supports it, so they do not feed Codex
-memories that a later control session could read.
+Codex single-turn sessions require `--ephemeral`; multi-turn sessions require an
+ephemeral app-server thread, so they do not feed memories that a later control
+session could read. Unsupported interfaces fail before paid work.
 
 ## Host sandbox and permission checks
 
@@ -90,4 +91,44 @@ It fails with `host:` when the process running skilldiff cannot reach the networ
 mean the agent that started skilldiff is sandboxing it. `run` refuses to start in
 that state. The `fix:` line names the setting for the agent that started skilldiff.
 Variables that tie a process to that agent's session are removed from every child CLI.
+
+
+## Native CLI contract
+
+`check --no-probe` skips paid Claude authentication probes but still validates
+versions, commands, and structured formats without credentials. `run` performs
+these checks in every arm's selected execution boundary before the first paid
+session. No legacy flag-removal retry is allowed. Codex discovery checks the
+actual app-server skill list; Claude initialization reports target availability.
+AGY native global and plugin directories are scanned as advisory exposure only.
+OpenCode `--standalone` selects a private server, not a clean configuration profile.
+OpenCode V2 logs in with `opencode auth login` and uses ordered `permissions` rules
+with actions such as `shell` and `skill`. Claude's settings-source restriction does
+not disable all global skills/plugins; `--bare` disables subscription credentials
+and is unsuitable as the default.
+
+## Running from inside an agent
+
+SkillDiff starts separate, non-interactive agent
+sessions (`claude -p`, `codex exec`, `opencode run`, `agy -p`) that need network
+access and write access to their login directory. Codex scripted conversations
+use `codex app-server` instead of `exec`.
+
+- Run `skilldiff` as a plain command (paths via `-c`; no `cd`, pipes, redirects, or
+  `$(...)`) so the user's allow rule matches it.
+- If `check` shows `FAIL host: ...`, your shell is sandboxed and every session would
+  fail. Don't retry and don't change the user's agent settings yourself. Show the
+  user the `fix:` line, or give them the exact `skilldiff run ...` command for their
+  own terminal. Read the results afterwards with `skilldiff results`.
+- A full run usually takes longer than your shell tool's timeout. Start
+  `skilldiff run -c skill-eval/skilldiff.yaml` with your shell tool's background
+  option, check its progress output now and then, and read `skilldiff results` when
+  it ends.
+- For Claude, `check` makes one tiny authenticated call (`--no-probe` skips it) to
+  catch an expired login.
+- If `check` reports that the harness CLI is missing, or a smoke run fails with "Not
+  logged in", ask the user to sign in with that harness's normal login (for example
+  `claude auth login` or `opencode auth login`). Never ask for or handle their
+  credentials yourself. A missing binary can also be set per harness with `bin_path`
+  or `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, `AGY_BIN`.
 

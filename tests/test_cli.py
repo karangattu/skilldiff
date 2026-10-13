@@ -127,7 +127,7 @@ def test_cli_init_rejects_missing_skill(tmp_path: Path):
     assert cmd_init(Args(force=False, skill=str(tmp_path / "nope"), dir=str(tmp_path))) == 1
 
 
-def test_cli_check_demo(tmp_path: Path, monkeypatch, capsys):
+def test_cli_check_demo(tmp_path: Path, monkeypatch, capsys, capable_cli):
     monkeypatch.chdir(tmp_path)
     cmd_init(Args(force=False))
     fake = tmp_path / "claude"
@@ -150,11 +150,14 @@ def test_cli_check_rejects_existing_binary_that_cannot_run(tmp_path: Path, monke
     fake.write_text("#!/bin/sh\necho 'sandbox denied' >&2\nexit 77\n")
     fake.chmod(0o755)
     monkeypatch.setenv("CLAUDE_BIN", str(fake))
+    def forbid_paid_probe(*args, **kwargs):
+        raise AssertionError("Capability failure must prevent paid authentication probes")
+    monkeypatch.setattr("skilldiff.runner.AgentRunner.probe_claude_auth", forbid_paid_probe)
 
     code = cmd_check(Args(config="skilldiff.yaml", no_grade=True))
     out = capsys.readouterr().out
     assert code == 1
-    assert "FAIL  claude CLI failed" in out
+    assert "FAIL  claude CLI capability check" in out
     assert "sandbox denied" in out
     assert "ok    claude CLI:" not in out
 

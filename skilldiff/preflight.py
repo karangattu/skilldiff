@@ -47,7 +47,8 @@ DRIVER_FIXES = {
     "codex": "In Codex, add `prefix_rule(pattern=[\"skilldiff\"], decision=\"allow\")` to "
              "~/.codex/rules/default.rules, approve running skilldiff outside the sandbox, "
              "or start Codex with `--sandbox danger-full-access`",
-    "opencode": "In OpenCode, allow `\"skilldiff *\": \"allow\"` under `permission.bash`",
+    "opencode": "In OpenCode V2, add an allow rule for action `shell` and resource "
+                "`skilldiff *` to the `permissions` array",
     "antigravity": "In Antigravity, add `command(skilldiff)` and `unsandboxed(skilldiff)` to "
                    "`permissions.allow` in ~/.gemini/antigravity-cli/settings.json",
 }
@@ -126,7 +127,8 @@ def probe_workspace(
     scratch: Path,
     runtime_probe: str | None = None,
 ) -> dict[str, Any]:
-    report: dict[str, Any] = {"expected_skills": expected_skills}
+    report: dict[str, Any] = {"expected_skills": expected_skills,
+                              "cli": runner.capabilities(cwd, config, scratch)}
     read_paths = (
         config.claude.read_paths if config.harness == "claude" else config.codex.read_paths
     )

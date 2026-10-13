@@ -93,12 +93,9 @@ def test_codex_sandbox_is_bypassed_only_inside_external_isolation():
 
 def test_opencode_uses_the_approval_flag_the_cli_advertises():
     assert opencode_approval_flag({"--auto", "--format"}) == "--auto"
-    assert opencode_approval_flag({"--dangerously-skip-permissions"}) == (
-        "--dangerously-skip-permissions")
-    # Unknown capabilities: try the v1 name, then fall back after a rejection.
-    assert opencode_approval_flag(set()) == "--dangerously-skip-permissions"
-    assert opencode_approval_flag(set(), {"--dangerously-skip-permissions"}) == "--auto"
-    assert opencode_approval_flag({"--format"}) is None
+    assert opencode_approval_flag({"--dangerously-skip-permissions"}) is None
+    assert opencode_approval_flag(set()) is None
+    assert opencode_approval_flag({"--auto"}, {"--auto"}) is None
 
 
 def test_harness_permission_keys_are_validated(tmp_path):
@@ -290,7 +287,8 @@ def test_antigravity_soft_denials_are_denials():
     assert antigravity_permission_denials({"status": "SUCCESS"}, "") == []
 
     with patch.object(AgentRunner, "_exec", return_value=ExecResult(
-            stdout=json.dumps(data), stderr="", exit_code=0, duration=1.0)):
+            stdout=json.dumps({"event": "result", "result": data}),
+            stderr="", exit_code=0, duration=1.0)):
         res = AgentRunner(antigravity_bin="agy-mock").run(
             "t", Path("."), "m", AntigravityConfig(dangerously_skip_permissions=False))
     assert res.permission_denials == ["run_command", "write_to_file"]

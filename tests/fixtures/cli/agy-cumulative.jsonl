@@ -1,0 +1,2 @@
+{"event": "result", "result": {"status": "SUCCESS", "conversation_id": "agy-sanitized", "response": "READY", "num_turns": 1, "usage": {"input_tokens": 18727, "output_tokens": 77, "thinking_tokens": 0, "cache_read_tokens": 14289, "total_tokens": 18804}}}
+{"event": "result", "result": {"status": "SUCCESS", "conversation_id": "agy-sanitized", "response": "maple-742", "num_turns": 2, "usage": {"input_tokens": 20866, "output_tokens": 83, "thinking_tokens": 0, "cache_read_tokens": 28922, "total_tokens": 20949}}}

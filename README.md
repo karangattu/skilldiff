@@ -7,8 +7,10 @@ without your skill. It grades both and reports the difference in score, cost, ti
 and tokens. It ends with one bottom line: **SHIP**, **DO NOT SHIP**, or
 **NEEDS MORE RUNS**.
 
-It works with Claude Code, Codex, OpenCode, and Antigravity. It can test one skill,
-a folder of skills, two versions of a skill, or a pull request.
+Native adapters target Claude Code, Codex, OpenCode V2, and Antigravity CLI (AGY).
+It can test one skill, a folder of skills, two versions of a skill, or a pull request.
+See [verified releases and limits](docs/compatibility.md#verification): OpenCode
+v2.0.23 currently omits the required completion event and is rejected.
 
 ## How it works
 
@@ -41,7 +43,8 @@ flowchart TB
 ```
 
 - Both arms use the same agent, model, task, and starting files. Only the skill differs.
-- Each run gets its own throwaway workspace. The control arm never sees the skill.
+- Each run gets its own throwaway workspace. Control receives no installed target
+  copy; confirmed discovery or loading invalidates the baseline.
 - Graders see `candidate-A` and `candidate-B`, never which arm is which.
 - Arm order alternates from a recorded seed. Inputs are frozen and hashed, so results are reproducible.
 
@@ -63,10 +66,10 @@ uv tool install git+https://github.com/karangattu/skilldiff
 > [!IMPORTANT]
 > Install from GitHub as shown above. The `skilldiff` package on PyPI is a different project.
 
-**2. Install the skill into your agent** (replace `claude-code` with `codex`, `opencode`, or `antigravity`):
+**2. Install the skill into your agent** (replace `claude-code` with `codex`, `opencode`, or `antigravity-cli`):
 
 ```bash
-npx skills add karangattu/skilldiff -g -y -a claude-code
+npx skills add karangattu/skilldiff -g -y --copy -a claude-code
 ```
 
 To upgrade installed skills to the latest version:
@@ -79,8 +82,13 @@ npx skills update skilldiff -g
 |---|---|---|
 | Claude Code | `claude-code` | `~/.claude/skills/skilldiff` |
 | Codex | `codex` | `~/.agents/skills/skilldiff` |
-| OpenCode | `opencode` | `~/.agents/skills/skilldiff` |
-| Antigravity | `antigravity` | `~/.agents/skills/skilldiff` |
+| OpenCode | `opencode` | `~/.config/opencode/skills/skilldiff` |
+| Antigravity CLI (AGY) | `antigravity-cli` | `~/.gemini/antigravity-cli/skills/skilldiff` |
+
+Use `--copy` so AGY receives the skill in its native global directory.
+The installer treats Antigravity CLI and the desktop agent as separate agents.
+For AGY, reinstall with `npx skills add karangattu/skilldiff -g -y --copy -a antigravity-cli`
+after an update if the native copy is missing.
 
 Always pass `-a`. Without it, the [`skills` CLI](https://github.com/vercel-labs/skills)
 may install into every agent it knows, which is about sixty folders. `-g` installs
@@ -135,7 +143,7 @@ and write access to their login folder. Allow `skilldiff` once:
 |---|---|
 | Claude Code | In `.claude/settings.json`: `{"permissions": {"allow": ["Bash(skilldiff *)"]}, "sandbox": {"excludedCommands": ["skilldiff *"]}}` |
 | Codex | Add `prefix_rule(pattern=["skilldiff"], decision="allow")` to `~/.codex/rules/default.rules`, or approve the command when Codex asks |
-| OpenCode | Nothing by default. If you restricted bash, add `{"permission": {"bash": {"skilldiff *": "allow"}}}` to `opencode.json` |
+| OpenCode | If shell access is restricted, add `{"permissions": [{"action": "shell", "resource": "skilldiff *", "effect": "allow"}]}` to `opencode.json` (V2) |
 | Antigravity | Approve `skilldiff` when asked, or add `command(skilldiff)` and `unsandboxed(skilldiff)` to `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` |
 
 If you skip this setup, `skilldiff check` fails with a `host:` line and prints the
@@ -238,3 +246,16 @@ pytest && ruff check skilldiff tests
 ```
 
 See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.18.0.
+
+### Current agent compatibility
+
+SkillDiff checks the CLI version, required commands, and structured formats inside
+the selected execution environment before paid work. Each treatment skill is
+installed once in the native workspace directory. Follow-up `prompts:` share one
+conversation, workspace, and deadline; arms and repetitions have separate sessions.
+
+Empty output, malformed streams, explicit failures, and missing completion events
+are harness errors even when the CLI exits zero. Partial telemetry is retained,
+and these sessions do not enter paired decisions. Unknown usage and cost stay `N/A`.
+Claude subscription authentication remains the default; SkillDiff does not use
+`--bare`. See [the compatibility contract and verification limits](docs/compatibility.md).

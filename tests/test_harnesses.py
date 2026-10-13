@@ -140,7 +140,7 @@ def test_workspace_skill_placement_for_each_harness(tmp_path: Path):
         harness="codex",
     )
     ws_codex.setup()
-    assert (ws_codex.root / ".codex" / "skills" / "my-skill" / "SKILL.md").exists()
+    assert not (ws_codex.root / ".codex" / "skills" / "my-skill" / "SKILL.md").exists()
     assert (ws_codex.root / ".agents" / "skills" / "my-skill" / "SKILL.md").exists()
 
     ws_opencode = Workspace(
@@ -151,7 +151,7 @@ def test_workspace_skill_placement_for_each_harness(tmp_path: Path):
     )
     ws_opencode.setup()
     assert (ws_opencode.root / ".opencode" / "skills" / "my-skill" / "SKILL.md").exists()
-    assert (ws_opencode.root / ".agents" / "skills" / "my-skill" / "SKILL.md").exists()
+    assert not (ws_opencode.root / ".agents" / "skills" / "my-skill" / "SKILL.md").exists()
 
     ws_agy = Workspace(
         root=tmp_path / "ws_agy",
@@ -204,11 +204,13 @@ def test_agent_runner_dispatches_codex(tmp_path: Path):
         dangerously_bypass_approvals_and_sandbox=True,
     )
 
-    mock_stdout = (
-        '{"type": "tool_call", "name": "bash"}\n'
-        '{"type": "message", "content": "Solved issue", '
-        '"usage": {"input_tokens": 120, "output_tokens": 45}}\n'
-    )
+    mock_stdout = '\n'.join(map(json.dumps, [
+        {"type": "item.completed", "item": {"type": "command_execution",
+         "command": "echo done", "exit_code": 0}},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "Solved issue"}},
+        {"type": "turn.completed", "usage": {"input_tokens": 120,
+         "cached_input_tokens": 0, "output_tokens": 45}},
+    ]))
 
     with patch.object(AgentRunner, "_exec") as mock_subproc:
         mock_subproc.return_value = ExecResult(
@@ -270,7 +272,7 @@ def test_codex_reports_skill_availability_separately_from_use(tmp_path: Path):
     mock_stdout = "\n".join(
         [
             json.dumps(
-                {"type": "thread.started", "thread_id": "t", "skills": ["sample-skill"]}
+                {"type": "thread.started", "thread_id": "t"}
             ),
             json.dumps(
                 {
@@ -293,7 +295,7 @@ def test_codex_reports_skill_availability_separately_from_use(tmp_path: Path):
         )
         res = runner.run("Do task", tmp_path, "gpt-6-luna", cfg)
 
-    assert res.skill_available is True
+    assert res.skill_available is None
     assert res.skill_invoked is False
 
 
@@ -307,14 +309,14 @@ def test_codex_detects_skill_file_read_as_adoption(tmp_path: Path):
     mock_stdout = "\n".join(
         [
             json.dumps(
-                {"type": "thread.started", "thread_id": "t", "skills": ["sample-skill"]}
+                {"type": "thread.started", "thread_id": "t"}
             ),
             json.dumps(
                 {
                     "type": "item.completed",
                     "item": {
                         "type": "command_execution",
-                        "command": "cat .agents/skills/sample-skill/SKILL.md",
+                        "command": "cat .agents/skills/sample-skill/SKILL.md", "exit_code": 0,
                     },
                 }
             ),
@@ -330,7 +332,7 @@ def test_codex_detects_skill_file_read_as_adoption(tmp_path: Path):
         )
         res = runner.run("Do task", tmp_path, "gpt-6-luna", CodexConfig())
 
-    assert res.skill_available is True
+    assert res.skill_available is None
     assert res.skill_invoked is True
 
 
@@ -341,10 +343,11 @@ def test_agent_runner_dispatches_opencode(tmp_path: Path):
         variant="high",
     )
 
-    mock_stdout = (
-        '{"type": "step_start", "part": {"tokens": {"input": 80}}}\n'
-        '{"type": "message", "part": {"text": "Updated code", "tokens": {"output": 35}}}\n'
-    )
+    mock_stdout = '\n'.join(map(json.dumps, [
+        {"type": "text", "part": {"text": "Updated code"}},
+        {"type": "step_finish", "part": {"reason": "stop", "tokens": {
+         "input": 80, "output": 35, "cache": {"read": 0, "write": 0}}}},
+    ]))
 
     with patch.object(AgentRunner, "_exec") as mock_subproc:
         mock_subproc.return_value = ExecResult(
@@ -371,23 +374,17 @@ def test_agent_runner_dispatches_opencode(tmp_path: Path):
         assert str(tmp_path) not in call_args
         assert "--format" in call_args
         assert "json" in call_args
-        assert "--dangerously-skip-permissions" in call_args
-        assert "--variant" in call_args
-        assert "high" in call_args
+        assert "--auto" in call_args
+        assert call_args[call_args.index("-m") + 1] == "anthropic/claude-3-5-sonnet#high"
 
 
 def test_agent_runner_dispatches_antigravity(tmp_path: Path):
     runner = AgentRunner(antigravity_bin="agy-mock")
     cfg = AntigravityConfig(dangerously_skip_permissions=True)
 
-    mock_stdout = json.dumps(
-        {
-            "result": "Completed successfully",
-            "total_cost_usd": 0.04,
-            "usage": {"input_tokens": 150, "output_tokens": 60},
-            "tool_calls_count": 2,
-        }
-    )
+    mock_stdout = json.dumps({"event": "result", "result": {
+        "status": "SUCCESS", "response": "Completed successfully", "total_cost_usd": 0.04,
+        "usage": {"input_tokens": 150, "cache_read_tokens": 0, "output_tokens": 60}}})
 
     with patch.object(AgentRunner, "_exec") as mock_subproc:
         mock_subproc.return_value = ExecResult(
@@ -406,13 +403,13 @@ def test_agent_runner_dispatches_antigravity(tmp_path: Path):
         assert res.cost == 0.04
         assert res.input_tokens == 150
         assert res.output_tokens == 60
-        assert res.tool_calls == 2
+        assert res.tool_calls == 0
 
         call_args = mock_subproc.call_args[0][0]
         assert "agy-mock" in call_args
         assert "-p" in call_args
         assert "--output-format" in call_args
-        assert "json" in call_args
+        assert "stream-json" in call_args
         assert "--add-dir" in call_args
         assert str(tmp_path) in call_args
         assert "--dangerously-skip-permissions" in call_args
@@ -537,64 +534,27 @@ opencode:
         load_experiment(exp_file_invalid)
 
 
-def test_antigravity_runner_cache_tokens_and_transcript(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    runner = AgentRunner(antigravity_bin="agy-mock")
-    cfg_agy = AntigravityConfig()
-
-    conv_id = "test-conv-1234"
-    brain_log_dir = (
-        Path.home()
-        / ".gemini"
-        / "antigravity-cli"
-        / "brain"
-        / conv_id
-        / ".system_generated"
-        / "logs"
-    )
-    brain_log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = brain_log_dir / "transcript_full.jsonl"
-    entry = '{"event": "tool_call", "tool": "view_file", "path": "skills/shiny-doctor/SKILL.md"}\n'
-    log_file.write_text(entry, encoding="utf-8")
-
-    try:
-        sample_stdout = json.dumps({
-            "conversation_id": conv_id,
-            "status": "SUCCESS",
-            "response": "Done",
-            "duration_seconds": 4.5,
-            "usage": {
-                "input_tokens": 1000,
-                "output_tokens": 200,
-                "cache_read_tokens": 500,
-            },
-        })
-
-        with patch.object(AgentRunner, "_exec") as mock_subproc:
-            mock_subproc.return_value = ExecResult(
-                stdout=sample_stdout,
-                stderr="",
-                exit_code=0,
-                duration=4.5,
-            )
-
-            res = runner.run(
-                prompt="Fix",
-                cwd=tmp_path,
-                model="gemini-3.8-flash-high",
-                config=cfg_agy,
-                skill_names=["shiny-doctor"],
-            )
-
-            assert res.input_tokens == 1000
-            assert res.output_tokens == 200
-            assert res.cache_read_tokens == 500
-            assert "skills/shiny-doctor/SKILL.md" in res.transcript
-            assert res.skill_invoked is True
-    finally:
-        if log_file.exists():
-            log_file.unlink()
-
+def test_antigravity_runner_cache_tokens_and_transcript(tmp_path: Path):
+    stdout = '\n'.join(map(json.dumps, [
+        {"event": "step_update", "step_update": {"conversation_id": "sanitized",
+         "step_index": 1, "state": "DONE", "step_type": "tool", "tool_name": "view_file",
+         "tool_info": {"name": "view_file", "parameters": {
+             "AbsolutePath": "/workspace/.agents/skills/shiny-doctor/SKILL.md"},
+             "output": "skill body"}}},
+        {"event": "result", "result": {"conversation_id": "sanitized", "status": "SUCCESS",
+         "response": "Done", "usage": {"input_tokens": 1000, "output_tokens": 200,
+         "cache_read_tokens": 500, "total_tokens": 1200}}},
+    ]))
+    with patch.object(AgentRunner, "_exec", return_value=ExecResult(stdout, "", 0, 4.5)):
+        result = AgentRunner().run("Fix", tmp_path, "m", AntigravityConfig(),
+                                   skill_names=["shiny-doctor"])
+    assert result.input_tokens == 500
+    assert result.output_tokens == 200
+    assert result.cache_read_tokens == 500
+    assert result.reported_total_tokens == 1200
+    assert result.skill_invoked is True
+    assert result.tool_calls == 1
+    assert "skill body" in result.transcript
 
 
 def test_antigravity_non_transient_no_retry(tmp_path: Path):
@@ -631,7 +591,8 @@ def test_opencode_v2_uses_cwd_and_model_variant(tmp_path: Path):
         return_value={"--format", "--standalone", "--model", "--dangerously-skip-permissions"},
     ), patch.object(AgentRunner, "_exec") as mock_exec:
         mock_exec.return_value = ExecResult(
-            stdout='{"type":"text","part":{"text":"ok"}}\n',
+            stdout='{"type":"text","part":{"text":"ok"}}\n'
+                   '{"type":"step_finish","part":{"reason":"stop"}}\n',
             stderr="",
             exit_code=0,
             duration=1.0,
@@ -653,8 +614,8 @@ def test_opencode_v2_uses_cwd_and_model_variant(tmp_path: Path):
         assert call_args[model_idx] == "opencode-go/deepseek-v4.1-flash#high"
 
 
-def test_opencode_recovers_from_rejected_flag(tmp_path: Path):
-    """A single version-drift flag must not kill the run: drop it and retry."""
+def test_opencode_does_not_retry_rejected_flags(tmp_path: Path):
+    """A rejected flag must not silently discard execution or output guarantees."""
     runner = AgentRunner(opencode_bin="opencode-mock")
     cfg = OpenCodeConfig(variant="high")
 
@@ -679,11 +640,9 @@ def test_opencode_recovers_from_rejected_flag(tmp_path: Path):
     ) as mock_exec:
         res = runner.run(prompt="Test", cwd=tmp_path, model="m", config=cfg)
 
-        assert res.status == "ok"
-        assert mock_exec.call_count == 2
-        retry_args = mock_exec.call_args_list[1][0][0]
-        assert "--variant" not in retry_args
-        assert retry_args[retry_args.index("-m") + 1] == "opencode-go/m#high"
+        assert res.status == "error"
+        assert res.failure_kind == "harness_error"
+        assert mock_exec.call_count == 1
 
 
 def test_opencode_error_event_is_harness_failure(tmp_path: Path):
@@ -714,7 +673,8 @@ def test_opencode_structured_skill_adoption(tmp_path: Path):
         json.dumps(
             {
                 "type": "tool_use",
-                "part": {"type": "tool", "tool": "skill", "input": {"id": "my-skill"}},
+                "part": {"type": "tool", "tool": "skill", "state": {
+                    "status": "completed", "input": {"id": "my-skill"}}},
             }
         )
         + "\n"

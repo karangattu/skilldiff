@@ -68,8 +68,8 @@ skilldiff init --skill-a /abs/path/to/original --skill-b /abs/path/to/minified -
 
 You never install the skill into workspaces yourself. SkillDiff installs the
 right revision into each fresh workspace per harness (`.claude/skills` for
-Claude, `.codex/skills` plus `.agents/skills` for Codex, `.opencode/skills`
-plus `.agents/skills` for OpenCode, `.agents/skills` for Antigravity).
+Claude, `.agents/skills` for Codex, `.opencode/skills`
+for OpenCode, `.agents/skills` for Antigravity).
 
 Use [examples/csv-totals](https://github.com/karangattu/skilldiff/tree/main/examples/csv-totals)
 for dev and held-out tasks, fixtures, a grader, and a sample report.
@@ -118,8 +118,11 @@ Other rules:
   constraints to both arms' prompts and rejects known-good solutions that conflict
   with them. Fix task scope before accepting grader validation.
 - **Script multi-turn tasks with `prompts:`.** A list of prompts runs in order
-  in one workspace; tokens, cost, time, and turns sum across the turns, and one
-  timeout covers the whole script.
+  in one conversation and workspace, with one overall deadline. Stop on any failed
+  turn. Claude uses streaming input without session persistence; Codex uses one
+  ephemeral app-server thread; AGY uses streaming input; OpenCode V2 uses a unique
+  explicit session ID and standalone server. Use final cumulative counters once
+  and sum only per-turn counters.
 - **Keep fixtures small and self-contained.** The fixture is copied into a fresh
   workspace for every run, without `.git` history. Escaping symlinks are rejected.
   Put graders in `graders/`, outside the fixture, and call them through
@@ -203,27 +206,10 @@ are no agent sessions to inspect; check the graded revision outputs instead.
 `include_baseline`). `run` prints the selected count; `check` prints full-run
 count and Claude maximum spend. **Confirm with the user before you run more than a smoke test.**
 
-**Running from inside an agent:** skilldiff starts separate, non-interactive agent
-sessions (`claude -p`, `codex exec`, `opencode run`, `agy -p`) that need network
-access and write access to their login directory.
-
-- Run `skilldiff` as a plain command (paths via `-c`; no `cd`, pipes, redirects, or
-  `$(...)`) so the user's allow rule matches it.
-- If `check` shows `FAIL host: ...`, your shell is sandboxed and every session would
-  fail. Don't retry and don't change the user's agent settings yourself. Show the
-  user the `fix:` line, or give them the exact `skilldiff run ...` command for their
-  own terminal. Read the results afterwards with `skilldiff results`.
-- A full run usually takes longer than your shell tool's timeout. Start
-  `skilldiff run -c skill-eval/skilldiff.yaml` with your shell tool's background
-  option, check its progress output now and then, and read `skilldiff results` when
-  it ends.
-- For Claude, `check` makes one tiny authenticated call (`--no-probe` skips it) to
-  catch an expired login.
-- If `check` reports that the harness CLI is missing, or a smoke run fails with "Not
-  logged in", ask the user to sign in with that harness's normal login (for example
-  `claude auth login` or `opencode providers login`). Never ask for or handle their
-  credentials yourself. A missing binary can also be set per harness with `bin_path`
-  or `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, `AGY_BIN`.
+When running SkillDiff from another agent, follow the
+[agent-host instructions](references/preflight.md#running-from-inside-an-agent)
+for shell restrictions, background execution, and authentication. Codex multi-turn
+sessions use `app-server`; other native headless commands are unchanged.
 
 ## 5. Full run and interpretation
 
@@ -364,3 +350,9 @@ skilldiff init --pr 42 --repo ~/code/pkg --base origin/main --dir ./pr-42-eval
 Choose the decision `cost_basis` before the run; see [reporting](references/reporting.md).
 Incomplete trials retain telemetry and diffs but never enter paired decisions.
 Resume preserves them and refuses implicit retries. See [preflight safeguards](references/preflight.md).
+
+## Current CLI compatibility
+
+Before running, read [native CLI contracts](references/compatibility.md) for
+completion events, conversation continuity, capability checks, telemetry, native
+skill discovery, and host certification. Preserve subscription authentication.

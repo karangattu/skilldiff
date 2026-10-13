@@ -43,17 +43,9 @@ from skilldiff.snapshots import (
     tree_contents,
 )
 from skilldiff.stats import analysis_run, paired_comparison
-from skilldiff.workspace import Workspace
+from skilldiff.workspace import Workspace, user_skill_paths
 
 MAX_STORED_ERROR = 2000
-
-USER_SKILL_DIRS = {
-    "claude": ["~/.claude/skills"],
-    "codex": ["~/.codex/skills", "~/.agents/skills"],
-    "opencode": ["~/.config/opencode/skills", "~/.claude/skills", "~/.agents/skills"],
-    "antigravity": ["~/.gemini/skills", "~/.agents/skills"],
-}
-
 
 def safe_path_component(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_") or "item"
@@ -61,13 +53,7 @@ def safe_path_component(value: str) -> str:
 
 def find_user_level_installs(skill_names: list[str], harness: str) -> list[str]:
     """User-level copies of the skill that the control arm could also load."""
-    found: list[str] = []
-    for base in USER_SKILL_DIRS.get(harness, []):
-        for name in skill_names:
-            path = Path(base).expanduser() / name
-            if (path / "SKILL.md").is_file():
-                found.append(str(path))
-    return found
+    return [str(path) for path in user_skill_paths(skill_names, harness)]
 
 
 def find_harness_inheritance(skill_names: list[str], harness: str) -> list[str]:
@@ -193,7 +179,7 @@ def _cli_version(binary: str) -> str:
                 timeout=10,
                 stdin=subprocess.DEVNULL,
             )
-            out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+            out = (proc.stdout or proc.stderr or "").strip()
             line = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
             if line and proc.returncode == 0:
                 return line[:200]
@@ -386,8 +372,7 @@ class ExperimentRunner:
             find_user_level_installs(self.config.skill_names, self.config.harness)
             if self.config.isolation == "local" else []
         )
-        isolated = (self.config.isolation != "local" or
-                    self.config.harness == "claude" and self.config.claude.isolate)
+        isolated = self.config.isolation != "local"
         if installs and not isolated:
             warnings.append(
                 "The skill is also installed at user level, so the control arm can load it: "
@@ -1057,10 +1042,8 @@ class ExperimentRunner:
             for ws in workspaces.values():
                 ws.setup()
 
-            if not is_correctness and not os.environ.get("SKILLDIFF_MOCK_RUNNER") and (
-                (execution.harness == "codex" and execution.codex.verify_skills)
-                or task.runtime_probe or execution.isolation == "macos"
-            ):
+            preflight_reports = {}
+            if not is_correctness and not os.environ.get("SKILLDIFF_MOCK_RUNNER"):
                 # Verify every arm before paying for the first model session.
                 for arm, ws in workspaces.items():
                     expected = ([read_skill_name(path) or path.name for path in ws.skill_dirs]
@@ -1071,6 +1054,7 @@ class ExperimentRunner:
                     try:
                         probe = self.agent_runner.preflight(
                             ws.root, execution, expected, runtime_probe=task.runtime_probe)
+                        preflight_reports[arm] = probe
                         atomic_json(directory / "preflight.json", {"status": "ok", **probe})
                     except Exception as exc:
                         atomic_json(directory / "preflight.json",
@@ -1249,6 +1233,9 @@ class ExperimentRunner:
                     "cache_read_tokens": res.cache_read_tokens,
                     "cache_creation_tokens": res.cache_creation_tokens,
                     "output_tokens": res.output_tokens,
+                    "reported_total_tokens": res.reported_total_tokens,
+                    "session_id": res.session_id,
+                    "cli": preflight_reports.get(arm, {}).get("cli"),
                     "num_turns": res.num_turns,
                     "tool_calls": res.tool_calls,
                     "skill_invoked": res.skill_invoked,

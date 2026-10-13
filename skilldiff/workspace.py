@@ -38,12 +38,28 @@ HARNESS_USER_PATHS: dict[str, list[str]] = {
         "~/.config/opencode/memory",
     ],
     "antigravity": [
-        "~/.gemini/skills",
-        "~/.agents/skills",
+        "~/.gemini/antigravity-cli/skills",
+        "~/.gemini/antigravity-cli/plugins",
         "~/.gemini/GEMINI.md",
         "~/.gemini/memory",
     ],
 }
+
+
+def user_skill_paths(skill_names: list[str], harness: str) -> list[Path]:
+    """Advisory scan, including plugin skills; discovery is a separate runtime check."""
+    found = []
+    for raw in HARNESS_USER_PATHS.get(harness, []):
+        base = Path(raw).expanduser()
+        if base.name == "skills":
+            candidates = [base / name for name in skill_names]
+        elif base.name == "plugins" and base.is_dir():
+            candidates = [p.parent for p in base.glob("**/skills/*/SKILL.md")
+                          if p.parent.name in skill_names]
+        else:
+            continue
+        found.extend(p for p in candidates if (p / "SKILL.md").is_file())
+    return sorted(set(found))
 
 # Workspace-level instruction/memory files that must not leak between arms.
 HARNESS_WORKSPACE_FILES = (
@@ -124,6 +140,8 @@ def find_harness_contamination(
 ) -> list[str]:
     """Host-level skills/instructions/plugins/memory that could leak into arms."""
     found: list[str] = []
+    found.extend(f"skill installed at user level: {p}"
+                 for p in user_skill_paths(skill_names, harness))
     bases = list(HARNESS_USER_PATHS.get(harness, [])) + list(extra_bases or [])
     for base in bases:
         path = Path(base).expanduser()
@@ -132,7 +150,9 @@ def find_harness_contamination(
             for skill in skill_names:
                 candidate = path / skill
                 if (candidate / "SKILL.md").is_file():
-                    found.append(f"skill installed at user level: {candidate}")
+                    warning = f"skill installed at user level: {candidate}"
+                    if warning not in found:
+                        found.append(warning)
         elif path.suffix.lower() in {".md", ".json"} or "memory" in name or "plugin" in name:
             if path.exists():
                 found.append(f"{harness} inheritance path exists: {path}")
@@ -215,15 +235,9 @@ class Workspace:
 
     def _get_skill_target_dirs(self, skill_name: str) -> list[Path]:
         if self.harness == "codex":
-            return [
-                self.root / ".codex" / "skills" / skill_name,
-                self.root / ".agents" / "skills" / skill_name,
-            ]
+            return [self.root / ".agents" / "skills" / skill_name]
         if self.harness == "opencode":
-            return [
-                self.root / ".opencode" / "skills" / skill_name,
-                self.root / ".agents" / "skills" / skill_name,
-            ]
+            return [self.root / ".opencode" / "skills" / skill_name]
         if self.harness in {"antigravity", "agy"}:
             return [self.root / ".agents" / "skills" / skill_name]
         return [self.root / ".claude" / "skills" / skill_name]

@@ -49,7 +49,47 @@ jobs:
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/skilldiff-wheel/bin/skilldiff" --version
           "$RUNNER_TEMP/skilldiff-wheel/bin/skilldiff" init --dir wheel-demo
-          CLAUDE_BIN=/bin/echo "$RUNNER_TEMP/skilldiff-wheel/bin/skilldiff" check -c wheel-demo/skilldiff.yaml
+          "$RUNNER_TEMP/skilldiff-wheel/bin/skilldiff" lint wheel-demo/skills/changelog-style
+
+  current-cli:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        harness: [claude, codex, antigravity, opencode]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - run: pip install -e ".[dev]"
+      - name: Install the current official CLI
+        shell: bash
+        env:
+          HARNESS: ${{ matrix.harness }}
+        run: |
+          case "$HARNESS" in
+            claude) npm install -g @anthropic-ai/claude-code@latest ;;
+            codex) npm install -g @openai/codex@latest ;;
+            antigravity)
+              curl -fsSL https://antigravity.google/cli/install.sh -o "$RUNNER_TEMP/agy-install.sh"
+              bash "$RUNNER_TEMP/agy-install.sh" --skip-aliases --skip-path
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+              ;;
+            opencode)
+              curl -fsSL https://opencode.ai/v2/install -o "$RUNNER_TEMP/opencode-install.sh"
+              bash "$RUNNER_TEMP/opencode-install.sh"
+              echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+              ;;
+          esac
+      - name: Check native commands, formats, and Codex discovery without model calls
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+          SKILLDIFF_LIVE_CLI: ${{ matrix.harness }}
+        run: pytest tests/test_live_cli_contract.py -v
 
   container:
     runs-on: ubuntu-latest

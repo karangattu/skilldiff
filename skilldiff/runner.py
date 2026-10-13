@@ -23,6 +23,7 @@ from skilldiff.config import (
     OpenCodeConfig,
     read_skill_name,
 )
+from skilldiff.conversations import Conversation
 from skilldiff.preflight import codex_env, protected_read_paths
 from skilldiff.processes import OwnedDescendants
 
@@ -58,6 +59,8 @@ class RunResult:
     # e.g. ["Bash", "Edit"] for Claude, "bash" for OpenCode, or
     # "shell (sandbox: filesystem)" for Codex. None when not reported.
     permission_denials: Optional[list[str]] = None
+    session_id: Optional[str] = None
+    reported_total_tokens: Optional[int] = None
 
 
 @dataclass
@@ -202,10 +205,9 @@ def detect_skill_reference(text: str, skill_names: list[str]) -> bool:
 def detect_opencode_skill_load(transcript: str, skill_names: list[str]) -> bool:
     """Structured adoption check for OpenCode's JSON stream.
 
-    A loaded skill shows up as the harness's own skill tool call
-    (``"tool":"skill"`` with ``input.id`` equal to the skill name), as the
-    injected ``<skill_content name="...">`` payload, or as a read of a file
-    inside the installed skill directory. Only calls that match the skill
+    A loaded skill shows up as a completed skill tool call with the target ID,
+    or a completed read of a file inside the installed skill directory.
+    Only calls that match the skill
     under test count: agents may invoke unrelated user-level skills, and
     those must not be mistaken for adoption of the skill under test (or,
     in the control arm, for contamination).
@@ -225,6 +227,9 @@ def detect_opencode_skill_load(transcript: str, skill_names: list[str]) -> bool:
         part = item.get("part")
         candidates: list[Any] = [item, part if isinstance(part, dict) else {}]
         for candidate in candidates:
+            state = candidate.get("state")
+            if not isinstance(state, dict) or state.get("status") != "completed":
+                continue
             tool_input = candidate.get("input")
             if not isinstance(tool_input, dict):
                 # OpenCode v2 nests tool inputs under the part's ``state``.
@@ -233,49 +238,21 @@ def detect_opencode_skill_load(transcript: str, skill_names: list[str]) -> bool:
                     tool_input = state.get("input")
             if isinstance(tool_input, dict):
                 skill_id = tool_input.get("id") or tool_input.get("skill")
-                if skill_id and _skill_matches(skill_id, skill_names):
+                if candidate.get("tool") == "skill" and _skill_matches(skill_id, skill_names):
                     return True
-    if any(
-        re.search(rf'<skill_content\s+name=["\']{re.escape(name)}["\']', transcript)
-        for name in skill_names
-    ):
-        return True
-    return detect_skill_reference(transcript, skill_names)
-
-
-def _opencode_error_message(stdout: str, stderr: str) -> Optional[str]:
-    """Extract OpenCode's structured error message from a run's output."""
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            item = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if not isinstance(item, dict) or item.get("type") != "error":
-            continue
-        error = item.get("error")
-        if isinstance(error, dict):
-            message = error.get("message") or error.get("data")
-        else:
-            message = item.get("message") or error
-        if isinstance(message, str) and message.strip():
-            return message.strip()
-    return stderr.strip() or None
+                if candidate.get("tool") in {"read", "read_file"} and detect_skill_reference(
+                    str(tool_input.get("filePath") or tool_input.get("path") or ""), skill_names
+                ):
+                    return True
+    return False
 
 
 def opencode_approval_flag(
     probed: set[str], skip: set[str] | frozenset[str] = frozenset()
 ) -> Optional[str]:
-    """The flag that auto-approves tool permissions in this OpenCode version.
-
-    v1 advertises ``--dangerously-skip-permissions``; v2 advertises ``--auto`` and
-    keeps the old name as a hidden alias. Without approval, headless runs cannot
-    answer prompts and tools are refused.
-    """
-    for flag in ("--dangerously-skip-permissions", "--auto"):
-        if flag not in skip and (not probed or flag in probed):
+    """Require positive evidence of the current V2 headless approval flag."""
+    for flag in ("--auto",):
+        if flag not in skip and flag in probed:
             return flag
     return None
 
@@ -328,12 +305,6 @@ def codex_sandbox_args(codex_cfg: CodexConfig, isolation: str = "local") -> list
     return args
 
 
-def _opencode_unrecognized_flags(stdout: str, stderr: str) -> list[str]:
-    """Flags OpenCode rejected, e.g. "Unrecognized flag: --dir in command ..."."""
-    text = f"{stdout}\n{stderr}"
-    return sorted(set(re.findall(r"Unrecognized flag:\s*(--[A-Za-z0-9-]+)", text)))
-
-
 AUTH_ERROR_MARKERS = (
     "failed to authenticate",
     "oauth",
@@ -356,7 +327,7 @@ def auth_login_hint(harness: str) -> str:
     return {
         "claude": "Sign in with `claude auth login`",
         "codex": "Sign in with `codex login`",
-        "opencode": "Sign in with `opencode providers login`",
+        "opencode": "Sign in with `opencode auth login`",
     }.get(harness, f"Sign in to the {harness} CLI")
 
 
@@ -457,6 +428,11 @@ class AgentRunner:
     def opencode_run_flags(self, bin_path: str) -> set[str]:
         return self.cli_flags(bin_path, "run")
 
+    def capabilities(self, cwd: Path, config: ExperimentConfig, scratch: Path) -> dict:
+        from skilldiff.capabilities import probe_capabilities
+
+        return probe_capabilities(self, cwd, config, scratch)
+
     def terminate_all(self) -> None:
         """Kill running agent sessions and refuse new ones (used on Ctrl-C)."""
         with self._active_lock:
@@ -492,12 +468,12 @@ class AgentRunner:
         read_paths: Optional[list[str]] = None,
         protected_paths: Optional[list[str]] = None,
         rpc_requests: Optional[list[dict[str, Any]]] = None,
+        conversation: Optional[Conversation] = None,
     ) -> ExecResult:
         """Run a CLI with a timeout and clean up its owned children.
 
-        Discovery uses bounded JSON-RPC over pipes; model sessions have no stdin pipe.
-        Output goes to temporary files rather than pipes so that background processes the
-        agent leaves behind (dev servers, watchers) cannot keep the run from finishing.
+        Discovery and conversations use deadline-bounded pipes; other output goes
+        to temporary files. Owned descendants cannot keep a session open indefinitely.
         """
         if self._cancelled:
             raise RuntimeError("Cancelled before the agent started")
@@ -564,7 +540,7 @@ class AgentRunner:
                 "-w",
                 "/workspace",
             ]
-            if rpc_requests:
+            if rpc_requests or conversation:
                 exec_cmd.append("-i")
             if temp_dir is not None:
                 exec_cmd.extend(["-v", f"{temp_dir.resolve()}:/session-tmp"])
@@ -596,8 +572,8 @@ class AgentRunner:
                 exec_cmd,
                 cwd=cwd,
                 env=env,
-                stdin=subprocess.PIPE if rpc_requests else subprocess.DEVNULL,
-                stdout=subprocess.PIPE if rpc_requests else out,
+                stdin=subprocess.PIPE if rpc_requests or conversation else subprocess.DEVNULL,
+                stdout=subprocess.PIPE if rpc_requests or conversation else out,
                 stderr=err,
                 start_new_session=os.name == "posix",
             )
@@ -609,7 +585,7 @@ class AgentRunner:
             protocol_error = None
             stop_reader = threading.Event()
             try:
-                if rpc_requests:
+                if rpc_requests or conversation:
                     messages: queue.Queue[bytes | None] = queue.Queue()
 
                     def read_messages() -> None:
@@ -625,9 +601,52 @@ class AgentRunner:
                     reader = threading.Thread(target=read_messages, daemon=True)
                     reader.start()
                     assert proc.stdin is not None
-                    for request in rpc_requests:
+                    def send(request):
                         proc.stdin.write((json.dumps(request) + "\n").encode())
                         proc.stdin.flush()
+
+                    if conversation:
+                        for request in conversation.start():
+                            send(request)
+                        while not conversation.done:
+                            wait = None if deadline is None else max(0, deadline - time.monotonic())
+                            try:
+                                line = messages.get(timeout=wait)
+                            except queue.Empty as exc:
+                                raise subprocess.TimeoutExpired(cmd, timeout) from exc
+                            if line is None:
+                                raise RuntimeError(
+                                    "Conversation closed before completing all turns")
+                            out.write(line)
+                            event = json.loads(line)
+                            if not isinstance(event, dict):
+                                raise RuntimeError("Malformed conversation event")
+                            from skilldiff.telemetry import validate_event
+
+                            validate_event(event)
+                            for request in conversation.accept(event):
+                                send(request)
+                        # app-server deliberately stays alive after an ephemeral thread.
+                        # Other streaming CLIs finish when stdin closes.
+                        if conversation.harness == "codex":
+                            _kill_group(proc)
+                            proc.wait(timeout=5)
+                            exit_code = 0
+                        else:
+                            proc.stdin.close()
+                            remaining = (None if deadline is None else
+                                         max(0, deadline - time.monotonic()))
+                            exit_code = proc.wait(timeout=remaining)
+                        _kill_group(proc)
+                        descendants.cleanup()
+                        reader.join(timeout=1)
+                        # Drain final counters already emitted before process exit.
+                        while not messages.empty():
+                            line = messages.get_nowait()
+                            if line is not None:
+                                out.write(line)
+                    for request in rpc_requests or []:
+                        send(request)
                         if "id" not in request:
                             continue
                         while True:
@@ -644,18 +663,20 @@ class AgentRunner:
                                 if "error" in message:
                                     raise RuntimeError(f"Codex discovery error: {message['error']}")
                                 break
-                    _kill_group(proc)
-                    proc.wait(timeout=5)
-                    reader.join(timeout=1)
-                    exit_code = 0
+                    if rpc_requests:
+                        _kill_group(proc)
+                        proc.wait(timeout=5)
+                        descendants.cleanup()
+                        reader.join(timeout=1)
+                        exit_code = 0
                 else:
                     exit_code = proc.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 _kill_group(proc)
                 exit_code = proc.wait()
-            except (RuntimeError, ValueError, BrokenPipeError) as exc:
-                if not rpc_requests:
+            except (RuntimeError, ValueError, KeyError, TypeError, BrokenPipeError) as exc:
+                if not rpc_requests and not conversation:
                     raise
                 protocol_error = str(exc)
                 _kill_group(proc)
@@ -663,7 +684,7 @@ class AgentRunner:
             finally:
                 _kill_group(proc)
                 descendants.cleanup()
-                if rpc_requests:
+                if rpc_requests or conversation:
                     stop_reader.set()
                     proc.wait(timeout=5)
                     if proc.stdin:
@@ -671,6 +692,11 @@ class AgentRunner:
                             proc.stdin.close()
                         except BrokenPipeError:
                             pass
+                    reader.join(timeout=1)
+                    while not messages.empty():
+                        line = messages.get_nowait()
+                        if line is not None:
+                            out.write(line)
                     # The reader owns stdout. Closing its pipe from this thread
                     # waits for its read lock if an escaped child kept it open,
                     # silently extending the discovery deadline.
@@ -725,8 +751,12 @@ class AgentRunner:
             "cache_creation_tokens",
             "tool_calls",
             "num_turns",
+            "reported_total_tokens",
         )
         totals = dict.fromkeys(metrics, 0)
+        known = set()
+        unknown = set()
+        session_id = "ses_" + uuid.uuid4().hex
         skill_invoked = False
         skill_available = None
         denials: Optional[list[str]] = None
@@ -743,14 +773,22 @@ class AgentRunner:
                 break
             res = self._run_session(
                 turn_prompt, cwd, model, config, harness, skill_names, turn_timeout,
-                temp_dir=temp_dir,
+                temp_dir=temp_dir, session_id=session_id,
             )
             last_res = res
             for metric in metrics:
                 value = getattr(res, metric)
-                totals[metric] = (
-                    None if value is None or totals[metric] is None else totals[metric] + value
-                )
+                if metric == "reported_total_tokens":
+                    from dataclasses import asdict
+
+                    from skilldiff.reporter import _total_tokens_opt
+
+                    value = _total_tokens_opt(asdict(res))
+                if value is not None:
+                    known.add(metric)
+                    totals[metric] += value
+                elif res.status == "ok":
+                    unknown.add(metric)
             if res.skill_invoked:
                 skill_invoked = True
             if res.skill_available is not None:
@@ -768,6 +806,9 @@ class AgentRunner:
         if last_res is None:
             return _failed_result("", ValueError("No turns executed"), 0.0)
 
+        totals = {key: value if key in known and key not in unknown else None
+                  for key, value in totals.items()}
+
         return RunResult(
             prompt="\n---\n".join(prompts),
             response=last_res.response,
@@ -784,6 +825,8 @@ class AgentRunner:
             num_turns=totals["num_turns"],
             skill_invoked=skill_invoked,
             skill_available=skill_available,
+            session_id=last_res.session_id,
+            reported_total_tokens=totals["reported_total_tokens"],
             status=last_res.status,
             failure_kind=last_res.failure_kind,
             permission_denials=denials,
@@ -813,21 +856,29 @@ class AgentRunner:
         # the fixture/diff, reuse them across turns, and never mutate os.environ.
         with tempfile.TemporaryDirectory(prefix="tmp-", dir=cwd.resolve().parent) as tmp:
             checked = False
-            if (isinstance(config, ExperimentConfig) and config.harness == "codex"
-                    and config.skill_names
+            expected = []
+            if (isinstance(config, ExperimentConfig)
                     and not os.environ.get("SKILLDIFF_MOCK_RUNNER")):
                 expected = sorted({read_skill_name(path.parent) or path.parent.name
-                                   for root in (".agents/skills", ".codex/skills")
+                                   for root in (".agents/skills", ".claude/skills",
+                                                ".opencode/skills")
                                    for path in (cwd / root).glob("*/SKILL.md")
                                    if path.parent.name in config.skill_names})
                 self.preflight(cwd, config, expected, Path(tmp))
-                checked = config.codex.verify_skills
+                checked = config.harness == "codex" and config.codex.verify_skills
             result = self._run_session(
                 prompt, cwd, model, config, harness, skill_names, timeout,
                 temp_dir=Path(tmp),
             )
             if checked:
                 result.skill_available = bool(expected)
+            if (isinstance(config, ExperimentConfig) and not expected and config.skill_names
+                    and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
+                    and (result.skill_available or result.skill_invoked)):
+                result.status = "error"
+                result.failure_kind = "harness_error"
+                result.exit_code = result.exit_code or 1
+                result.error = "Control discovered or loaded the target skill"
             return result
 
     def _run_session(
@@ -840,6 +891,7 @@ class AgentRunner:
         skill_names: Optional[list[str]] = None,
         timeout: Optional[float] = None,
         temp_dir: Optional[Path] = None,
+        session_id: Optional[str] = None,
     ) -> RunResult:
         timeout = timeout if timeout is not None else getattr(config, "timeout_seconds", None)
         if isinstance(config, ExperimentConfig):
@@ -853,12 +905,11 @@ class AgentRunner:
                 return _failed_result("", ValueError("Empty prompt list"), 0.0)
             if len(prompt) == 1:
                 prompt = prompt[0]
-            else:
-                return self._run_multi_turn(
-                    prompt, cwd, model, config, harness, skill_names, timeout, temp_dir
-                )
 
         if os.environ.get("SKILLDIFF_MOCK_RUNNER"):
+            if isinstance(prompt, list):
+                return self._run_multi_turn(prompt, cwd, model, config, harness, skill_names,
+                                            timeout, temp_dir)
             return self._run_mock(prompt, cwd, model)
 
         isolation = getattr(config, "isolation", "local")
@@ -920,6 +971,9 @@ class AgentRunner:
             opencode_cfg, antigravity_cfg = configs["opencode"], configs["antigravity"]
 
         names = skill_names or []
+        if active_harness == "opencode" and isinstance(prompt, list):
+            return self._run_multi_turn(prompt, cwd, model, config, active_harness, names,
+                                        timeout, temp_dir)
         if active_harness == "codex":
             result = self._run_codex(
                 prompt,
@@ -932,6 +986,7 @@ class AgentRunner:
                 temp_dir=temp_dir,
                 protected_paths=(protected_read_paths(config)
                                  if isinstance(config, ExperimentConfig) else []),
+                skill_names=names,
             )
         elif active_harness == "opencode":
             result = self._run_opencode(
@@ -943,7 +998,7 @@ class AgentRunner:
                 isolation=isolation,
                 container_image=container_image,
                 temp_dir=temp_dir,
-                skill_names=names,
+                skill_names=names, session_id=session_id,
             )
         elif active_harness in {"antigravity", "agy"}:
             result = self._run_antigravity(
@@ -952,6 +1007,7 @@ class AgentRunner:
                 model,
                 antigravity_cfg,
                 timeout,
+                skill_names=names,
                 isolation=isolation,
                 container_image=container_image,
                 temp_dir=temp_dir,
@@ -971,8 +1027,6 @@ class AgentRunner:
                                  if isinstance(config, ExperimentConfig) else []),
             )
 
-        if result.skill_invoked is None and names and result.transcript:
-            result.skill_invoked = detect_skill_reference(result.transcript, names)
         return result
 
     def probe_claude_auth(
@@ -1081,7 +1135,13 @@ class AgentRunner:
         temp_dir: Optional[Path] = None,
         protected_paths: Optional[list[str]] = None,
     ) -> RunResult:
-        cmd = self.claude_command(prompt, model, claude_cfg, isolation, protected_paths)
+        prompts = prompt if isinstance(prompt, list) else [prompt]
+        cmd = self.claude_command(prompts[0], model, claude_cfg, isolation, protected_paths)
+        conversation = None
+        if isinstance(prompt, list):
+            del cmd[cmd.index("-p") + 1]
+            cmd.extend(["--input-format", "stream-json"])
+            conversation = Conversation("claude", prompts)
         env = os.environ.copy()
         for var in PARENT_SESSION_VARS:
             env.pop(var, None)
@@ -1094,7 +1154,7 @@ class AgentRunner:
             execution = self._exec(
                 cmd, cwd, env, timeout, isolation=isolation, container_image=container_image,
                 temp_dir=temp_dir, read_paths=claude_cfg.read_paths,
-                protected_paths=protected_paths,
+                protected_paths=protected_paths, conversation=conversation,
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
@@ -1109,7 +1169,7 @@ class AgentRunner:
             error = execution.stderr or parsed["error"]
 
         result = RunResult(
-            prompt=prompt,
+            prompt="\n---\n".join(prompts),
             response=parsed["response"] if parsed["response"] is not None else execution.stdout,
             transcript=f"STDOUT:\n{execution.stdout}\n\nSTDERR:\n{execution.stderr}",
             duration=execution.duration,
@@ -1125,6 +1185,8 @@ class AgentRunner:
             skill_invoked=parsed["skill_invoked"] if skill_names else None,
             skill_available=parsed["skill_available"] if skill_names else None,
             permission_denials=parsed["permission_denials"],
+            session_id=parsed["session_id"],
+            reported_total_tokens=parsed["reported_total_tokens"],
         )
         return _finalize_status(result, execution)
 
@@ -1139,16 +1201,25 @@ class AgentRunner:
         container_image: Optional[str] = None,
         temp_dir: Optional[Path] = None,
         protected_paths: Optional[list[str]] = None,
+        skill_names: Optional[list[str]] = None,
     ) -> RunResult:
         bin_path = codex_cfg.bin_path or self.codex_bin
         cmd = [bin_path, "exec", prompt, "-m", model, "--json"]
         cmd.extend(codex_sandbox_args(codex_cfg, isolation))
-        # Persisted sessions feed Codex memories, which a later control session
-        # could read. Keep each session off disk when the CLI supports it.
-        if isolation not in {"docker", "podman"} and "--ephemeral" in self.cli_flags(
-            bin_path, "exec"
-        ):
-            cmd.append("--ephemeral")
+        cmd.append("--ephemeral")
+        conversation = None
+        if isinstance(prompt, list):
+            params = {"model": model, "cwd": ("/workspace" if isolation in
+                      {"docker", "podman"} else str(cwd.resolve())),
+                      "ephemeral": True, "approvalPolicy": "never",
+                      "sandbox": ("danger-full-access" if isolation in
+                                  {"macos", "docker", "podman"} or
+                                  codex_cfg.dangerously_bypass_approvals_and_sandbox
+                                  else codex_cfg.sandbox),
+                      "config": {"sandbox_workspace_write.network_access":
+                                 codex_cfg.network_access}}
+            cmd = [bin_path, "app-server", "--stdio"]
+            conversation = Conversation("codex", prompt, params)
 
         if codex_cfg.extra_args:
             cmd.extend(codex_cfg.extra_args)
@@ -1160,146 +1231,21 @@ class AgentRunner:
             execution = self._exec(
                 cmd, cwd, env, timeout, isolation=isolation, container_image=container_image,
                 temp_dir=temp_dir, read_paths=codex_cfg.read_paths,
-                protected_paths=protected_paths,
+                protected_paths=protected_paths, conversation=conversation,
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
 
-        stdout = execution.stdout
-        response_texts: list[str] = []
-        cost = 0.0
-        input_tokens = 0
-        cached_tokens = 0
-        cache_write_tokens = 0
-        output_tokens = 0
-        tool_calls = 0
-        num_turns = 0
-        saw_usage = saw_cost = False
-        input_complete = output_complete = cache_complete = True
-        cache_write_complete = True
-        saw_cache_write = False
-        skill_names = _codex_skill_names(cwd)
-        skill_available: Optional[bool] = None
-        skill_invoked = False
+        from skilldiff.telemetry import parse_codex
 
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                item = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if not isinstance(item, dict):
-                continue
-            item_type = str(item.get("type", ""))
-
-            # `codex exec --json` identifies skills available to the session
-            # in its thread.started event. Keep availability distinct from use:
-            # a skill can be installed without the agent opening or invoking it.
-            if item_type == "thread.started" and skill_names:
-                skills = item.get("skills")
-                if isinstance(skills, list):
-                    skill_available = any(_skill_matches(s, skill_names) for s in skills)
-
-            # Current `codex exec --json` wraps work in item.* events.
-            inner = item.get("item")
-            if isinstance(inner, dict):
-                if item_type == "item.completed":
-                    inner_type = str(inner.get("type", ""))
-                    if inner_type in {"agent_message", "assistant_message", "message"}:
-                        text = inner.get("text") or inner.get("content")
-                        if isinstance(text, str) and text:
-                            response_texts.append(text)
-                    elif inner_type not in {"reasoning", "todo_list", "error"}:
-                        tool_calls += 1
-                    if inner_type == "command_execution" and skill_names:
-                        skill_invoked = skill_invoked or detect_skill_reference(
-                            str(inner.get("command") or ""), skill_names
-                        )
-                elif item_type == "item.started" and skill_names:
-                    inner_type = str(inner.get("type", ""))
-                    if inner_type == "command_execution":
-                        skill_invoked = skill_invoked or detect_skill_reference(
-                            str(inner.get("command") or ""), skill_names
-                        )
-                continue
-
-            if item_type == "turn.completed":
-                num_turns += 1
-            elif "tool" in item_type or item.get("tool_calls"):
-                tool_calls += 1
-
-            usage = item.get("usage")
-            if isinstance(usage, dict):
-                saw_usage = True
-                input_complete = input_complete and any(
-                    k in usage for k in ("input_tokens", "prompt_tokens")
-                )
-                output_complete = output_complete and any(
-                    k in usage for k in ("output_tokens", "completion_tokens")
-                )
-                cache_complete = cache_complete and "cached_input_tokens" in usage
-                if item_type == "turn.completed":
-                    input_tokens += int(usage.get("input_tokens") or 0)
-                    cached_tokens += int(usage.get("cached_input_tokens") or 0)
-                    output_tokens += int(usage.get("output_tokens") or 0)
-                    cache_write_complete = cache_write_complete and (
-                        "cache_write_input_tokens" in usage
-                    )
-                    if "cache_write_input_tokens" in usage:
-                        saw_cache_write = True
-                        cache_write_tokens += int(usage.get("cache_write_input_tokens") or 0)
-                else:
-                    input_tokens = int(
-                        usage.get("input_tokens") or usage.get("prompt_tokens") or input_tokens
-                    )
-                    output_tokens = int(
-                        usage.get("output_tokens")
-                        or usage.get("completion_tokens")
-                        or output_tokens
-                    )
-
-            if "cost" in item:
-                try:
-                    cost = float(item["cost"])
-                    saw_cost = True
-                except (ValueError, TypeError):
-                    pass
-
-            if item_type in {"message", "agent_message", "assistant_message", "text"}:
-                content = item.get("content") or item.get("text") or item.get("message")
-                if isinstance(content, str) and content:
-                    response_texts.append(content)
-            elif "result" in item and isinstance(item["result"], str):
-                response_texts.append(item["result"])
-
-        # Codex reports cached tokens as a subset of input tokens.
-        uncached_input = max(input_tokens - cached_tokens, 0) if cached_tokens else input_tokens
+        parsed = parse_codex(execution.stdout, skill_names or _codex_skill_names(cwd))
         result = RunResult(
-            prompt=prompt,
-            response=response_texts[-1] if response_texts else stdout,
-            transcript=f"STDOUT:\n{stdout}\n\nSTDERR:\n{execution.stderr}",
+            prompt="\n---\n".join(prompt) if isinstance(prompt, list) else prompt,
+            transcript=f"STDOUT:\n{execution.stdout}\n\nSTDERR:\n{execution.stderr}",
             duration=execution.duration,
-            cost=cost if saw_cost else None,
-            input_tokens=uncached_input if saw_usage and input_complete else None,
-            output_tokens=output_tokens if saw_usage and output_complete else None,
-            tool_calls=tool_calls if num_turns or tool_calls else None,
-            exit_code=execution.exit_code,
-            error=execution.stderr if execution.exit_code != 0 else None,
-            cache_read_tokens=cached_tokens if saw_usage and cache_complete else None,
-            # The Codex stream can omit cache-write usage while still reporting
-            # input, cached-input, and output counts. Keep those token and cost
-            # calculations usable; the missing write component contributes 0.
-            cache_creation_tokens=(
-                cache_write_tokens if saw_cache_write and cache_write_complete
-                else 0 if saw_usage and input_complete and output_complete and not saw_cache_write
-                else None
-            ),
-            num_turns=num_turns or None,
+            exit_code=execution.exit_code or (1 if parsed.get("error") else 0),
             permission_denials=codex_permission_denials(execution.stderr),
-            skill_available=skill_available,
-            skill_invoked=skill_invoked,
+            **parsed,
         )
         return _finalize_status(result, execution)
 
@@ -1314,6 +1260,7 @@ class AgentRunner:
         container_image: Optional[str] = None,
         temp_dir: Optional[Path] = None,
         skill_names: Optional[list[str]] = None,
+        session_id: Optional[str] = None,
     ) -> RunResult:
         bin_path = opencode_cfg.bin_path or self.opencode_bin
         target_model = model
@@ -1325,32 +1272,17 @@ class AgentRunner:
         elif "/" not in target_model and opencode_cfg.provider:
             target_model = f"{opencode_cfg.provider}/{target_model}"
 
-        # Probe the installed CLI once and build only flags it advertises.
-        # `--dir` is deliberately never passed: skilldiff already launches the
-        # process in `cwd` (and pins PWD), and OpenCode v2 rejects `--dir`.
-        probed = self.opencode_run_flags(bin_path)
-
-        def build_cmd(skip: set[str]) -> list[str]:
-            target = target_model
-            cmd = [bin_path, "run"]
-            if "--format" not in skip:
-                cmd.extend(["--format", "json"])
-            approve = opencode_approval_flag(probed, skip)
-            if opencode_cfg.dangerously_skip_permissions and approve:
-                cmd.append(approve)
-            if opencode_cfg.variant:
-                if "--variant" in skip or (probed and "--variant" not in probed):
-                    # v2 carries the variant in the model id instead of a flag.
-                    target = f"{target}#{opencode_cfg.variant}"
-                else:
-                    cmd.extend(["--variant", str(opencode_cfg.variant)])
-            if opencode_cfg.isolate and "--standalone" in probed and "--standalone" not in skip:
-                cmd.append("--standalone")
-            cmd.extend(arg for arg in opencode_cfg.extra_args if arg not in skip)
-            cmd.extend(["-m", target, prompt])
-            return cmd
-
-        cmd = build_cmd(set())
+        if opencode_cfg.variant:
+            target_model = f"{target_model}#{opencode_cfg.variant}"
+        multi_turn = session_id is not None
+        session_id = session_id or "ses_" + uuid.uuid4().hex
+        cmd = [bin_path, "run", "--format", "json", "--session", session_id]
+        if opencode_cfg.dangerously_skip_permissions:
+            cmd.append("--auto")
+        if opencode_cfg.isolate or multi_turn:
+            cmd.append("--standalone")
+        cmd.extend(opencode_cfg.extra_args)
+        cmd.extend(["-m", target_model, prompt])
         env = os.environ.copy()
 
         start_time = time.perf_counter()
@@ -1367,118 +1299,19 @@ class AgentRunner:
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
 
-        # Self-heal a flag the installed CLI rejects ("Unrecognized flag: --x"):
-        # drop it and retry once so a single version drift cannot kill a run.
-        rejected = _opencode_unrecognized_flags(execution.stdout, execution.stderr)
-        if execution.exit_code != 0 and rejected:
-            retry_cmd = build_cmd(set(rejected))
-            if retry_cmd != cmd:
-                try:
-                    execution = self._exec(
-                        retry_cmd,
-                        cwd,
-                        env,
-                        timeout,
-                        isolation=isolation,
-                        container_image=container_image,
-                        temp_dir=temp_dir,
-                    )
-                    cmd = retry_cmd
-                except Exception as exc:
-                    return _failed_result(
-                        prompt, exc, round(time.perf_counter() - start_time, 2)
-                    )
+        from skilldiff.telemetry import parse_opencode
 
-        stdout = execution.stdout
-        response_texts: list[str] = []
-        cost = 0.0
-        input_tokens = 0
-        output_tokens = 0
-        cache_read = 0
-        cache_write = 0
-        tool_calls = 0
-        saw_cost = saw_stream = False
-        saw_input = saw_output = saw_cache_read = saw_cache_write = False
-
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                item = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if not isinstance(item, dict):
-                continue
-            item_type = str(item.get("type", ""))
-            saw_stream = saw_stream or item_type in {
-                "step_start",
-                "step_finish",
-                "step-start",
-                "step-finish",
-            }
-            if "tool" in item_type or item.get("tool"):
-                tool_calls += 1
-
-            part = item.get("part")
-            if isinstance(part, dict):
-                text = part.get("text")
-                if text and isinstance(text, str):
-                    response_texts.append(text)
-                tokens = part.get("tokens")
-                if isinstance(tokens, dict):
-                    saw_input = saw_input or "input" in tokens
-                    saw_output = saw_output or "output" in tokens
-                    saw_cache_read = saw_cache_read or "read" in (tokens.get("cache") or {})
-                    saw_cache_write = saw_cache_write or "write" in (tokens.get("cache") or {})
-                    input_tokens += int(tokens.get("input") or 0)
-                    output_tokens += int(tokens.get("output") or 0)
-                    cache = tokens.get("cache")
-                    if isinstance(cache, dict):
-                        cache_read += int(cache.get("read") or 0)
-                        cache_write += int(cache.get("write") or 0)
-                if "cost" in part:
-                    try:
-                        cost += float(part["cost"])
-                        saw_cost = True
-                    except (ValueError, TypeError):
-                        pass
-
-            if "cost" in item:
-                try:
-                    cost += float(item["cost"])
-                    saw_cost = True
-                except (ValueError, TypeError):
-                    pass
-
-            if "text" in item and isinstance(item["text"], str):
-                response_texts.append(item["text"])
-
-        # OpenCode reports invocation failures as a structured error event.
-        # Surface the message instead of a bare exit code, and force a non-ok
-        # exit so it is classified as a harness error, not a low score.
-        error_message = _opencode_error_message(stdout, execution.stderr)
-        exit_code = execution.exit_code
-        if error_message and exit_code == 0:
-            exit_code = 1
-
+        parsed = parse_opencode(execution.stdout, skill_names or [])
+        if parsed["session_id"] not in (None, session_id):
+            parsed["error"] = "OpenCode returned an unexpected session ID"
+        parsed["session_id"] = session_id
         result = RunResult(
             prompt=prompt,
-            response="\n".join(response_texts) if response_texts else stdout,
-            transcript=f"STDOUT:\n{stdout}\n\nSTDERR:\n{execution.stderr}",
+            transcript=f"STDOUT:\n{execution.stdout}\n\nSTDERR:\n{execution.stderr}",
             duration=execution.duration,
-            cost=round(cost, 6) if saw_cost else None,
-            input_tokens=input_tokens if saw_input else None,
-            output_tokens=output_tokens if saw_output else None,
-            tool_calls=tool_calls if saw_stream or tool_calls else None,
-            exit_code=exit_code,
-            error=error_message if exit_code != 0 else None,
-            cache_read_tokens=cache_read if saw_cache_read else None,
-            cache_creation_tokens=cache_write if saw_cache_write else None,
-            skill_invoked=(
-                detect_opencode_skill_load(stdout, skill_names) if skill_names else None
-            ),
-            permission_denials=opencode_permission_denials(stdout, execution.stderr),
+            exit_code=execution.exit_code or (1 if parsed.get("error") else 0),
+            permission_denials=opencode_permission_denials(execution.stdout, execution.stderr),
+            **parsed,
         )
         return _finalize_status(result, execution)
 
@@ -1492,9 +1325,17 @@ class AgentRunner:
         isolation: str = "local",
         container_image: Optional[str] = None,
         temp_dir: Optional[Path] = None,
+        skill_names: Optional[list[str]] = None,
     ) -> RunResult:
         bin_path = antigravity_cfg.bin_path or self.antigravity_bin
-        cmd = [bin_path, "-p", prompt, "--output-format", "json", "--add-dir", str(cwd)]
+        prompts = prompt if isinstance(prompt, list) else [prompt]
+        cmd = [bin_path, "--output-format", "stream-json", "--add-dir", str(cwd)]
+        conversation = None
+        if isinstance(prompt, list):
+            cmd.extend(["--input-format", "stream-json"])
+            conversation = Conversation("antigravity", prompts)
+        else:
+            cmd.extend(["-p", prompt])
         target_model = model
         if target_model in {"gemini-3.8", "gemini 3.8", "gemini-3-8"}:
             target_model = "gemini-3.8-flash-medium"
@@ -1517,86 +1358,24 @@ class AgentRunner:
                 timeout,
                 isolation=isolation,
                 container_image=container_image,
-                temp_dir=temp_dir,
+                temp_dir=temp_dir, conversation=conversation,
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
 
-        stdout = execution.stdout
-        exit_code = execution.exit_code
-        duration = execution.duration
-        response = stdout
-        cost = input_tokens = output_tokens = tool_calls = num_turns = None
-        cache_read_tokens = None
-        data = None
-        try:
-            data = json.loads(stdout)
-            if isinstance(data, dict):
-                response = data.get("response") or data.get("result") or stdout
-                raw_cost = data.get("total_cost_usd", data.get("cost"))
-                cost = float(raw_cost) if raw_cost is not None else None
-                usage = data.get("usage") or {}
-                input_tokens = (
-                    int(usage["input_tokens"]) if usage.get("input_tokens") is not None else None
-                )
-                output_tokens = (
-                    int(usage["output_tokens"]) if usage.get("output_tokens") is not None else None
-                )
-                cache_read_tokens = (
-                    int(usage["cache_read_tokens"])
-                    if usage.get("cache_read_tokens") is not None
-                    else None
-                )
-                num_turns = int(data["num_turns"]) if data.get("num_turns") is not None else None
-                tool_calls = (
-                    int(data["tool_calls_count"])
-                    if data.get("tool_calls_count") is not None
-                    else None
-                )
-                if data.get("status") and data.get("status") != "SUCCESS" and exit_code == 0:
-                    exit_code = 1
-        except (json.JSONDecodeError, ValueError, TypeError):
-            pass
+        from skilldiff.telemetry import events, parse_agy
 
-        transcript = f"STDOUT:\n{stdout}\n\nSTDERR:\n{execution.stderr}"
-        if isinstance(data, dict):
-            conv_id = data.get("conversation_id")
-            if conv_id:
-                cli_dir = Path.home() / ".gemini" / "antigravity-cli" / "brain" / conv_id
-                ide_dir = Path.home() / ".gemini" / "antigravity" / "brain" / conv_id
-                bases = [
-                    cli_dir / ".system_generated" / "logs",
-                    ide_dir / ".system_generated" / "logs",
-                ]
-                for base in bases:
-                    target = None
-                    for name in ("transcript_full.jsonl", "transcript.jsonl"):
-                        candidate = base / name
-                        if candidate.exists():
-                            target = candidate
-                            break
-                    if target:
-                        try:
-                            log_text = target.read_text(encoding="utf-8")
-                            transcript += f"\n\n--- AGY SESSION LOG ({conv_id}) ---\n{log_text}"
-                            break
-                        except Exception:
-                            pass
-
+        parsed = parse_agy(execution.stdout, skill_names or [])
+        stream, _ = events(execution.stdout)
+        data = next((e.get("result") for e in reversed(stream) if e.get("event") == "result"),
+                    None)
         result = RunResult(
-            prompt=prompt,
-            response=response,
-            transcript=transcript,
-            duration=duration,
-            cost=cost,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read_tokens,
-            tool_calls=tool_calls,
-            exit_code=exit_code,
-            error=execution.stderr if exit_code != 0 else None,
-            num_turns=num_turns,
+            prompt="\n---\n".join(prompts),
+            transcript=f"STDOUT:\n{execution.stdout}\n\nSTDERR:\n{execution.stderr}",
+            duration=execution.duration,
+            exit_code=execution.exit_code or (1 if parsed.get("error") else 0),
             permission_denials=antigravity_permission_denials(data, execution.stderr),
+            **parsed,
         )
         return _finalize_status(result, execution)
 
@@ -1671,31 +1450,27 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
         "skill_invoked": False,
         "skill_available": None,
         "permission_denials": None,
+        "session_id": None,
+        "reported_total_tokens": None,
     }
     last_text: Optional[str] = None
     saw_result = False
+    usage_snapshots = []
+    turn_counts = []
 
-    events: list[dict[str, Any]] = []
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if isinstance(event, dict):
-            events.append(event)
-    if not events:
-        try:
-            whole = json.loads(stdout)
-            if isinstance(whole, dict):
-                events.append(whole)
-        except (json.JSONDecodeError, ValueError):
-            pass
+    from skilldiff.telemetry import count, money
+    from skilldiff.telemetry import events as read_events
+
+    events, malformed = read_events(stdout)
+    if malformed:
+        parsed["is_error"] = True
+        parsed["error"] = malformed
 
     for event in events:
         event_type = event.get("type")
+        if event_type == "error":
+            parsed["is_error"] = True
+            parsed["error"] = str(event.get("error") or event.get("message") or "Claude error")
         if event_type == "system" and event.get("subtype") == "init":
             skills = event.get("skills")
             if isinstance(skills, list):
@@ -1714,32 +1489,36 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                 elif block.get("type") == "tool_use":
                     parsed["tool_calls"] += 1
                     tool_input = block.get("input") or {}
+                    if not isinstance(tool_input, dict):
+                        parsed["is_error"] = True
+                        parsed["error"] = "Malformed Claude tool input"
+                        continue
                     if block.get("name") == "Skill" and _skill_matches(
                         tool_input.get("skill") or tool_input.get("command"), skill_names
                     ):
                         parsed["skill_invoked"] = True
                     elif detect_skill_reference(json.dumps(tool_input), skill_names):
                         parsed["skill_invoked"] = True
-        elif event_type == "result" or ("result" in event and event_type is None):
+        elif event_type == "result":
             saw_result = True
+            parsed["session_id"] = event.get("session_id") or parsed["session_id"]
             result_text = event.get("result")
             parsed["response"] = result_text if isinstance(result_text, str) else last_text
             raw_cost = event.get("total_cost_usd", event.get("cost"))
-            parsed["cost"] = float(raw_cost) if raw_cost is not None else None
+            failed = bool(event.get("is_error") or
+                          str(event.get("subtype", "")).startswith("error"))
+            if raw_cost is not None or not failed:
+                parsed["cost"] = money(raw_cost)
             usage = event.get("usage") or {}
-            for target, source in (
-                ("input_tokens", "input_tokens"),
-                ("output_tokens", "output_tokens"),
-                ("cache_read_tokens", "cache_read_input_tokens"),
-                ("cache_creation_tokens", "cache_creation_input_tokens"),
-            ):
-                parsed[target] = int(usage[source]) if usage.get(source) is not None else None
-            parsed["num_turns"] = (
-                int(event["num_turns"]) if event.get("num_turns") is not None else None
-            )
+            # Claude usage and num_turns are per result; total_cost_usd is
+            # cumulative across streaming input. Summing cost bills earlier turns twice.
+            if usage or not failed:
+                usage_snapshots.append(usage)
+                turn_counts.append(count(event.get("num_turns")))
             denials = event.get("permission_denials")
             if isinstance(denials, list):
-                parsed["permission_denials"] = []
+                if parsed["permission_denials"] is None:
+                    parsed["permission_denials"] = []
                 for d in denials:
                     if isinstance(d, dict):
                         tool = str(d.get("tool_name") or "unknown")
@@ -1759,9 +1538,18 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
 
     if not saw_result:
         parsed["response"] = last_text
-        if events:
-            parsed["is_error"] = True
-            parsed["error"] = "Claude exited without a result event"
+        parsed["is_error"] = True
+        parsed["error"] = "Claude exited without a result event"
+    for target, source in (
+        ("input_tokens", "input_tokens"), ("output_tokens", "output_tokens"),
+        ("cache_read_tokens", "cache_read_input_tokens"),
+        ("cache_creation_tokens", "cache_creation_input_tokens"),
+        ("reported_total_tokens", "total_tokens"),
+    ):
+        values = [count(usage.get(source)) for usage in usage_snapshots]
+        parsed[target] = (sum(values) if values and all(v is not None for v in values) else None)
+    parsed["num_turns"] = (sum(turn_counts) if turn_counts and
+                           all(v is not None for v in turn_counts) else None)
     return parsed
 
 

@@ -17,28 +17,15 @@ from skilldiff.runner import AgentRunner
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex", "opencode", "antigravity"])
-def test_parallel_sessions_share_temp_only_with_their_own_turns(tmp_path, monkeypatch, harness):
+def test_parallel_sessions_share_temp_only_with_their_own_turns(
+    tmp_path, monkeypatch, harness, conversation_cli, capable_cli
+):
     monkeypatch.delenv("SKILLDIFF_MOCK_RUNNER", raising=False)
     inherited = tmp_path / "host-temp"
     inherited.mkdir()
     for key in ("TMPDIR", "TMP", "TEMP"):
         monkeypatch.setenv(key, str(inherited))
-    binary = tmp_path / "agent"
-    binary.write_text(
-        f"#!{sys.executable}\n"
-        "import json,os,pathlib,sys,tempfile\n"
-        "if '--help' in sys.argv: sys.exit(0)\n"
-        "directory=pathlib.Path(tempfile.gettempdir())\n"
-        "marker=directory/'previous-turn'\n"
-        "evidence={'temp':str(directory),'previous':marker.exists(),"
-        "'env':[os.environ.get(k) for k in ('TMPDIR','TMP','TEMP')]}\n"
-        "with pathlib.Path('evidence.jsonl').open('a') as stream:\n"
-        " stream.write(json.dumps(evidence)+'\\n')\n"
-        "marker.write_text('session')\n"
-        "print(json.dumps({'type':'result','result':'ok'}))\n",
-        encoding="utf-8",
-    )
-    binary.chmod(0o755)
+    binary = conversation_cli
     config = ExperimentConfig(
         name="t", skill=None, models=["m"], tasks_patterns=[], harness=harness
     )
@@ -49,7 +36,7 @@ def test_parallel_sessions_share_temp_only_with_their_own_turns(tmp_path, monkey
     runner = AgentRunner()
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(
-            lambda workspace: runner.run(["one", "two"], workspace, "m", config),
+            lambda workspace: runner.run(["remember apple", "recall"], workspace, "m", config),
             workspaces,
         ))
     assert all(result.status == "ok" for result in results)
@@ -140,7 +127,7 @@ def test_unmounted_host_files_do_not_trigger_container_preflight(tmp_path, monke
     assert warnings == []
 
 
-def test_check_home_scan_finds_renamed_copy_by_content(tmp_path, monkeypatch, capsys):
+def test_check_home_scan_finds_renamed_copy_by_content(tmp_path, monkeypatch, capsys, capable_cli):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("CLAUDE_BIN", "/bin/echo")
     experiment = tmp_path / "experiment"
@@ -226,7 +213,7 @@ def test_scan_reports_unreadable_paths(tmp_path, monkeypatch):
     assert str(denied) in summary
 
 
-def test_session_temp_is_cleaned_up_after_timeout(tmp_path, monkeypatch):
+def test_session_temp_is_cleaned_up_after_timeout(tmp_path, monkeypatch, capable_cli):
     monkeypatch.delenv("SKILLDIFF_MOCK_RUNNER", raising=False)
     workspace = tmp_path / "workspace"
     workspace.mkdir()

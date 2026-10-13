@@ -77,7 +77,7 @@ def test_macos_isolation_rejects_harnesses_without_support(tmp_path):
         load_experiment(path)
 
 
-def test_probe_workspace_passes_claude_read_paths(tmp_path):
+def test_probe_workspace_passes_claude_read_paths(tmp_path, capable_cli):
     calls = []
 
     class CaptureRunner(AgentRunner):

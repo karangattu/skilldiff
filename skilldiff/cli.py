@@ -47,7 +47,6 @@ from skilldiff.runner import (
     claude_sandbox_settings,
     codex_sandbox_args,
     looks_like_auth_error,
-    opencode_approval_flag,
     resolve_container_image,
     validate_container_auth,
 )
@@ -69,7 +68,7 @@ HARNESS_BLOCKS = {
   max_turns: 30
   max_budget_usd: 2.00      # per session
   permission_mode: acceptEdits
-  isolate: true             # ignore user-level skills, plugins, and CLAUDE.md
+  isolate: true             # use project/local settings; runtime discovery checks skills
   sandbox: true             # Bash runs in Claude's sandbox without prompts, inside the workspace
   allowed_domains: []       # hosts commands may reach, e.g. ["pypi.org", "*.npmjs.org"]
   allowed_tools: []         # e.g. ["Bash(my-cli *)"] when not using the sandbox
@@ -106,7 +105,7 @@ tasks:
   - ./tasks/heldout/*.yaml   # frozen validation set; tune on dev tasks first
 
 runs: 3                     # repetitions per arm; use 5+ as a starting point, not a rule
-timeout_seconds: 1800       # per agent session
+timeout_seconds: 1800       # one deadline for the whole conversation
 parallel: 1                 # pairs to run at once
 
 # Reproducibility: fixed seed for balanced arm order (recorded per run).
@@ -116,6 +115,7 @@ parallel: 1                 # pairs to run at once
 # failure_policy:
 #   agent_failure: exclude  # omit failed sessions from comparisons; "zero" scores them 0
 #   missing: exclude
+# Harness errors are always excluded, even with agent_failure: zero.
 
 # Practical decision thresholds (optional, shown in the verdict).
 # Shipping requires confidence bounds to clear these, not point estimates:
@@ -779,6 +779,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     runner = AgentRunner()
     binary = runner.binary_for(cfg.harness, cfg)
+    capabilities_ok = False
     if image_id:
         resolved = getattr(cfg, cfg.harness).bin_path or Path(binary).name
     else:
@@ -787,60 +788,13 @@ def cmd_check(args: argparse.Namespace) -> int:
         fail(f"{cfg.harness} CLI not found (`{binary}`); install it or set bin_path")
     else:
         try:
-            if image_id:
-                with tempfile.TemporaryDirectory(prefix="skilldiff-version-") as tmp:
-                    proc = runner._exec(
-                        [resolved, "--version"], Path(tmp), os.environ.copy(), 30,
-                        isolation=cfg.isolation, container_image=image_id,
-                    )
-                returncode = -1 if proc.timed_out else proc.exit_code
-            else:
-                proc = subprocess.run(
-                    [resolved, "--version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    stdin=subprocess.DEVNULL,
-                )
-                returncode = proc.returncode
-        except (ValueError, OSError, subprocess.SubprocessError) as exc:
-            fail(f"{cfg.harness} CLI failed to start (`{resolved} --version`): {exc}")
-        else:
-            version = next(iter((proc.stdout or proc.stderr).strip().splitlines()), "")
-            if returncode:
-                fail(
-                    f"{cfg.harness} CLI failed (`{resolved} --version`, exit "
-                    f"{returncode}): {version or 'no output'}"
-                )
-            else:
-                ok(f"{cfg.harness} CLI: {resolved} {version}".rstrip())
-        if cfg.harness == "opencode":
-            # Cheap capability probe: catches a missing/renamed `run` subcommand
-            # and records which flags the installed version actually accepts.
-            flags = runner.opencode_run_flags(resolved)
-            if not flags:
-                warn(
-                    "could not probe `opencode run --help`; optional flags are "
-                    "omitted and a rejected flag is recovered at run time"
-                )
-            else:
-                if "--dir" not in flags:
-                    ok("opencode run probe: no --dir; skilldiff launches in cwd instead")
-                else:
-                    ok("opencode run probe: --dir supported")
-                approve = opencode_approval_flag(flags)
-                if not cfg.opencode.dangerously_skip_permissions:
-                    warn(
-                        "opencode.dangerously_skip_permissions is false: headless runs "
-                        "cannot answer permission prompts, so tools that ask are refused"
-                    )
-                elif approve:
-                    ok(f"opencode run probe: approves tools with {approve}")
-                else:
-                    fail(
-                        "opencode run has neither --auto nor --dangerously-skip-permissions; "
-                        "tools that ask for permission would be refused in every session"
-                    )
+            with tempfile.TemporaryDirectory(prefix="skilldiff-capabilities-") as tmp:
+                capabilities = runner.capabilities(Path(tmp), cfg, Path(tmp))
+            capabilities_ok = True
+            ok(f"{cfg.harness} CLI: {capabilities['binary']} {capabilities['version']}")
+            ok("required current CLI commands and output formats are available")
+        except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            fail(f"{cfg.harness} CLI capability check: {exc}")
 
     for level, message in permission_summary(cfg):
         (ok if level == "ok" else warn)(message)
@@ -855,6 +809,8 @@ def cmd_check(args: argparse.Namespace) -> int:
             warn("bypassPermissions lets agents run any command outside the workspace")
         if (
             resolved
+            and capabilities_ok
+            and not sandboxed
             and cfg.isolation == "local"
             and not getattr(args, "no_probe", False)
             and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
@@ -883,21 +839,8 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     installs = [] if image_id else find_user_level_installs(cfg.skill_names, cfg.harness)
     if installs:
-        if cfg.harness == "claude" and cfg.claude.isolate:
-            # Skills are blocked by isolate, but instructions/plugins/memory are not.
-            non_skill = [i for i in installs if "skill installed" not in i]
-            if non_skill:
-                warn(
-                    "harness inheritance outside skills may leak into both arms: "
-                    + ", ".join(non_skill)
-                )
-            else:
-                ok("skill is installed at user level, but claude.isolate keeps it out of control")
-        else:
-            warn(
-                "skill is installed at user level, so control can load it too: "
-                + ", ".join(installs)
-            )
+        warn("Advisory filesystem scan found user-level target skills; runtime discovery "
+             "determines control contamination: " + ", ".join(installs))
 
     # Instructions/plugins/memory can leak into both arms even when the skill
     # itself is project-local. Report the harness inheritance paths up front.
@@ -935,10 +878,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         if fixture and not fixture.exists():
             fail(f"task {task.id}: repo not found: {fixture}")
             continue
-        if (
-            (cfg.harness == "codex" and cfg.codex.verify_skills) or task.runtime_probe
-            or cfg.isolation == "macos"
-        ):
+        if not os.environ.get("SKILLDIFF_MOCK_RUNNER"):
             check_skill = cfg.skill_a if cfg.is_skill_comparison else cfg.skill
             with tempfile.TemporaryDirectory(prefix="skilldiff-probe-") as tmp:
                 for arm, installed in (("control", cfg.is_skill_comparison), ("treatment", True)):

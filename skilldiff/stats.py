@@ -19,6 +19,10 @@ def analysis_run(run: dict[str, Any], agent_failure: str = "exclude") -> dict[st
     score is useful diagnostic evidence, but it is not a completed agent result.
     """
     result = dict(run)
+    if result.get("failure_kind") == "harness_error":
+        result["analysis_excluded"] = True
+        result["failure_scored_zero"] = False
+        return result
     if result.get("status") in (None, "ok", "correctness"):
         return result
     if agent_failure == "zero" and result.get("grade_status") not in ("timeout", "error"):
@@ -37,7 +41,8 @@ def analysis_run(run: dict[str, Any], agent_failure: str = "exclude") -> dict[st
 
 def usable_agent_run(run: dict[str, Any]) -> bool:
     """Whether this session contributes to outcome and efficiency summaries."""
-    if run.get("analysis_excluded") is True or run.get("complete") is False:
+    if (run.get("analysis_excluded") is True or run.get("complete") is False
+            or run.get("failure_kind") == "harness_error"):
         return False
     return run.get("status") in (None, "ok", "correctness") or bool(
         run.get("failure_scored_zero")
@@ -141,6 +146,11 @@ def _get_duration(run: dict[str, Any]) -> Optional[float]:
 def _total_tokens(run: dict[str, Any]) -> Optional[float]:
     if not usable_agent_run(run):
         return None
+    if run.get("reported_total_tokens") is not None:
+        from skilldiff.telemetry import count
+
+        total = count(run["reported_total_tokens"])
+        return float(total) if total is not None else None
     keys = ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens")
     if all(k not in run or run.get(k) is None for k in keys):
         return None

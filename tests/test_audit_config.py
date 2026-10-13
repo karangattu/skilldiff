@@ -228,8 +228,7 @@ def test_lint_warns_when_frontmatter_name_differs_from_directory(tmp_path):
     [("crash", 1), ("timeout", 1), ("invalid", 1), ("partial", 0), ("failure", 0)],
 )
 def test_check_requires_a_usable_grade_for_each_broken_fixture(
-    tmp_path, monkeypatch, capsys, behavior, expected_exit
-):
+    tmp_path, monkeypatch, capsys, behavior, expected_exit, capable_cli):
     config = experiment_file(tmp_path)
     for fixture, state in (("untouched", "untouched"), ("good", "good"), ("broken", "broken")):
         directory = tmp_path / fixture
@@ -286,6 +285,9 @@ def fake_container_runtime(tmp_path, monkeypatch):
         "    if args[-1] == '--version':\n"
         "        assert args[-2] == '/image/bin/agent'\n"
         "        print('image-agent 9.9.9')\n"
+        "    elif args[-1] == '--help':\n"
+        "        print('--json --ephemeral --stdio --input-format --output-format stream-json "
+        "--verbose --no-session-persistence --setting-sources')\n"
         "    elif 'app-server' in args:\n"
         "        host = next(value.rsplit(':',1)[0] for value in args "
         "if value.endswith(':/workspace'))\n"
@@ -314,8 +316,7 @@ def fake_container_runtime(tmp_path, monkeypatch):
     ("codex", "OPENAI_API_KEY"),
 ])
 def test_check_versions_image_binary_and_grades_inside_container(
-    tmp_path, monkeypatch, capsys, harness, credential
-):
+    tmp_path, monkeypatch, capsys, harness, credential):
     for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv(credential, "fixture-auth")
@@ -342,7 +343,7 @@ def test_check_versions_image_binary_and_grades_inside_container(
     assert "host instructions that are not mounted" not in output
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     runs = [call for call in calls if call[0] == "run"]
-    assert len(runs) == (4 if harness == "codex" else 2)
+    assert len(runs) >= (4 if harness == "codex" else 2)
     assert ["sha256:checked-image", "/image/bin/agent", "--version"] == runs[0][-3:]
     assert any(argument.startswith(f"{tmp_path.resolve()}:") and argument.endswith(":ro")
                for argument in runs[-1])

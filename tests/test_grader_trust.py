@@ -292,7 +292,9 @@ def test_probe_claude_auth_success_and_failure(tmp_path, monkeypatch):
     assert success is False and "OAuth session expired" in detail
 
 
-def test_check_fails_on_expired_login_and_skips_with_no_probe(tmp_path, monkeypatch, capsys):
+def test_check_fails_on_expired_login_and_skips_with_no_probe(
+    tmp_path, monkeypatch, capsys, capable_cli
+):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("SKILLDIFF_MOCK_RUNNER", raising=False)
     cmd_init(Args(force=False))
@@ -314,7 +316,7 @@ def test_check_fails_on_expired_login_and_skips_with_no_probe(tmp_path, monkeypa
     assert "auth probe" not in out
 
 
-def test_run_reports_runtime_errors_without_a_traceback(tmp_path, monkeypatch, capsys):
+def test_run_reports_runtime_errors_without_a_traceback(tmp_path, monkeypatch, capsys, capable_cli):
     from skilldiff.experiment import ExperimentRunner
 
     monkeypatch.chdir(tmp_path)

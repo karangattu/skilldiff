@@ -243,5 +243,5 @@ def test_experiment_aborts_when_harness_cannot_run(tmp_path: Path, monkeypatch):
         agent_runner=AgentRunner(opencode_bin=str(fake)),
     )
 
-    with pytest.raises(RuntimeError, match="could not run any session"):
+    with pytest.raises(RuntimeError, match="opencode capability probe failed"):
         runner.run()

@@ -207,7 +207,7 @@ def test_claude_isolation_can_be_disabled(tmp_path: Path, monkeypatch) -> None:
     assert "--setting-sources" not in capture.read_text().splitlines()
 
 
-def test_runner_times_out_and_kills_children(tmp_path: Path) -> None:
+def test_runner_times_out_and_kills_children(tmp_path: Path, capable_cli) -> None:
     # The background child keeps a copy of stdout open; the run must still return.
     fake = _fake_claude(tmp_path, "sleep 30 &\nsleep 30\n")
     config = ExperimentConfig(
@@ -260,7 +260,7 @@ def test_detect_opencode_skill_load_ignores_unrelated_skill() -> None:
 
 def test_detect_opencode_skill_load_via_skill_content_payload() -> None:
     transcript = 'output: <skill_content name="my-skill">\nbody...'
-    assert detect_opencode_skill_load(transcript, ["my-skill"])
+    assert not detect_opencode_skill_load(transcript, ["my-skill"])
     assert not detect_opencode_skill_load(transcript, ["other-skill"])
 
 

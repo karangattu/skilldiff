@@ -137,8 +137,8 @@ Before each treatment run, skilldiff copies the skill under test into the fresh 
 | Harness (`--harness`) | Workspace location for the skill under test |
 |---|---|
 | `claude` | `.claude/skills/<name>` |
-| `codex` | `.codex/skills/<name>`, `.agents/skills/<name>` |
-| `opencode` | `.opencode/skills/<name>`, `.agents/skills/<name>` |
+| `codex` | `.agents/skills/<name>` |
+| `opencode` | `.opencode/skills/<name>` |
 | `antigravity` | `.agents/skills/<name>` |
 
 The control arm gets none of these. In A/B mode both arms carry a skill and the other revision is stripped from the fixture. See [Why SkillDiff, and how it stays fair](#why-skilldiff).
@@ -150,9 +150,14 @@ For local runs, SkillDiff also checks these user-level paths for possible harnes
 | `claude` | `~/.claude/skills`, `~/.claude/plugins`, `~/.claude/CLAUDE.md`, `~/.claude/memory`, `~/.claude/settings.json` |
 | `codex` | `~/.codex/skills`, `~/.agents/skills`, `~/.codex/AGENTS.md`, `~/.codex/memory` |
 | `opencode` | `~/.config/opencode/skills`, `~/.config/opencode/plugins`, `~/.claude/skills`, `~/.agents/skills`, `~/.config/opencode/AGENTS.md`, `~/.config/opencode/memory` |
-| `antigravity` | `~/.gemini/skills`, `~/.agents/skills`, `~/.gemini/GEMINI.md`, `~/.gemini/memory` |
+| `antigravity` | `~/.gemini/antigravity-cli/skills`, `~/.gemini/antigravity-cli/plugins/*/skills`, `~/.gemini/GEMINI.md`, `~/.gemini/memory` |
 
-Antigravity's own docs have moved its global location between releases (`~/.gemini/config/skills/` now, `~/.gemini/antigravity/skills/` and `~/.gemini/skills/` earlier), and the `skills` CLI writes `~/.agents/skills`, which every current Antigravity surface reads. SkillDiff watches `~/.gemini/skills` and `~/.agents/skills`, and `isolate: true` keeps user-level skills out of both arms regardless.
+AGY means Antigravity CLI. Its workspace directory is `.agents/skills`, its global
+skills live in `~/.gemini/antigravity-cli/skills`, and plugins can supply additional
+skills. Install with `-a antigravity-cli --copy`; the desktop agent is a different
+installer target. AGY has no SkillDiff `isolate` setting. Filesystem scans are
+advisory. Confirmed target discovery or loading in a no-skill control is a harness
+error and invalidates that baseline.
 
 `check` and `run` also warn about the live skill sources and matching copies in the
 experiment's `runs/` directory, including frozen `inputs/` snapshots. Runs record
@@ -192,8 +197,10 @@ grader:
 ```
 
 A task can also be scripted across several turns. Set `prompts:` to a list and
-each prompt runs in order in the same workspace, with tokens, cost, time, and
-turns summed across the turns.
+each prompt runs in order in one conversation and workspace. Claude and AGY use
+streaming input; Codex uses one ephemeral app-server thread; OpenCode V2 uses an
+explicit unique session ID with `--standalone`. Cumulative counters are taken once,
+while per-turn measurements are added. A failed turn stops the remaining prompts.
 The configured timeout covers the entire script. If any turn lacks a measurement,
 that aggregate remains `N/A`; a missing measurement is never counted as zero.
 Agent sessions are not automatically retried, so each reported attempt includes
@@ -324,10 +331,11 @@ The headline also flags weak proof:
 Define `failure_policy` before you run. With `agent_failure: exclude`, an agent
 error or timeout is omitted from paired scores, success counts, time, token, and
 cost comparisons even if the grader scored its partial work. The failed attempt
-and its raw measurements remain visible in Run details. With `zero`, a failed
-agent gets a task score of zero and its resource use remains in the comparison;
-its partial grader checks are still diagnostic only. Grader timeouts and errors
-are always `N/A`.
+and its raw measurements remain visible in Run details. With `zero`, an eligible
+agent failure gets a task score of zero and its resource use remains in the
+comparison; its partial grader checks are still diagnostic only. Harness errors
+are always excluded, including malformed or unfinished sessions. Grader timeouts
+and errors are always `N/A`.
 
 <a id="presets-revisions-and-pr-tests"></a>
 
@@ -420,11 +428,11 @@ Keep the entire run directory, including `inputs/`, for recovery. A small siblin
 
 `lint` checks a `SKILL.md` before you spend anything: required frontmatter, naming rules, description length and broad phrasing, unclosed code fences, and broken relative links, with an estimated token count. `diagnose` reads a finished run and names what went wrong: a skill that never triggered on intended tasks, one that triggered on irrelevant tasks, regressions, blast-radius violations, agent failures, permission denials, and token bloat without score gains, each with a suggested fix.
 
-Claude Code. The default uses your subscription. SkillDiff removes `ANTHROPIC_API_KEY` from each run. To bill through the API, set `auth: api_key` and export the key. `sandbox: true` (default) runs Bash inside Claude Code's own sandbox, so commands need no approval but write only to the workspace and cannot read grader or skill sources. Set `allowed_domains` for hosts commands may reach. With `sandbox: false`, use `permission_mode` plus `allowed_tools`. `isolate: true` keeps user-level skills, plugins, and `CLAUDE.md` out of both arms.
+Claude Code. The default uses your subscription. SkillDiff removes `ANTHROPIC_API_KEY` from each run. To bill through the API, set `auth: api_key` and export the key. `sandbox: true` (default) runs Bash inside Claude Code's own sandbox, so commands need no approval but write only to the workspace and cannot read grader or skill sources. Set `allowed_domains` for hosts commands may reach. With `sandbox: false`, use `permission_mode` plus `allowed_tools`. `isolate: true` selects project/local settings. It does not guarantee that global skills, plugins, or instructions are absent; runtime skill discovery is checked separately. SkillDiff preserves subscription credentials and does not use `--bare`.
 
-Codex. The default uses stored login and removes `OPENAI_API_KEY`. Sandboxing is `sandbox: workspace-write` (or `dangerously_bypass_approvals_and_sandbox`). Network is off unless `network_access: true`. Sessions use `--ephemeral` when the CLI supports it, so they do not feed Codex memories.
+Codex. The default uses stored login and removes `OPENAI_API_KEY`. Sandboxing is `sandbox: workspace-write` (or `dangerously_bypass_approvals_and_sandbox`). Network is off unless `network_access: true`. Single-turn sessions require `--ephemeral`; multi-turn threads require the app-server ephemeral interface. Required capabilities are checked before model execution.
 
-OpenCode. The default `service: go` uses your Go subscription. Sign in with `opencode providers login`. `dangerously_skip_permissions: true` passes `--auto` on OpenCode v2 (`--dangerously-skip-permissions` on v1), so tools never wait for approval. OpenCode has no OS sandbox.
+OpenCode. The default `service: go` uses your Go subscription. Sign in with `opencode auth login`. `dangerously_skip_permissions: true` requires `--auto` on OpenCode V2, so tools never wait for approval. OpenCode has no OS sandbox.
 
 Antigravity. Short names expand to full models. `gemini-3.8` becomes `gemini-3.8-flash-medium`. Permissions are `dangerously_skip_permissions`.
 
@@ -474,3 +482,18 @@ Use `skilldiff run --split dev --runs 1` while fixing prompts and graders.
 starting sessions when no tasks match. Unlabelled tasks are development tasks.
 After the smoke test, start a new full run without `--split` or `--resume`.
 Do not inspect held-out outcomes until the design is frozen.
+
+### Session evidence
+
+Each arm records optional `session_id` and `reported_total_tokens` fields. CLI
+versions and detected capabilities are saved in its `preflight.json` and `cli`
+run metadata. Existing saved results remain readable. Total tokens use the reported
+total when provided, including when the detailed breakdown is incomplete.
+API-equivalent costs still require all pricing categories; missing counts stay
+`N/A`. Claude result usage is per-turn and cost is cumulative; AGY results and
+Codex app-server totals are cumulative. OpenCode accounts for completed steps once.
+
+A successful process exit is insufficient. Each adapter requires its native
+completion event and rejects explicit failures or malformed streams. Harness
+errors retain partial evidence but never enter paired decisions, even with
+`agent_failure: zero`. See [compatibility verification](compatibility.md).

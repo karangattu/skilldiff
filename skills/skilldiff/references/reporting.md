@@ -38,16 +38,17 @@ cell when multiple models were evaluated. Score is the mean of eligible
 graded runs. Time, token counts, tool calls, turns, and API-equivalent cost
 are totals across eligible repetitions. With `agent_failure: exclude`,
 a failed agent's partial grade and resource use stay in Run details but do
-not enter the comparison. With `zero`, a failed agent scores zero while its
-resource use remains in the comparison. Cached input includes cache reads and cache
-writes; total tokens include input, cached input, and output. Skill loaded
+not enter the comparison. With `zero`, an eligible agent failure scores zero while
+its resource use remains in the comparison. Harness errors are always excluded.
+Cached input includes cache reads and cache writes; total tokens use
+`reported_total_tokens` when available, otherwise input, cached input, and output. Skill loaded
 is yes/no for one run or loaded/known runs for repetitions, with unknown
 runs noted separately. Show missing measurements or unavailable pricing
 as `N/A`, never zero, except for the Codex cache-write fallback described
 above. Use the saved table directly when available; for
 older reports, derive the rows from `results.json` using these same rules.
-A multi-turn task has one overall timeout and reports unknown aggregate
-measurements as `N/A`. Agent sessions are not automatically retried.
+A multi-turn task shares one conversation and one overall timeout. Unknown
+aggregate measurements remain `N/A`. Agent sessions are not automatically retried.
 The skill-context tax is a text-size estimate assuming text is carried each
 turn, not measured prompt injection or spend.
 
@@ -82,3 +83,8 @@ least five scored pairs, three usable tasks when coverage is known, and a
 non-collapsed score interval, even with pre-registered thresholds. Required cost
 or token savings each need five usable metric pairs and a percentage-saving
 confidence bound that meets the required percentage, not just a favorable mean.
+
+`session_id` identifies one arm's native conversation. The arm's `cli` metadata
+and `preflight.json` record version/capability checks in its execution environment.
+Missing completion, malformed streams, and explicit failures are harness errors;
+their partial evidence remains visible but is excluded from paired decisions.

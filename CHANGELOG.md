@@ -6,8 +6,24 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Multi-turn tasks share one native conversation per arm, with one deadline and separate session IDs.
+- Runs record CLI versions, required capabilities, session IDs, and reported token totals.
+- CI checks current official CLI commands without credentials and uses sanitized transcripts for regression tests.
+
+### Changed
+
+- Treatment skills are installed once in each agent's native workspace directory.
+- AGY installation uses `antigravity-cli --copy`, and discovery scans include its native global and plugin skill directories.
+- OpenCode requires V2 commands and permissions. Missing capabilities stop execution before paid sessions.
+
 ### Fixed
 
+- Empty, malformed, failed, or unfinished sessions are harness errors, even when the process exits successfully.
+- Harness errors retain partial evidence but never enter paired decisions, including with `agent_failure: zero`.
+- Telemetry uses native counter scopes, avoids duplicate cached tokens, and retains reported totals when details are incomplete.
+- OpenCode skill adoption requires a successful skill load or verified skill-file read.
 - Planned held-out tasks must supply decision evidence; interrupted runs cannot ship on development results alone.
 - Required cost and token savings now need five usable pairs and a percentage confidence bound meeting the target.
 - Pre-registered thresholds no longer bypass small-sample, task-coverage, or collapsed-score-interval safeguards.

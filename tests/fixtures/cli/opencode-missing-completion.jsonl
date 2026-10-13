@@ -1,0 +1,2 @@
+{"type": "step_finish", "sessionID": "ses_sanitized", "part": {"type": "step-finish", "reason": "tool-calls", "cost": 0.0059103, "tokens": {"input": 8655, "output": 48, "reasoning": 52, "cache": {"read": 0, "write": 0}}, "id": "0"}}
+{"type": "text", "sessionID": "ses_sanitized", "part": {"text": "READY"}}

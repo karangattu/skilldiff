@@ -109,7 +109,7 @@ def test_legacy_reports_keep_harness_cost_and_missing_usage_stays_unknown():
     assert build_decision_context(results)["paired"]["cost"]["n"] == 2
 
 
-def test_codex_discovery_detects_a_present_but_undiscoverable_skill(tmp_path):
+def test_codex_discovery_detects_a_present_but_undiscoverable_skill(tmp_path, capable_cli):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     skill = workspace / ".agents/skills/sample"
@@ -293,7 +293,7 @@ def test_revision_comparison_uses_recorded_cost_basis_and_rejects_a_mismatch():
         compare_results(a, b, strict=True)
 
 
-def test_container_discovery_uses_image_binary_name_not_discovered_host_path(tmp_path):
+def test_container_discovery_uses_image_binary_name_not_discovered_host_path(tmp_path, capable_cli):
     from skilldiff.runner import ExecResult
 
     class CaptureRunner(AgentRunner):
