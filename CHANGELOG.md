@@ -8,6 +8,7 @@ This project uses semantic versioning.
 
 ### Added
 
+- The README has copy-and-paste requests for the included demo, a first skill evaluation, and a comparison of two skill versions.
 - Multi-turn tasks share one native conversation per arm, with one deadline and separate session IDs.
 - Runs record CLI versions, required capabilities, session IDs, and reported token totals.
 - CI checks current official CLI commands without credentials and uses sanitized transcripts for regression tests.

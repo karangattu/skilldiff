@@ -108,32 +108,60 @@ each run's workspace itself.
 
 ## Ask your agent
 
-Once the skill is installed, ask in plain words. Paste a request like this:
+After installation, open your agent and paste one request below. Start with the
+demo if you do not have a skill to test yet. Tests use your agent account or API
+credits. Each example starts with one small comparison.
+
+### 1. Try the included demo
+
+You do not need to write a skill or prepare test files for this example.
 
 ```text
-Use skilldiff to test whether the skill at ~/code/my-pkg/skills/my-skill helps.
-Use the claude harness with sonnet. Set up the experiment outside the skill's
-repo, run skilldiff check and a 1-run dev-only smoke test, then show me the full-run
-cost and wait for my OK before running it.
+Use the skilldiff skill to try the built-in changelog demo.
+Use my current agent's CLI and a model I can access.
+Create the demo with skilldiff init in a new folder outside my current project.
+Check the setup, then run one development task once with the demo skill and once without it.
+Open the report and explain whether the skill was used and what changed.
+Stop after this small test.
 ```
 
-Change `claude` to `codex`, `opencode`, or `antigravity`, and pick a model you use.
-These requests also work:
+### 2. Test your own skill
+
+Replace `~/code/my-project/skills/my-skill` with the folder that contains your
+`SKILL.md` file.
 
 ```text
-Use skilldiff to compare ~/skills/v1/my-skill against ~/skills/v2/my-skill on codex.
-Use skilldiff to check whether PR 42 in ~/code/my-pkg changes agent results.
-Read the latest skilldiff run and tell me whether to ship the skill.
+Use the skilldiff skill to test ~/code/my-project/skills/my-skill.
+Use my current agent's CLI and a model I can access.
+Set up the evaluation outside the skill's repository.
+Write one realistic development task and an automatic check of its result.
+Check the setup, then run the task once with my skill and once without it.
+Open the report and explain the score, skill use, time, and tokens in plain English.
+Ask me before running a larger evaluation.
 ```
 
-The agent then:
+### 3. Compare two versions of a skill
 
-1. Reads and lints the skill (`skilldiff lint`).
-2. Creates the experiment (`skilldiff init`) and writes tasks, test projects, and graders.
-3. Runs `skilldiff check` and fixes what it reports.
-4. Runs a dev-only smoke test (`skilldiff run --split dev --runs 1`) and reads some transcripts.
-5. Shows you the session count and maximum cost, and waits for your OK.
-6. Runs the full test, then explains the report and `skilldiff diagnose` output.
+Replace the two paths with your original and updated skill folders.
+
+```text
+Use the skilldiff skill to compare ~/skills/v1/my-skill with ~/skills/v2/my-skill.
+Use my current agent's CLI and a model I can access.
+Create the evaluation outside both skill folders.
+Use the same small development task for both versions.
+Check the setup, then run each version once.
+Open the report and tell me what changed and whether there is enough evidence to pick a version.
+Ask me before running a larger evaluation.
+```
+
+Your agent handles the files, commands, and automatic checks. The first small
+test checks the setup. Review the report before asking for a larger evaluation.
+
+If your agent cannot identify its CLI or an available model, tell it which one
+you use. Harness names are `claude`, `codex`, `antigravity` (AGY), and `opencode`.
+
+<details>
+<summary>If your agent cannot start SkillDiff</summary>
 
 **One-time setup if your agent sandboxes its shell.** Your agent runs `skilldiff`,
 and `skilldiff` starts its own agent sessions. Those sessions need network access
@@ -151,6 +179,8 @@ fix for your agent. `skilldiff run` refuses to start rather than fail every sess
 A full run can outlast your agent's shell timeout, so the skill tells your agent to
 run it in the background.
 
+</details>
+
 ## Or run it yourself
 
 ```bash
@@ -161,9 +191,12 @@ cd my-skill-eval
 # 3. Write a grader in graders/ that scores the result
 skilldiff check          # validates config, CLI login, permissions, and graders
 skilldiff run --split dev --runs 1   # smoke test: one pair per dev task
-skilldiff run            # new full run, including frozen held-out tasks
 skilldiff results        # show the latest run
 ```
+
+After reviewing the small test, freeze your held-out tasks and use `skilldiff run`
+for a new full evaluation. Held-out tasks are saved tests that you keep unchanged
+while improving the skill.
 
 [`examples/csv-totals`](examples/csv-totals) is a complete small experiment you can
 copy. It has a skill, dev and held-out tasks, fixtures, a grader, and a sample report.
