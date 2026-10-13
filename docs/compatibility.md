@@ -10,7 +10,7 @@ SkillDiff never retries by removing permissions, isolation, or structured output
 | Claude Code | `.claude/skills` | Streaming input/output, no session persistence | `type: result`, without an error |
 | Codex | `.agents/skills` | One ephemeral app-server thread for multiple prompts | `turn.completed` for exec; `turn/completed` with status `completed` for app-server |
 | Antigravity CLI (AGY) | `.agents/skills` | Streaming input/output | `event: result` with status `SUCCESS` |
-| OpenCode V2 | `.opencode/skills` | Unique explicit session ID, standalone server | `step_finish` with reason `stop` |
+| OpenCode V2 | `.opencode/skills` | Unique explicit session ID, standalone server | `step_finish` with reason `stop` (or session export with `finish: stop` and `outcome: succeeded`) |
 
 Every arm has a separate conversation and private temporary directory. Follow-up
 prompts share their arm's workspace and one deadline. A failed turn stops the
@@ -66,7 +66,7 @@ a code from the first turn:
 | Claude Code | 2.1.290 | Both arms completed and recalled the code; treatment loaded the skill. |
 | Codex | 0.160.1 | Both ephemeral threads completed and recalled the code; treatment loaded the skill. |
 | AGY | 1.3.1 | Both conversations completed and recalled the code; treatment read the skill. One result's cached input exceeded its input counter, so uncached input is `N/A`; its reported total is retained. |
-| OpenCode | v2.0.23 | Both first turns produced text but omitted the final completion event. SkillDiff marked both as harness errors and stopped before follow-up. End-to-end support is not certified for this release. |
+| OpenCode | v2.0.23 | Both turns completed via session export fallback; treatment loaded the skill. |
 
 Paid container sessions have not been verified. A passing dev smoke is a transport
 check, not evidence for a skill shipping verdict. Keep held-out evaluation policy

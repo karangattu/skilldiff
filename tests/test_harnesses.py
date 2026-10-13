@@ -471,7 +471,7 @@ def test_opencode_go_subscription_routing(tmp_path: Path):
             model="deepseek-v4-pro",
             config=cfg_go,
         )
-        call_args = mock_subproc.call_args[0][0]
+        call_args = [c[0][0] for c in mock_subproc.call_args_list if c[0][0][1] == "run"][-1]
         assert "-m" in call_args
         model_idx = call_args.index("-m") + 1
         assert call_args[model_idx] == "opencode-go/deepseek-v4-pro"
@@ -482,7 +482,7 @@ def test_opencode_go_subscription_routing(tmp_path: Path):
             model="opencode/deepseek-v4-pro",
             config=cfg_go,
         )
-        call_args = mock_subproc.call_args[0][0]
+        call_args = [c[0][0] for c in mock_subproc.call_args_list if c[0][0][1] == "run"][-1]
         model_idx = call_args.index("-m") + 1
         assert call_args[model_idx] == "opencode-go/deepseek-v4-pro"
 
@@ -492,7 +492,7 @@ def test_opencode_go_subscription_routing(tmp_path: Path):
             model="anthropic/claude-3-5-sonnet",
             config=cfg_go,
         )
-        call_args = mock_subproc.call_args[0][0]
+        call_args = [c[0][0] for c in mock_subproc.call_args_list if c[0][0][1] == "run"][-1]
         model_idx = call_args.index("-m") + 1
         assert call_args[model_idx] == "anthropic/claude-3-5-sonnet"
 
@@ -511,7 +511,7 @@ def test_opencode_go_subscription_routing(tmp_path: Path):
             model="claude-sonnet-5",
             config=cfg_zen,
         )
-        call_args = mock_subproc.call_args[0][0]
+        call_args = [c[0][0] for c in mock_subproc.call_args_list if c[0][0][1] == "run"][-1]
         model_idx = call_args.index("-m") + 1
         assert call_args[model_idx] == "opencode/claude-sonnet-5"
 
@@ -709,3 +709,170 @@ def test_load_experiment_opencode_isolate_default_and_override(mock_exp_dir: Pat
     )
     cfg_off, _ = load_experiment(exp_off)
     assert cfg_off.opencode.isolate is False
+
+
+def test_parse_opencode_export_success():
+    from skilldiff.telemetry import parse_opencode_export
+
+    data = {
+        "info": {
+            "id": "ses_test_123",
+            "outcome": "succeeded",
+            "cost": 0.002,
+        },
+        "messages": [
+            {"type": "user", "text": "hello"},
+            {
+                "type": "assistant",
+                "finish": "tool-calls",
+                "cost": 0.001,
+                "tokens": {"input": 100, "output": 20, "cache": {"read": 50, "write": 0}},
+                "content": [
+                    {
+                        "type": "tool",
+                        "name": "skill",
+                        "state": {"status": "completed", "input": {"id": "my-skill"}},
+                    }
+                ],
+            },
+            {
+                "type": "assistant",
+                "finish": "stop",
+                "cost": 0.001,
+                "tokens": {"input": 80, "output": 30, "cache": {"read": 40, "write": 0}},
+                "content": [{"type": "text", "text": "All done!"}],
+            },
+            {"type": "idle", "outcome": "succeeded"},
+        ],
+    }
+    parsed = parse_opencode_export(data, ["my-skill"])
+    assert parsed["error"] is None
+    assert parsed["response"] == "All done!"
+    assert parsed["session_id"] == "ses_test_123"
+    assert parsed["input_tokens"] == 180
+    assert parsed["output_tokens"] == 50
+    assert parsed["cache_read_tokens"] == 90
+    assert parsed["cache_creation_tokens"] == 0
+    assert parsed["cost"] == 0.002
+    assert parsed["tool_calls"] == 1
+    assert parsed["skill_invoked"] is True
+
+
+def test_parse_opencode_export_failure():
+    from skilldiff.telemetry import parse_opencode_export
+
+    assert "Malformed" in parse_opencode_export("{invalid json")["error"]
+    assert "expected" in parse_opencode_export([1, 2, 3])["error"]
+
+    failed_outcome = {
+        "info": {"id": "ses_fail", "outcome": "failed"},
+        "messages": [{"type": "user", "text": "hi"}],
+    }
+    assert "outcome: failed" in parse_opencode_export(failed_outcome)["error"]
+
+    incomplete = {
+        "info": {"id": "ses_inc", "outcome": "succeeded"},
+        "messages": [
+            {"type": "user", "text": "hi"},
+            {"type": "assistant", "finish": "tool-calls", "content": []},
+        ],
+    }
+    assert "did not complete" in parse_opencode_export(incomplete)["error"]
+
+
+def test_opencode_runner_fallback_to_session_export(tmp_path: Path):
+    runner = AgentRunner(opencode_bin="opencode-mock")
+    cfg = OpenCodeConfig()
+
+    def mock_exec(cmd, *args, **kwargs):
+        if cmd[1] == "run":
+            ses_id = cmd[cmd.index("--session") + 1]
+            stream_output = (
+                f'{{"type":"step_start","sessionID":"{ses_id}"}}\n'
+                f'{{"type":"text","sessionID":"{ses_id}","part":{{"text":"hello from stream"}}}}\n'
+            )
+            return ExecResult(stdout=stream_output, stderr="", exit_code=0, duration=1.0)
+        if cmd[1] == "session" and cmd[2] == "export":
+            ses_id = cmd[-1]
+            export_output = json.dumps(
+                {
+                    "info": {"id": ses_id, "outcome": "succeeded"},
+                    "messages": [
+                        {"type": "user", "text": "hi"},
+                        {
+                            "type": "assistant",
+                            "finish": "stop",
+                            "cost": 0.0005,
+                            "tokens": {
+                                "input": 50,
+                                "output": 10,
+                                "cache": {"read": 20, "write": 0},
+                            },
+                            "content": [{"type": "text", "text": "hello from export"}],
+                        },
+                        {"type": "idle", "outcome": "succeeded"},
+                    ],
+                }
+            )
+            return ExecResult(stdout=export_output, stderr="", exit_code=0, duration=0.2)
+        return ExecResult(stdout="", stderr="unknown", exit_code=1, duration=0.1)
+
+    with patch.object(AgentRunner, "opencode_run_flags", return_value=set()), patch.object(
+        AgentRunner, "_exec", side_effect=mock_exec
+    ):
+        res = runner.run(prompt="p", cwd=tmp_path, model="m", config=cfg)
+        assert res.status == "ok"
+        assert res.error is None
+        assert res.response == "hello from export"
+        assert res.input_tokens == 50
+        assert res.output_tokens == 10
+        assert res.cost == 0.0005
+
+
+def test_opencode_runner_export_failure_preserves_error(tmp_path: Path):
+    runner = AgentRunner(opencode_bin="opencode-mock")
+    cfg = OpenCodeConfig()
+
+    def mock_exec(cmd, *args, **kwargs):
+        if cmd[1] == "run":
+            ses_id = cmd[cmd.index("--session") + 1]
+            stream_output = f'{{"type":"step_start","sessionID":"{ses_id}"}}\n'
+            return ExecResult(stdout=stream_output, stderr="", exit_code=0, duration=1.0)
+        return ExecResult(stdout="", stderr="failed export", exit_code=1, duration=0.2)
+
+    with patch.object(AgentRunner, "opencode_run_flags", return_value=set()), patch.object(
+        AgentRunner, "_exec", side_effect=mock_exec
+    ):
+        res = runner.run(prompt="p", cwd=tmp_path, model="m", config=cfg)
+        assert res.status == "error"
+        assert res.failure_kind == "harness_error"
+        assert "OpenCode exited without a terminal step_finish" in res.error
+
+
+def test_opencode_isolation_env_vars(tmp_path: Path):
+    runner = AgentRunner(opencode_bin="opencode-mock")
+    cfg = OpenCodeConfig(isolate=True)
+    captured_envs = []
+
+    def mock_exec(cmd, cwd, env, *args, **kwargs):
+        captured_envs.append(dict(env))
+        return ExecResult(
+            stdout='{"type":"step_finish","part":{"reason":"stop"}}\n',
+            stderr="",
+            exit_code=0,
+            duration=0.5,
+        )
+
+    with patch.object(AgentRunner, "opencode_run_flags", return_value=set()), patch.object(
+        AgentRunner, "_exec", side_effect=mock_exec
+    ):
+        runner.run(prompt="p", cwd=tmp_path, model="m", config=cfg)
+
+    assert len(captured_envs) > 0
+    env = captured_envs[0]
+    assert env.get("OPENCODE_DISABLE_CLAUDE_CODE") == "true"
+    assert env.get("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS") == "true"
+    assert env.get("OPENCODE_DISABLE_DEFAULT_PLUGINS") == "true"
+    assert env.get("OPENCODE_DISABLE_AUTOUPDATE") == "true"
+    assert "OPENCODE_CONFIG_DIR" in env
+

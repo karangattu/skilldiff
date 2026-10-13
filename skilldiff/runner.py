@@ -1284,6 +1284,15 @@ class AgentRunner:
         cmd.extend(opencode_cfg.extra_args)
         cmd.extend(["-m", target_model, prompt])
         env = os.environ.copy()
+        if opencode_cfg.isolate:
+            if temp_dir is not None:
+                isolated_config = temp_dir / "opencode_config"
+                isolated_config.mkdir(parents=True, exist_ok=True)
+                env["OPENCODE_CONFIG_DIR"] = str(isolated_config)
+            env["OPENCODE_DISABLE_CLAUDE_CODE"] = "true"
+            env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] = "true"
+            env["OPENCODE_DISABLE_DEFAULT_PLUGINS"] = "true"
+            env["OPENCODE_DISABLE_AUTOUPDATE"] = "true"
 
         start_time = time.perf_counter()
         try:
@@ -1305,6 +1314,51 @@ class AgentRunner:
         if parsed["session_id"] not in (None, session_id):
             parsed["error"] = "OpenCode returned an unexpected session ID"
         parsed["session_id"] = session_id
+        if (
+            parsed.get("error") == "OpenCode exited without a terminal step_finish (reason: stop)"
+            and not execution.timed_out
+            and execution.exit_code == 0
+        ):
+            from skilldiff.telemetry import parse_opencode_export
+
+            export_cmd = [bin_path, "session", "export"]
+            if opencode_cfg.isolate or multi_turn:
+                export_cmd.append("--standalone")
+            export_cmd.append(session_id)
+            export_timeout = min(30.0, timeout) if timeout else 30.0
+            try:
+                export_exec = self._exec(
+                    export_cmd,
+                    cwd,
+                    env,
+                    export_timeout,
+                    isolation=isolation,
+                    container_image=container_image,
+                    temp_dir=temp_dir,
+                )
+                if export_exec.exit_code == 0 and export_exec.stdout.strip():
+                    export_parsed = parse_opencode_export(export_exec.stdout, skill_names or [])
+                    if not export_parsed.get("error"):
+                        parsed["error"] = None
+                        if export_parsed.get("response"):
+                            parsed["response"] = export_parsed["response"]
+                        for key in (
+                            "cost",
+                            "input_tokens",
+                            "output_tokens",
+                            "cache_read_tokens",
+                            "cache_creation_tokens",
+                            "reported_total_tokens",
+                            "num_turns",
+                            "tool_calls",
+                        ):
+                            if export_parsed.get(key) is not None:
+                                parsed[key] = export_parsed[key]
+                        if export_parsed.get("skill_invoked") is not None:
+                            invoked = export_parsed["skill_invoked"]
+                            parsed["skill_invoked"] = parsed["skill_invoked"] or invoked
+            except Exception:
+                pass
         result = RunResult(
             prompt=prompt,
             transcript=f"STDOUT:\n{execution.stdout}\n\nSTDERR:\n{execution.stderr}",

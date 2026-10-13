@@ -91,7 +91,7 @@ and these sessions do not enter paired decisions. Unknown usage and cost stay `N
 Claude subscription authentication remains the default; SkillDiff does not use
 `--bare`. See [the compatibility contract and verification limits](docs/compatibility.md).
 
-OpenCode v2.0.23 currently omits the required completion event and is rejected.
+OpenCode v2.0.23 uses session export fallback when the final completion event is omitted.
 See [verified releases and limits](docs/compatibility.md#verification) before running.
 
 ## Manual setup

@@ -252,3 +252,108 @@ def parse_opencode(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             "tool_calls": len(tools) if stream else None,
             "skill_invoked": detect_opencode_skill_load(stdout, skill_names)
             if skill_names else None}
+
+
+def parse_opencode_export(
+    data: dict[str, Any] | str, skill_names: list[str] = ()
+) -> dict[str, Any]:
+    from skilldiff.runner import _skill_matches, detect_skill_reference
+
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except (json.JSONDecodeError, ValueError):
+            return {"error": "Malformed OpenCode session export"}
+    if not isinstance(data, dict):
+        return {"error": "expected OpenCode session export object"}
+
+    info = data.get("info") if isinstance(data.get("info"), dict) else {}
+    messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+    session_id = info.get("id") or data.get("sessionID")
+
+    last_user_idx = -1
+    for i, m in enumerate(messages):
+        if isinstance(m, dict) and m.get("type") == "user":
+            last_user_idx = i
+    if last_user_idx == -1:
+        subsequent = messages
+    else:
+        subsequent = messages[last_user_idx + 1 :]
+    assistants = [m for m in subsequent if isinstance(m, dict) and m.get("type") == "assistant"]
+
+    idles = [m for m in subsequent if isinstance(m, dict) and m.get("type") == "idle"]
+    last_assistant = assistants[-1] if assistants else {}
+
+    outcome = info.get("outcome")
+    if not outcome and idles:
+        outcome = idles[-1].get("outcome")
+
+    finish = last_assistant.get("finish") or last_assistant.get("rawFinish")
+    complete = (finish == "stop" and outcome == "succeeded")
+
+    error = None
+    if outcome and outcome != "succeeded":
+        error = f"OpenCode session outcome: {outcome}"
+    elif not complete:
+        error = f"OpenCode session did not complete (finish: {finish or 'unknown'})"
+
+    texts = []
+    tool_count = 0
+    invoked = False
+    inputs, outputs, cache_reads, cache_writes = [], [], [], []
+    costs = []
+
+    for m in assistants:
+        c_cost = money(m.get("cost"))
+        if c_cost is not None:
+            costs.append(c_cost)
+        tok = m.get("tokens")
+        if isinstance(tok, dict):
+            inputs.append(count(tok.get("input")))
+            outputs.append(count(tok.get("output")))
+            cache = tok.get("cache") if isinstance(tok.get("cache"), dict) else {}
+            cache_reads.append(count(cache.get("read")))
+            cache_writes.append(count(cache.get("write")))
+        for c in m.get("content", []):
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "text" and isinstance(c.get("text"), str):
+                texts.append(c["text"])
+            elif c.get("type") == "tool":
+                tool_count += 1
+                state = c.get("state") if isinstance(c.get("state"), dict) else {}
+                if state.get("status") == "completed":
+                    t_input = state.get("input") if isinstance(state.get("input"), dict) else {}
+                    t_name = c.get("name") or c.get("tool")
+                    target_id = t_input.get("id") or t_input.get("skill")
+                    target_path = str(t_input.get("filePath") or t_input.get("path") or "")
+                    if t_name == "skill" and _skill_matches(target_id, list(skill_names)):
+                        invoked = True
+                    elif t_name in {"read", "read_file"} and detect_skill_reference(
+                        target_path, list(skill_names)
+                    ):
+                        invoked = True
+
+    def sum_or_none(vals: list[Any]) -> int | None:
+        return sum(vals) if vals and all(v is not None for v in vals) else None
+
+    total_cost = (
+        sum(costs)
+        if costs and all(v is not None for v in costs)
+        else money(info.get("cost"))
+    )
+    return {
+        "response": "\n".join(texts),
+        "error": error,
+        "cost": total_cost,
+        "input_tokens": sum_or_none(inputs),
+        "output_tokens": sum_or_none(outputs),
+        "cache_read_tokens": sum_or_none(cache_reads),
+        "cache_creation_tokens": sum_or_none(cache_writes),
+        "reported_total_tokens": None,
+        "session_id": session_id,
+        "num_turns": 1 if complete else None,
+        "tool_calls": tool_count,
+        "skill_invoked": invoked if skill_names else None,
+    }
+
