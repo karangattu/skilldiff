@@ -6,6 +6,22 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-14
+
+### Added
+
+- Opt-in arm-level parallelism (`--arm-parallel` CLI flag and `arm_parallel: true` in config) to run control, treatment, and baseline arms of each pair concurrently with rate-limit protection.
+- Reflink copy-on-write snapshot and fixture support (`--reflink` CLI flag and `reflink: true` in config) using APFS clonefile on macOS and FICLONE ioctl on Linux, with automatic fallback to standard copying.
+- Secret redaction across agent transcripts, telemetry, runner error messages, saved pair artifacts, and generated reports.
+- Automated workspace cleanup guarantees on pair completion and workspace object disposal.
+- Test suite markers (`slow`, `network`, `container`) in pyproject.toml to speed up smoke and development test loops.
+
+### Changed
+
+- Modularized `reporter.py` into focused submodules under `skilldiff/reporting/` (`models.py`, `metrics.py`, `verdict.py`, `evaluation.py`, `create.py`) while preserving the public API and report formatting contracts.
+- Extracted pair execution (`skilldiff/pairing.py`) and result aggregation (`skilldiff/aggregation.py`) out of `skilldiff/experiment.py`.
+- Memoized file hash provenance checks, CLI binary paths, CLI version lookups, and parent environment scrubbing.
+
 ## [0.19.0] - 2026-10-12
 
 ### Added
