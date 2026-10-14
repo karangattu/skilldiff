@@ -1,9 +1,9 @@
-"""Persistent, content-checked inputs for every arm of an experiment."""
-
+import ctypes
 import hashlib
 import os
 import shutil
 import stat
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,64 @@ LOCK_NAMES = (
     "pnpm-lock.yaml",
     "pyproject.toml",
 )
+
+_CLONEFILE = None
+if sys.platform == "darwin":
+    try:
+        _libc = ctypes.CDLL(None)
+        if hasattr(_libc, "clonefile"):
+            _clone = _libc.clonefile
+            _clone.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+            _clone.restype = ctypes.c_int
+            _CLONEFILE = _clone
+    except Exception:
+        _CLONEFILE = None
+
+_FICLONE = 0x40049409 if sys.platform.startswith("linux") else None
+
+
+def supports_reflink() -> bool:
+    """Whether copy-on-write clonefile or FICLONE ioctl is potentially available."""
+    return _CLONEFILE is not None or _FICLONE is not None
+
+
+def reflink_copy(src: Path | str, dst: Path | str) -> bool:
+    """Attempt a copy-on-write reflink (APFS on macOS, FICLONE on Linux)."""
+    src_str = os.fspath(src)
+    dst_str = os.fspath(dst)
+    if _CLONEFILE is not None:
+        try:
+            if os.path.exists(dst_str) or os.path.islink(dst_str):
+                try:
+                    os.unlink(dst_str)
+                except OSError:
+                    pass
+            ret = _CLONEFILE(src_str.encode("utf-8"), dst_str.encode("utf-8"), 0)
+            if ret == 0:
+                return True
+        except Exception:
+            pass
+    elif _FICLONE is not None:
+        try:
+            import fcntl
+
+            with open(src_str, "rb") as f_src:
+                with open(dst_str, "wb") as f_dst:
+                    fcntl.ioctl(f_dst.fileno(), _FICLONE, f_src.fileno())
+            shutil.copystat(src_str, dst_str)
+            return True
+        except Exception:
+            pass
+    return False
+
+
+def copy_file_cow(src: Path | str, dst: Path | str, *, reflink: bool | None = None) -> None:
+    if reflink is None:
+        reflink = os.environ.get("SKILLDIFF_REFLINK", "").lower() in {"1", "true", "yes"}
+    if reflink and reflink_copy(src, dst):
+        return
+    shutil.copy2(src, dst)
+
 
 
 _FILE_HASH_CACHE: dict[tuple[str, int, int], str] = {}
@@ -128,7 +186,12 @@ def grader_inputs(tasks: list[TaskConfig]) -> dict[str, Any]:
     return result
 
 
-def create_snapshots(root: Path, sources: list[Path], guards: dict[str, Any]) -> dict[str, Any]:
+def create_snapshots(
+    root: Path,
+    sources: list[Path],
+    guards: dict[str, Any],
+    reflink: bool | None = None,
+) -> dict[str, Any]:
     entries = []
     # Inventory all sources first so a change to a later source is detected too.
     before = {str(src): tree_contents(src) for src in sources}
@@ -144,7 +207,7 @@ def create_snapshots(root: Path, sources: list[Path], guards: dict[str, Any]) ->
                 # Rebase absolute links too, so no link points back at live inputs.
                 target.symlink_to(os.path.relpath(destination / item["target"], target.parent))
             else:
-                shutil.copy2(src / item["path"], target)
+                copy_file_cow(src / item["path"], target, reflink=reflink)
         if tree_contents(destination) != contents:
             raise ValueError(f"Inputs changed while preparing snapshot: {src}")
         entries.append(

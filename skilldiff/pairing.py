@@ -88,7 +88,14 @@ def save_run_artifacts(
     transcript: str,
     diff: str,
 ) -> None:
-    atomic_write(arm_dir / "transcript.txt", transcript)
+    from skilldiff.telemetry import redact_secrets
+
+    clean_transcript = redact_secrets(transcript)
+    if record.get("error"):
+        record["error"] = redact_secrets(str(record["error"]))
+    if record.get("transcript"):
+        record["transcript"] = redact_secrets(str(record["transcript"]))
+    atomic_write(arm_dir / "transcript.txt", clean_transcript)
     atomic_write(arm_dir / "diff.patch", diff)
     record["artifact_hashes"] = {
         name: file_hash(arm_dir / name) for name in ("transcript.txt", "diff.patch")
@@ -130,6 +137,7 @@ def prepare_pair_workspaces(
         else None
     )
 
+    reflink_enabled = getattr(config, "reflink", False)
     workspaces = {
         "control": Workspace(
             root=tmp_ctrl / "workspace",
@@ -140,6 +148,7 @@ def prepare_pair_workspaces(
             fixture_repo=fixture_repo,
             harness=config.harness,
             pr_touched_skills=pr_skills,
+            reflink=reflink_enabled,
         ),
         "treatment": Workspace(
             root=tmp_treat / "workspace",
@@ -150,6 +159,7 @@ def prepare_pair_workspaces(
             fixture_repo=fixture_repo,
             harness=config.harness,
             pr_touched_skills=pr_skills,
+            reflink=reflink_enabled,
         ),
     }
     if is_ab and config.include_baseline:
@@ -163,6 +173,7 @@ def prepare_pair_workspaces(
             ] or None,
             fixture_repo=fixture_repo,
             harness=config.harness,
+            reflink=reflink_enabled,
         )
     for ws in workspaces.values():
         ws.setup()
@@ -655,6 +666,9 @@ def run_pair(
                             "cost": records["baseline"].get("cost"),
                         }
                     )
+
+        for ws in workspaces.values():
+            ws.cleanup()
 
     check_pair_harness_abort(records, execution.harness, task.id, pair.repetition)
     return records["control"], records["treatment"]

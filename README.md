@@ -299,10 +299,12 @@ The [reference](docs/reference.md) has the exact rules:
 
 ```bash
 git clone https://github.com/karangattu/skilldiff && cd skilldiff
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-pytest && ruff check skilldiff tests
+uv sync --frozen --extra dev
+uv run --frozen --extra dev python -m pytest
+uv run --frozen --extra dev ruff check skilldiff tests
 ```
+
+These commands select the project environment without relying on shell activation.
 
 See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.18.0.
 

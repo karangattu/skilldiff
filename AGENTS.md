@@ -3,6 +3,22 @@
 Never create or rename a Git branch to a name that starts with `codex`, including
 `codex/`. Use descriptive branch names without that prefix.
 
+# Development environment
+
+Use the uv project environment for all Python commands. From the repository root:
+
+```bash
+uv sync --frozen --extra dev
+uv run --frozen --extra dev python -m pytest
+uv run --frozen --extra dev ruff check skilldiff tests
+```
+
+Keep `--extra dev` on test and lint commands: these tools are optional development
+dependencies. Bare `python -m pytest` uses the machine's default interpreter unless
+the project environment is active; activation does not persist between tool calls.
+Check `uv run --frozen --extra dev python -m pytest --version` if a harness reports
+that pytest is missing.
+
 # Completing user-facing changes
 
 Before editing, identify every path that produces the behavior the user requested.

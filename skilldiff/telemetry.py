@@ -1,8 +1,42 @@
-"""Current native event contracts. Completion and usage are independent evidence."""
-
 import json
 import math
+import os
+import re
 from typing import Any
+
+SECRET_PATTERNS = (
+    re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bsk-ant-(?:api\d{2}-)?[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z-_]{35}\b"),
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{36,}\b"),
+    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b"),
+    re.compile(r"://[^:\s@]+:[^@\s/]+@"),
+)
+
+SENSITIVE_ENV_MARKERS = frozenset(
+    {"KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "PRIVATE", "CREDENTIAL"}
+)
+
+
+def redact_secrets(text: str | None) -> str:
+    """Redact known API keys, tokens, and active environment secrets."""
+    if not text:
+        return "" if text is None else str(text)
+    sanitized = str(text)
+    for pattern in SECRET_PATTERNS:
+        sanitized = pattern.sub("[REDACTED]", sanitized)
+    env_secrets = [
+        v
+        for k, v in os.environ.items()
+        if any(m in k for m in SENSITIVE_ENV_MARKERS) and len(v) >= 6
+    ]
+    if env_secrets:
+        for secret in sorted(set(env_secrets), key=len, reverse=True):
+            if secret in sanitized:
+                sanitized = sanitized.replace(secret, "[REDACTED]")
+    return sanitized
+
 
 
 def events(stdout: str) -> tuple[list[dict[str, Any]], str | None]:
@@ -134,8 +168,11 @@ def parse_codex(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     output = count(usage.get("output_tokens"))
     if total is None and raw_input is not None and output is not None:
         total = raw_input + output
-    return {"response": response, "error": error or (None if complete else
-            "Codex exited without a completed turn"), "cost": None,
+    err_msg = error or (None if complete else "Codex exited without a completed turn")
+    return {
+        "response": redact_secrets(response),
+        "error": redact_secrets(err_msg) if err_msg else None,
+        "cost": None,
             "input_tokens": uncached(raw_input, cached), "output_tokens": output,
             "cache_read_tokens": cached,
             "cache_creation_tokens": usage.get("cache_write_input_tokens", 0)
@@ -192,9 +229,11 @@ def parse_agy(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                             f"Antigravity status: {current.get('status')}")
     raw_input = count(usage.get("input_tokens"))
     cached = count(usage.get("cache_read_tokens"))
-    return {"response": response, "error": error or (None if terminal else
-            "Antigravity exited without a result event"),
-            "cost": cost,
+    err_msg = error or (None if terminal else "Antigravity exited without a result event")
+    return {
+        "response": redact_secrets(response),
+        "error": redact_secrets(err_msg) if err_msg else None,
+        "cost": cost,
             "input_tokens": uncached(raw_input, cached),
             "output_tokens": count(usage.get("output_tokens")),
             "cache_read_tokens": cached,
@@ -240,9 +279,13 @@ def parse_opencode(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             values.append(count(value))
         return sum(values) if values and all(v is not None for v in values) else None
     costs = [money(step.get("cost")) for step in steps.values()]
-    return {"response": "\n".join(texts), "error": error or (None if complete else
-            "OpenCode exited without a terminal step_finish (reason: stop)"),
-            "cost": sum(costs) if costs and all(v is not None for v in costs) else None,
+    err_msg = error or (
+        None if complete else "OpenCode exited without a terminal step_finish (reason: stop)"
+    )
+    return {
+        "response": redact_secrets("\n".join(texts)),
+        "error": redact_secrets(err_msg) if err_msg else None,
+        "cost": sum(costs) if costs and all(v is not None for v in costs) else None,
             "input_tokens": total("tokens", "input"),
             "output_tokens": total("tokens", "output"),
             "cache_read_tokens": total("tokens", "cache", "read"),
@@ -343,8 +386,8 @@ def parse_opencode_export(
         else money(info.get("cost"))
     )
     return {
-        "response": "\n".join(texts),
-        "error": error,
+        "response": redact_secrets("\n".join(texts)),
+        "error": redact_secrets(error) if error else None,
         "cost": total_cost,
         "input_tokens": sum_or_none(inputs),
         "output_tokens": sum_or_none(outputs),

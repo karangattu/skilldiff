@@ -28,7 +28,13 @@ def macos_command(
     binary = shutil.which(cmd[0]) or cmd[0]
     # Executables and OS libraries are readable; user content is opt-in.
     reads += [Path(p) for p in ("/System", "/Library", "/usr", "/bin", "/sbin", "/opt", "/dev")]
-    reads.append(Path(binary).resolve())
+    executable = Path(binary).absolute()
+    reads.extend([executable, executable.resolve()])
+    # uv runtimes can add a directory symlink between a venv and its interpreter.
+    while executable.is_symlink():
+        target = executable.readlink()
+        executable = target if target.is_absolute() else executable.parent / target
+        reads.append(executable)
     rules = [
         "(version 1)",
         "(allow default)",

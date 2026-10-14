@@ -768,7 +768,12 @@ class ExperimentRunner:
             self._seed = previous["seed"]
             self._timestamp = previous["timestamp"]
         else:
-            manifest = create_snapshots(run_root, sources, self._grader_inputs)
+            manifest = create_snapshots(
+                run_root,
+                sources,
+                self._grader_inputs,
+                reflink=getattr(self.config, "reflink", False),
+            )
             self._check_graders()
             # Detect changes between provenance collection and copying, including task files.
             after = collect_provenance(provenance_config, self.tasks)

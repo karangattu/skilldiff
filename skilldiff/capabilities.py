@@ -7,6 +7,10 @@ from pathlib import Path
 from skilldiff.preflight import codex_env, protected_read_paths
 
 
+def clear_capabilities_cache() -> None:
+    pass
+
+
 def probe_capabilities(runner, cwd, config, scratch):
     harness = config.harness
     native = getattr(config, harness)

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from skilldiff.config import find_skill_dirs
 from skilldiff.revisions import export_revision
+from skilldiff.snapshots import copy_file_cow
 
 SKILL_ROOTS = (".claude", ".codex", ".opencode", ".agents", ".agent", ".gemini")
 
@@ -88,19 +89,13 @@ def find_escaping_symlinks(root: Path) -> list[str]:
     return escaping
 
 
-def copy_fixture_clean(src_dir: Path, dst_root: Path) -> None:
-    """Copy a fixture without .git history and without escaping symlinks.
-
-    Raises ValueError when a symlink would escape the workspace.
-    """
+def copy_fixture_clean(src_dir: Path, dst_root: Path, reflink: bool | None = None) -> None:
     for item in os.listdir(src_dir):
         if item in IGNORED_FIXTURE_NAMES:
             continue
         src = src_dir / item
         dst = dst_root / item
         if src.is_symlink():
-            # Resolve against the source tree: escaping links are rejected
-            # before they ever enter the workspace.
             try:
                 target = (src.parent / os.readlink(src)).resolve()
                 src_resolved_root = src_dir.resolve()
@@ -112,22 +107,26 @@ def copy_fixture_clean(src_dir: Path, dst_root: Path) -> None:
                     )
             except OSError as exc:
                 raise ValueError(f"Cannot read fixture symlink {item}: {exc}") from exc
-            # Copy the link itself (not the target) so in-workspace links keep working.
             if src.is_dir() and not os.path.isfile(src):
-                # Symlink to dir: reproduce as symlink, then verify.
                 dst.symlink_to(os.readlink(src))
             else:
                 dst.symlink_to(os.readlink(src))
             continue
         if src.is_dir():
+            copy_fn = (
+                (lambda s, d: copy_file_cow(s, d, reflink=reflink))
+                if reflink
+                else shutil.copy2
+            )
             shutil.copytree(
                 src,
                 dst,
                 symlinks=True,
                 ignore=shutil.ignore_patterns(".git"),
+                copy_function=copy_fn,
             )
         else:
-            shutil.copy2(src, dst)
+            copy_file_cow(src, dst, reflink=reflink)
     escaping = find_escaping_symlinks(dst_root)
     if escaping:
         raise ValueError("Fixture contains symlinks escaping the workspace: " + ", ".join(escaping))
@@ -214,8 +213,10 @@ class Workspace:
         # baselines where two revisions must both be absent).
         strip_skill_dirs: list[Path] | None = None,
         pr_touched_skills: list[str] | None = None,
+        reflink: bool | None = None,
     ):
         self.root = root.resolve()
+        self.reflink = reflink
         self.is_treatment = is_treatment
         self.skill_dir = skill_dir.resolve() if skill_dir else None
         self.source_commit = source_commit
@@ -232,6 +233,13 @@ class Workspace:
         self.removed_from_control: list[str] = []
         self.isolation_issues: list[str] = []
         self.initial_commit: str | None = None
+
+    def _copy_fn(self):
+        return (
+            (lambda s, d: copy_file_cow(s, d, reflink=self.reflink))
+            if self.reflink
+            else shutil.copy2
+        )
 
     def _get_skill_target_dirs(self, skill_name: str) -> list[Path]:
         if self.harness == "codex":
@@ -250,8 +258,7 @@ class Workspace:
         if self.source_commit:
             export_revision(self.fixture_repo, self.source_commit, self.root)
         elif self.fixture_repo and self.fixture_repo.exists():
-            # Clean snapshot: no .git history, no escaping symlinks.
-            copy_fixture_clean(self.fixture_repo, self.root)
+            copy_fixture_clean(self.fixture_repo, self.root, reflink=self.reflink)
 
         if not (self.root / ".git").exists():
             subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
@@ -280,6 +287,7 @@ class Workspace:
                                 target_dir,
                                 symlinks=True,
                                 ignore=shutil.ignore_patterns(".git"),
+                                copy_function=self._copy_fn(),
                             )
                         if target_dir not in self.skill_dirs:
                             self.skill_dirs.append(target_dir)
@@ -289,13 +297,12 @@ class Workspace:
                 for target_dir in self._get_skill_target_dirs(skill_dir.name):
                     if target_dir.exists():
                         shutil.rmtree(target_dir)
-                    # Skills are exported without .git so removed contents
-                    # cannot be resurrected from history.
                     shutil.copytree(
                         skill_dir,
                         target_dir,
                         symlinks=True,
                         ignore=shutil.ignore_patterns(".git"),
+                        copy_function=self._copy_fn(),
                     )
             # In A/B mode both arms carry a skill; strip the *other* revision
             # if it shipped inside the fixture.
@@ -377,3 +384,7 @@ class Workspace:
     def cleanup(self) -> None:
         if self.root.exists():
             shutil.rmtree(self.root, ignore_errors=True)
+
+    def __del__(self) -> None:
+        self.cleanup()
+

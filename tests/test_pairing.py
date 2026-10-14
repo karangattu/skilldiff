@@ -227,3 +227,81 @@ def test_run_pair_rate_limit_retry(tmp_path: Path, monkeypatch):
     assert calls >= 2
     assert len(runner._retry_history) >= 1
     assert runner._retry_history[0]["status"] == "rate_limit"
+
+
+def test_save_run_artifacts_redacts_secrets(tmp_path: Path, monkeypatch):
+    from skilldiff.pairing import save_run_artifacts
+
+    monkeypatch.setenv("MY_CUSTOM_SECRET", "super-secret-pass-99")
+    arm_dir = tmp_path / "arm"
+    arm_dir.mkdir()
+    record = {
+        "status": "error",
+        "error": "Failed with token sk-ant-api03-abcdef1234567890123456 and super-secret-pass-99",
+        "transcript": "Prompt leaked Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xyz",
+    }
+    raw_transcript = "Traceback: sk-proj-12345678901234567890 super-secret-pass-99"
+    save_run_artifacts(arm_dir, record, raw_transcript, "diff")
+
+    clean_t = (arm_dir / "transcript.txt").read_text()
+    assert "sk-proj-" not in clean_t
+    assert "super-secret-pass-99" not in clean_t
+    assert "[REDACTED]" in clean_t
+
+    import json
+
+    saved_rec = json.loads((arm_dir / "run.json").read_text())
+    assert "sk-ant-api03-" not in saved_rec["error"]
+    assert "super-secret-pass-99" not in saved_rec["error"]
+    assert "[REDACTED]" in saved_rec["error"]
+    assert "Bearer eyJ" not in saved_rec["transcript"]
+    assert "[REDACTED]" in saved_rec["transcript"]
+
+
+def test_run_pair_guarantees_workspace_cleanup(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    from skilldiff.config import ClaudeConfig, ExperimentConfig, GraderConfig, TaskConfig
+    from skilldiff.experiment import ExperimentRunner
+    from skilldiff.pairing import _Pair, run_pair
+    from skilldiff.runner import AgentRunner
+
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# S")
+
+    task = TaskConfig(
+        id="t_cleanup",
+        prompt="do it",
+        grader=GraderConfig(type="command", command="exit 0"),
+        source_path=tmp_path / "task.yaml",
+    )
+    cfg = ExperimentConfig(
+        name="cleanup-test",
+        skill=skill_dir,
+        models=["m"],
+        tasks_patterns=["*.yaml"],
+        runs=1,
+        claude=ClaudeConfig(),
+    )
+    runner = ExperimentRunner(
+        cfg, [task], output_dir=tmp_path / "runs", agent_runner=AgentRunner()
+    )
+
+    created_workspaces = []
+
+    def mock_run(prompt, cwd, *args, **kwargs):
+        created_workspaces.append(cwd)
+        raise RuntimeError("simulated failure during agent execution")
+
+    runner.agent_runner.run = mock_run
+    pair = _Pair(model="m", task=task, repetition=1)
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        run_pair(runner, pair, tmp_path / "run_root")
+
+    assert len(created_workspaces) >= 1
+    for ws_root in created_workspaces:
+        assert not ws_root.exists()
+

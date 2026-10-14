@@ -4,6 +4,7 @@ from typing import Any
 from skilldiff.persistence import atomic_write
 from skilldiff.reporting.html import _render_html
 from skilldiff.reporting.markdown import _render_markdown
+from skilldiff.telemetry import redact_secrets
 
 
 def create_reports(results: dict[str, Any], run_root: Path) -> dict[str, Path]:
@@ -19,7 +20,7 @@ def create_reports(results: dict[str, Any], run_root: Path) -> dict[str, Path]:
     paths: dict[str, Path] = {}
     for key, (filename, content) in reports.items():
         paths[key] = run_root / filename
-        atomic_write(paths[key], content)
+        atomic_write(paths[key], redact_secrets(content))
     return paths
 
 

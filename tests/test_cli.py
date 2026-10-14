@@ -297,3 +297,20 @@ def test_run_arm_parallel_flag(tmp_path, monkeypatch):
     assert len(result_files) == 1
     results = json.loads(result_files[0].read_text())
     assert results["settings"].get("arm_parallel") is True
+
+
+def test_run_reflink_flag(tmp_path, monkeypatch):
+    from skilldiff.cli import build_parser
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    assert cmd_init(Args(force=False)) == 0
+    parser = build_parser()
+    args = parser.parse_args(["run", "--runs", "1", "--reflink"])
+    assert args.reflink is True
+    assert cmd_run(args) == 0
+    result_files = list((tmp_path / "runs").glob("*/results.json"))
+    assert len(result_files) == 1
+    results = json.loads(result_files[0].read_text())
+    assert results["settings"].get("reflink") is True
+

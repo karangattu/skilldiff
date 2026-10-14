@@ -1037,3 +1037,64 @@ def test_reporting_submodules_import_and_parity():
         assert getattr(reporter, symbol) is getattr(reporting, symbol)
 
 
+def test_telemetry_redact_secrets(monkeypatch):
+    from skilldiff.telemetry import redact_secrets
+
+    monkeypatch.setenv("MY_PRIVATE_API_TOKEN", "super-secret-12345")
+    text = (
+        "Got sk-ant-api03-abcdef1234567890123456 and sk-proj-12345678901234567890 "
+        "and super-secret-12345 in Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xyz"
+    )
+    redacted = redact_secrets(text)
+    assert "sk-ant-api03-" not in redacted
+    assert "sk-proj-" not in redacted
+    assert "super-secret-12345" not in redacted
+    assert "Bearer eyJ" not in redacted
+    assert "[REDACTED]" in redacted
+
+
+def test_create_reports_redacts_secrets(tmp_path, monkeypatch):
+    from skilldiff.reporting.create import create_reports
+
+    monkeypatch.setenv("LEAKED_API_KEY", "secret-key-abcdef-123")
+    results = {
+        "name": "secret-report",
+        "timestamp": "2026-10-14T00:00:00Z",
+        "models": ["haiku"],
+        "tasks": ["t1"],
+        "runs": {
+            "control": [
+                {
+                    "task_id": "t1",
+                    "arm": "control",
+                    "repetition": 1,
+                    "score": 0.0,
+                    "success": False,
+                    "status": "error",
+                    "error": (
+                        "Error with key secret-key-abcdef-123 and "
+                        "sk-ant-api03-abcdef1234567890123456"
+                    ),
+                }
+            ],
+            "treatment": [
+                {
+                    "task_id": "t1",
+                    "arm": "treatment",
+                    "repetition": 1,
+                    "score": 1.0,
+                    "success": True,
+                    "status": "ok",
+                }
+            ],
+        },
+    }
+
+    paths = create_reports(results, tmp_path)
+    for p in paths.values():
+        content = p.read_text()
+        assert "secret-key-abcdef-123" not in content
+        assert "sk-ant-api03-" not in content
+
+
+

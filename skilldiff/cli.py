@@ -1150,6 +1150,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                 setattr(exp_config, key, value)
         if getattr(args, "arm_parallel", False):
             exp_config.arm_parallel = True
+        if getattr(args, "reflink", False):
+            exp_config.reflink = True
         if getattr(args, "model", None) is not None:
             validate_string_list(args.model, "model", nonempty=True)
             exp_config.models = list(args.model)
@@ -1709,6 +1711,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--arm-parallel",
         action="store_true",
         help="Run control, treatment, and baseline arms of each pair concurrently",
+    )
+    run_parser.add_argument(
+        "--reflink",
+        action="store_true",
+        help="Use copy-on-write (reflink) for fixture and snapshot copies if supported",
     )
     run_parser.add_argument(
         "--model", "-m", action="append", help="Only run this model (repeatable)"

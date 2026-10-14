@@ -27,6 +27,7 @@ from skilldiff.config import (
 from skilldiff.conversations import Conversation
 from skilldiff.preflight import codex_env, protected_read_paths
 from skilldiff.processes import OwnedDescendants
+from skilldiff.telemetry import redact_secrets
 
 
 @dataclass
@@ -377,14 +378,14 @@ def _failed_result(prompt: str, exc: Exception, duration: float) -> RunResult:
     return RunResult(
         prompt=prompt,
         response="",
-        transcript=str(exc),
+        transcript=redact_secrets(str(exc)),
         duration=duration,
         cost=None,
         input_tokens=None,
         output_tokens=None,
         tool_calls=None,
         exit_code=-1,
-        error=str(exc),
+        error=redact_secrets(str(exc)),
         status="error",
         cache_read_tokens=None,
         cache_creation_tokens=None,
@@ -409,6 +410,12 @@ def _finalize_status(result: RunResult, execution: ExecResult) -> RunResult:
         result.error = result.error or execution.stderr.strip() or f"exit code {result.exit_code}"
     elif result.error and looks_like_rate_limit(result.error):
         result.failure_kind = "rate_limit"
+    if result.error:
+        result.error = redact_secrets(result.error)
+    if result.transcript:
+        result.transcript = redact_secrets(result.transcript)
+    if result.response:
+        result.response = redact_secrets(result.response)
     return result
 
 
@@ -766,9 +773,11 @@ class AgentRunner:
             err.seek(0)
             return ExecResult(
                 stdout=out.read().decode("utf-8", errors="replace"),
-                stderr=err.read().decode("utf-8", errors="replace") +
-                       ("\n" + protocol_error if protocol_error else "") +
-                       ("\n" + cleanup_error if cleanup_error else ""),
+                stderr=redact_secrets(
+                    err.read().decode("utf-8", errors="replace")
+                    + ("\n" + protocol_error if protocol_error else "")
+                    + ("\n" + cleanup_error if cleanup_error else "")
+                ),
                 exit_code=exit_code if not cleanup_error else (exit_code or -1),
                 duration=duration,
                 timed_out=timed_out,

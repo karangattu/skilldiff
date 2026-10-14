@@ -30,6 +30,7 @@ EXPERIMENT_KEYS = frozenset(
         "timeout_seconds",
         "parallel",
         "arm_parallel",
+        "reflink",
         "thresholds",
         "preset",
         "seed",
@@ -180,6 +181,8 @@ def validate_experiment_values(data: dict[str, Any]) -> None:
         validate_boolean(data["include_baseline"], "include_baseline")
     if "arm_parallel" in data:
         validate_boolean(data["arm_parallel"], "arm_parallel")
+    if "reflink" in data:
+        validate_boolean(data["reflink"], "reflink")
     if "timeout_seconds" in data and data["timeout_seconds"] is not None:
         validate_number(data["timeout_seconds"], "timeout_seconds", positive=True)
     if "isolation" in data:
@@ -388,6 +391,7 @@ class ExperimentConfig:
     timeout_seconds: Optional[float] = 1800.0
     parallel: int = 1
     arm_parallel: bool = False
+    reflink: bool = False
     pr: Optional[PRConfig] = None
     # Practical decision thresholds for verdicts (all optional):
     #   acceptable_score_regression_pp: tolerated score drop, e.g. 5 = -5pp ok.
@@ -929,6 +933,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     timeout_seconds = float(timeout_val) if timeout_val is not None else None
     parallel = data.get("parallel", 1)
     arm_parallel = bool(data.get("arm_parallel", False))
+    reflink = bool(data.get("reflink", False))
 
     thresholds: dict[str, float] = {}
     raw_thresholds = data.get("thresholds") or {}
@@ -1001,6 +1006,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         timeout_seconds=timeout_seconds,
         parallel=parallel,
         arm_parallel=arm_parallel,
+        reflink=reflink,
         thresholds=thresholds,
         pricing=pricing,
         cost_basis=cost_basis,

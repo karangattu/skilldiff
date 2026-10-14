@@ -1,6 +1,7 @@
 """Failures observed in a real paired Shiny repair evaluation."""
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -165,6 +166,37 @@ print('verified')"""
         isolation="macos",
         temp_dir=scratch,
         read_paths=[sys.prefix, sys.base_prefix],
+    )
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == "verified"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native macOS read isolation")
+def test_native_sandbox_follows_python_runtime_symlinks_without_exposing_siblings(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    runtime = tmp_path / "python-current"
+    runtime.symlink_to(sys.base_prefix, target_is_directory=True)
+    launcher = tmp_path / "python"
+    launcher.symlink_to(runtime / "bin" / Path(sys.executable).resolve().name)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("hidden")
+    code = f"""from pathlib import Path
+try: Path({str(secret)!r}).read_text()
+except PermissionError: pass
+else: raise AssertionError('sibling readable')
+print('verified')"""
+    result = AgentRunner()._exec(
+        [str(launcher), "-c", code],
+        workspace,
+        {},
+        10,
+        isolation="macos",
+        temp_dir=scratch,
+        read_paths=[sys.base_prefix],
+        protected_paths=[],
     )
     assert result.exit_code == 0, result.stderr
     assert result.stdout.strip() == "verified"
