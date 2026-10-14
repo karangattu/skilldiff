@@ -184,6 +184,8 @@ def runtime():
     return name, os.environ.get("SKILLDIFF_CONTAINER_IMAGE", "python:3.11-slim")
 
 
+@pytest.mark.container
+@pytest.mark.slow
 def test_real_container_paths_env_grader_and_cleanup(tmp_path, monkeypatch, runtime):
     runtime_name, image = runtime
     workspace = tmp_path / "workspace"

@@ -80,6 +80,8 @@ def _settings_summary(config: ExperimentConfig) -> dict[str, Any]:
     if config.pr is not None:
         out["pr_mode"] = getattr(config.pr, "mode", "agent")
         out["pr_pair"] = getattr(config.pr, "pair", "merge-base")
+    if getattr(config, "arm_parallel", False):
+        out["arm_parallel"] = True
     return out
 
 

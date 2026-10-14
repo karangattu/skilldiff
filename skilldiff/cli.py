@@ -2,7 +2,6 @@ import argparse
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -44,6 +43,7 @@ from skilldiff.runner import (
     PROMPTING_MODES,
     AgentRunner,
     auth_login_hint,
+    cached_which,
     claude_sandbox_settings,
     codex_sandbox_args,
     looks_like_auth_error,
@@ -783,7 +783,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     if image_id:
         resolved = getattr(cfg, cfg.harness).bin_path or Path(binary).name
     else:
-        resolved = shutil.which(binary) or (binary if Path(binary).exists() else None)
+        resolved = cached_which(binary) or (binary if Path(binary).exists() else None)
     if not resolved:
         fail(f"{cfg.harness} CLI not found (`{binary}`); install it or set bin_path")
     else:
@@ -1148,6 +1148,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             if value is not None:
                 validate_integer(value, key, positive=True)
                 setattr(exp_config, key, value)
+        if getattr(args, "arm_parallel", False):
+            exp_config.arm_parallel = True
         if getattr(args, "model", None) is not None:
             validate_string_list(args.model, "model", nonempty=True)
             exp_config.models = list(args.model)
@@ -1703,6 +1705,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--runs", "-r", type=int, help="Override number of runs per arm")
     run_parser.add_argument("--parallel", "-j", type=int, help="Pairs to run concurrently")
+    run_parser.add_argument(
+        "--arm-parallel",
+        action="store_true",
+        help="Run control, treatment, and baseline arms of each pair concurrently",
+    )
     run_parser.add_argument(
         "--model", "-m", action="append", help="Only run this model (repeatable)"
     )

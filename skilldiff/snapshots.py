@@ -23,12 +23,31 @@ LOCK_NAMES = (
 )
 
 
-def file_hash(path: Path) -> str:
+_FILE_HASH_CACHE: dict[tuple[str, int, int], str] = {}
+
+
+def clear_file_hash_cache() -> None:
+    _FILE_HASH_CACHE.clear()
+
+
+def file_hash(path: Path, stat_result: os.stat_result | None = None) -> str:
+    cache_key = None
+    try:
+        st = stat_result or path.stat()
+        cache_key = (str(path.resolve()), st.st_mtime_ns, st.st_size)
+        if cache_key in _FILE_HASH_CACHE:
+            return _FILE_HASH_CACHE[cache_key]
+    except OSError:
+        pass
+
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(65536), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+    result = digest.hexdigest()
+    if cache_key is not None:
+        _FILE_HASH_CACHE[cache_key] = result
+    return result
 
 
 def tree_contents(root: Path, *, grader: bool = False) -> list[dict[str, Any]]:
@@ -61,11 +80,15 @@ def tree_contents(root: Path, *, grader: bool = False) -> list[dict[str, Any]]:
                 entries.append({"path": rel, "type": "directory"})
                 visit(path)
             elif stat.S_ISREG(mode):
+                try:
+                    st = path.stat()
+                except OSError:
+                    st = None
                 entries.append(
                     {
                         "path": rel,
                         "type": "file",
-                        "sha256": file_hash(path),
+                        "sha256": file_hash(path, stat_result=st),
                         "executable": bool(mode & 0o111),
                     }
                 )

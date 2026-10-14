@@ -425,6 +425,7 @@ def _results(tmp_path: Path) -> dict:
     return json.loads((run_dir / "results.json").read_text())
 
 
+@pytest.mark.slow
 def test_regrade_rescored_runs_from_saved_diffs(tmp_path, monkeypatch, capsys):
     task = _mock_run(tmp_path, monkeypatch, capsys)
     assert _results(tmp_path)["overall"]["skill"]["task_score"] == 1.0

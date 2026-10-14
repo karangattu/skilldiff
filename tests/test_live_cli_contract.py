@@ -10,6 +10,8 @@ from skilldiff.runner import AgentRunner
 from skilldiff.workspace import Workspace
 
 
+@pytest.mark.slow
+@pytest.mark.network
 @pytest.mark.skipif(not os.environ.get("SKILLDIFF_LIVE_CLI"), reason="opt-in installed CLI probe")
 def test_installed_current_cli_contract_without_credentials(tmp_path, monkeypatch):
     harness = os.environ["SKILLDIFF_LIVE_CLI"]

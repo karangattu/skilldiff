@@ -1,3 +1,4 @@
+import functools
 import json
 import os
 import queue
@@ -77,69 +78,88 @@ class ExecResult:
 # started from inside an agent (e.g. by the skilldiff skill), each agent session must
 # be independent, so these are removed from every child CLI. Auth and provider
 # settings are left alone.
-PARENT_SESSION_VARS = (
-    "CLAUDECODE",
-    "CLAUDE_PID",
-    "CLAUDE_EFFORT",
-    "CLAUDE_AGENT_SDK_VERSION",
-    "CLAUDE_CODE_ENTRYPOINT",
-    "CLAUDE_CODE_EXECPATH",
-    "CLAUDE_CODE_SESSION_ID",
-    "CLAUDE_CODE_HOST_SESSION_ID",
-    "CLAUDE_CODE_CHILD_SESSION",
-    "CLAUDE_CODE_SESSION_ATTENDED",
-    "CLAUDE_CODE_MESSAGING_SOCKET",
-    "CLAUDE_CODE_MESSAGING_TOKEN",
-    "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",
-    "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
-    "CLAUDE_CODE_ENABLE_ASK_USER_QUESTION_TOOL",
-    "CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES",
-    "CLAUDE_CODE_EAGER_FLUSH",
-    "CLAUDE_CODE_REPORT_FINDINGS",
-    "CLAUDE_CODE_DESKTOP_APP_VERSION",
-    "CLAUDE_CODE_OAUTH_SCOPES",
-    "CLAUDE_CODE_ORGANIZATION_UUID",
-    "CLAUDE_CODE_ACCOUNT_UUID",
-    "CLAUDE_CODE_USER_EMAIL",
-    "CLAUDE_CODE_TERMINAL_MCP_TOOLS",
-    "CLAUDE_CODE_DISABLE_CRON",
-    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE",
-    # A parent started with --bare sets this; children would skip CLAUDE.md and hooks.
-    "CLAUDE_CODE_SIMPLE",
-    "CLAUDE_CODE_SAFE_MODE",
-    "CLAUDE_AGENT_SDK_MCP_NO_PREFIX",
-    "CLAUDE_PREVIEW_CLASSIFIER_FLOOR",
-    "AI_AGENT",
-    # The same applies when OpenCode or Antigravity drives skilldiff: a child CLI
-    # must not attach to the parent's conversation, project, or local server.
-    "OPENCODE",
-    "OPENCODE_SESSION_ID",
-    "OPENCODE_TERMINAL",
-    "ANTIGRAVITY_CONVERSATION_ID",
-    "ANTIGRAVITY_PROJECT_ID",
-    "ANTIGRAVITY_LS_ADDRESS",
-    "ANTIGRAVITY_CSRF_TOKEN",
-    "ANTIGRAVITY_SIDECAR_UI_TOKEN",
+PARENT_SESSION_VARS = frozenset(
+    {
+        "CLAUDECODE",
+        "CLAUDE_PID",
+        "CLAUDE_EFFORT",
+        "CLAUDE_AGENT_SDK_VERSION",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_EXECPATH",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_HOST_SESSION_ID",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",
+        "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
+        "CLAUDE_CODE_ENABLE_ASK_USER_QUESTION_TOOL",
+        "CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES",
+        "CLAUDE_CODE_EAGER_FLUSH",
+        "CLAUDE_CODE_REPORT_FINDINGS",
+        "CLAUDE_CODE_DESKTOP_APP_VERSION",
+        "CLAUDE_CODE_OAUTH_SCOPES",
+        "CLAUDE_CODE_ORGANIZATION_UUID",
+        "CLAUDE_CODE_ACCOUNT_UUID",
+        "CLAUDE_CODE_USER_EMAIL",
+        "CLAUDE_CODE_TERMINAL_MCP_TOOLS",
+        "CLAUDE_CODE_DISABLE_CRON",
+        "CLAUDE_CODE_DISABLE_TERMINAL_TITLE",
+        "CLAUDE_CODE_SIMPLE",
+        "CLAUDE_CODE_SAFE_MODE",
+        "CLAUDE_AGENT_SDK_MCP_NO_PREFIX",
+        "CLAUDE_PREVIEW_CLASSIFIER_FLOOR",
+        "AI_AGENT",
+        "OPENCODE",
+        "OPENCODE_SESSION_ID",
+        "OPENCODE_TERMINAL",
+        "ANTIGRAVITY_CONVERSATION_ID",
+        "ANTIGRAVITY_PROJECT_ID",
+        "ANTIGRAVITY_LS_ADDRESS",
+        "ANTIGRAVITY_CSRF_TOKEN",
+        "ANTIGRAVITY_SIDECAR_UI_TOKEN",
+    }
 )
 
-# Container CLIs receive only explicit provider credentials/configuration.
-# Host session state, HOME, PATH and unrelated secrets stay on the host.
-CONTAINER_AUTH_VARS = (
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "OPENAI_API_KEY",
-    "OPENAI_BASE_URL",
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "GOOGLE_CLOUD_PROJECT",
-    "GOOGLE_CLOUD_LOCATION",
+CONTAINER_AUTH_VARS = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+    }
 )
+
+
+@functools.lru_cache(maxsize=256)
+def _cached_which_impl(cmd: str, path: Optional[str]) -> Optional[str]:
+    return shutil.which(cmd, path=path)
+
+
+def cached_which(cmd: str, path: Optional[str] = None) -> Optional[str]:
+    if path is None:
+        path = os.environ.get("PATH")
+    return _cached_which_impl(cmd, path)
+
+
+cached_which.cache_clear = _cached_which_impl.cache_clear
+cached_which.cache_info = _cached_which_impl.cache_info
+
+
+
+def clean_parent_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k not in PARENT_SESSION_VARS}
 
 
 def resolve_container_image(runtime: str, image: Optional[str], timeout: float = 20) -> str:
-    binary = shutil.which(runtime)
+    binary = cached_which(runtime)
     if not binary:
         raise ValueError(f"Container runtime '{runtime}' not found on PATH")
     proc = subprocess.run(
@@ -323,6 +343,28 @@ def looks_like_auth_error(text: object) -> bool:
     return any(marker in lowered for marker in AUTH_ERROR_MARKERS)
 
 
+RATE_LIMIT_MARKERS = (
+    "rate limit",
+    "rate_limit",
+    "rate_limit_error",
+    "429 too many requests",
+    "api error: 429",
+    "status code: 429",
+    "status 429",
+    "quota exceeded",
+    "resource exhausted",
+    "resource_exhausted",
+    "overloaded",
+    "server is overloaded",
+)
+
+
+def looks_like_rate_limit(text: object) -> bool:
+    """True when a harness error message points at provider rate limits or overload."""
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in RATE_LIMIT_MARKERS)
+
+
 def auth_login_hint(harness: str) -> str:
     return {
         "claude": "Sign in with `claude auth login`",
@@ -347,7 +389,7 @@ def _failed_result(prompt: str, exc: Exception, duration: float) -> RunResult:
         cache_read_tokens=None,
         cache_creation_tokens=None,
         num_turns=None,
-        failure_kind="harness_error",
+        failure_kind="rate_limit" if looks_like_rate_limit(exc) else "harness_error",
     )
 
 
@@ -360,8 +402,13 @@ def _finalize_status(result: RunResult, execution: ExecResult) -> RunResult:
             result.exit_code = -1
     elif result.exit_code != 0:
         result.status = "error"
-        result.failure_kind = result.failure_kind or "harness_error"
+        if looks_like_rate_limit(result.error or execution.stderr):
+            result.failure_kind = "rate_limit"
+        else:
+            result.failure_kind = result.failure_kind or "harness_error"
         result.error = result.error or execution.stderr.strip() or f"exit code {result.exit_code}"
+    elif result.error and looks_like_rate_limit(result.error):
+        result.failure_kind = "rate_limit"
     return result
 
 
@@ -374,21 +421,21 @@ class AgentRunner:
         antigravity_bin: Optional[str] = None,
     ):
         self.claude_bin = (
-            claude_bin or os.environ.get("CLAUDE_BIN") or shutil.which("claude") or "claude"
+            claude_bin or os.environ.get("CLAUDE_BIN") or cached_which("claude") or "claude"
         )
         self.codex_bin = (
-            codex_bin or os.environ.get("CODEX_BIN") or shutil.which("codex") or "codex"
+            codex_bin or os.environ.get("CODEX_BIN") or cached_which("codex") or "codex"
         )
         self.opencode_bin = (
-            opencode_bin or os.environ.get("OPENCODE_BIN") or shutil.which("opencode") or "opencode"
+            opencode_bin or os.environ.get("OPENCODE_BIN") or cached_which("opencode") or "opencode"
         )
         gemini_agy = Path.home() / ".gemini" / "bin" / "agy"
         self.antigravity_bin = (
             antigravity_bin
             or os.environ.get("AGY_BIN")
             or os.environ.get("ANTIGRAVITY_BIN")
-            or shutil.which("agy")
-            or shutil.which("antigravity")
+            or cached_which("agy")
+            or cached_which("antigravity")
             or (str(gemini_agy) if gemini_agy.exists() else None)
             or "agy"
         )
@@ -484,9 +531,7 @@ class AgentRunner:
         deadline = started + timeout if timeout is not None else None
 
         exec_cmd = list(cmd)
-        env = dict(env)
-        for var in PARENT_SESSION_VARS:
-            env.pop(var, None)
+        env = {k: v for k, v in env.items() if k not in PARENT_SESSION_VARS}
         # Keep PWD consistent with the working directory we actually launch in.
         # Harnesses that resolve their project directory from PWD (Bun/OpenCode,
         # for example) otherwise operate on the caller's directory.
@@ -497,7 +542,7 @@ class AgentRunner:
                 env[key] = str(temp_dir.resolve())
         container_name = None
         runtime = None
-        if sys.platform == "darwin" and isolation == "local" and shutil.which("caffeinate"):
+        if sys.platform == "darwin" and isolation == "local" and cached_which("caffeinate"):
             exec_cmd = ["caffeinate", "-i", *exec_cmd]
         elif isolation == "macos":
             from skilldiff.isolation import macos_command
@@ -505,7 +550,7 @@ class AgentRunner:
             exec_cmd = macos_command(exec_cmd, cwd, temp_dir, read_paths or [],
                                      protected_paths or [])
         elif isolation in {"docker", "podman"}:
-            runtime = shutil.which(isolation)
+            runtime = cached_which(isolation)
             if not runtime:
                 raise ValueError(f"Container runtime '{isolation}' not found on PATH")
             try:
@@ -1142,9 +1187,7 @@ class AgentRunner:
             del cmd[cmd.index("-p") + 1]
             cmd.extend(["--input-format", "stream-json"])
             conversation = Conversation("claude", prompts)
-        env = os.environ.copy()
-        for var in PARENT_SESSION_VARS:
-            env.pop(var, None)
+        env = clean_parent_env()
         if claude_cfg.auth == "subscription":
             env.pop("ANTHROPIC_API_KEY", None)
             env.pop("ANTHROPIC_AUTH_TOKEN", None)
@@ -1408,7 +1451,7 @@ class AgentRunner:
             execution = self._exec(
                 cmd,
                 cwd,
-                os.environ.copy(),
+                clean_parent_env(),
                 timeout,
                 isolation=isolation,
                 container_image=container_image,

@@ -1,3 +1,4 @@
+import functools
 import hashlib
 import json
 import os
@@ -39,6 +40,7 @@ from skilldiff.reporter import create_reports
 from skilldiff.revisions import resolve_comparison
 from skilldiff.runner import (
     AgentRunner,
+    cached_which,
     resolve_container_image,
     validate_container_auth,
 )
@@ -80,13 +82,6 @@ def _sha256_file(path: Path) -> str:
 def _hash_dir(
     root: Path, store_limit: int = 200, *, grader: bool = False
 ) -> tuple[str, list[dict[str, Any]], int]:
-    """Hash every file under root. Never silently cap the hash input.
-
-    All files contribute to the combined hash. Only the first `store_limit`
-    entries are returned for provenance JSON so reports stay small; the total
-    file count is always reported and hash mismatches from truncation are
-    impossible.
-    """
     contents = tree_contents(root, grader=grader)
     hashed = [item for item in contents if item["type"] != "directory"]
     combined = hashlib.sha256(json.dumps(contents, sort_keys=True).encode()).hexdigest()
@@ -138,8 +133,9 @@ def _dir_bytes(root: Path) -> int:
     return total
 
 
+@functools.lru_cache(maxsize=64)
 def _cli_version(binary: str) -> str:
-    resolved = shutil.which(binary) or (binary if Path(binary).exists() else None)
+    resolved = cached_which(binary) or (binary if Path(binary).exists() else None)
     if not resolved:
         return "not found"
     for flag in ("--version", "version", "-v"):

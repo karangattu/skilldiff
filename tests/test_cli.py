@@ -281,3 +281,19 @@ def test_run_split_filters_before_sessions_and_empty_selection_fails(tmp_path, m
     assert len(result_files) == 2
     selected = [json.loads(path.read_text())["tasks"] for path in result_files]
     assert ["heldout-secret"] in selected
+
+
+def test_run_arm_parallel_flag(tmp_path, monkeypatch):
+    from skilldiff.cli import build_parser
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    assert cmd_init(Args(force=False)) == 0
+    parser = build_parser()
+    args = parser.parse_args(["run", "--runs", "1", "--arm-parallel"])
+    assert args.arm_parallel is True
+    assert cmd_run(args) == 0
+    result_files = list((tmp_path / "runs").glob("*/results.json"))
+    assert len(result_files) == 1
+    results = json.loads(result_files[0].read_text())
+    assert results["settings"].get("arm_parallel") is True

@@ -95,6 +95,8 @@ def test_pr_check_uses_control_revision(pr_experiment, monkeypatch, capsys, capa
     assert "untouched fixture scores 0%" in output
 
 
+@pytest.mark.slow
+@pytest.mark.integration
 @pytest.mark.parametrize("pair", ["merge-base", "base-merge"])
 def test_pr_resume_reuses_original_commits(pr_experiment, monkeypatch, pair):
     path, _, _, _ = pr_experiment

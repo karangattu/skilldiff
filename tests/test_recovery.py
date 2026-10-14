@@ -52,6 +52,7 @@ def files(root):
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
+@pytest.mark.slow
 def test_resume_reuses_pairs_and_allows_more_repetitions(experiment):
     cfg, tasks = experiment
     first = ExperimentRunner(cfg, tasks).run()
@@ -95,6 +96,7 @@ def test_settings_refusal_preserves_every_file(experiment, field, value):
     assert files(root) == before
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("parallel,baseline", [(1, False), (2, False), (2, True)])
 def test_later_pairs_use_frozen_inputs(experiment, parallel, baseline):
     cfg, tasks = experiment
@@ -257,6 +259,7 @@ def test_unreadable_input_aborts_before_agents(experiment, monkeypatch):
     assert not list((cfg.skill.parent / "runs").rglob("run.json"))
 
 
+@pytest.mark.slow
 def test_completed_pair_survives_later_checkpoint_failure(experiment, monkeypatch):
     cfg, tasks = experiment
     cfg.runs = 2
@@ -322,6 +325,7 @@ def test_legacy_run_is_readable_but_not_resumable(experiment):
     assert files(root) == before
 
 
+@pytest.mark.slow
 def test_same_timestamp_does_not_share_run_directory(experiment, monkeypatch):
     from datetime import datetime
 
@@ -444,6 +448,7 @@ def test_corrupted_score_record_is_rejected_before_writes(experiment):
     assert files(root) == before
 
 
+@pytest.mark.slow
 def test_fixture_root_symlink_is_resolved_once(experiment):
     cfg, tasks = experiment
     base = cfg.skill.parent

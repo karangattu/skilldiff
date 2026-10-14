@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import inspect
 import os
+import random
 import re
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -17,6 +20,7 @@ from skilldiff.runner import (
     RunResult,
     auth_login_hint,
     looks_like_auth_error,
+    looks_like_rate_limit,
 )
 from skilldiff.scope import is_blast_violation, scope_instructions
 from skilldiff.snapshots import file_hash
@@ -410,80 +414,141 @@ def run_pair(
                     "",
                 )
         else:
-            for arm in order:
-                if arm not in workspaces:
-                    continue
-                runner._ensure_running()
-                task_prompt_val = (
-                    task.prompts if getattr(task, "prompts", None) else task.prompt
-                )
-                constraints = scope_instructions(
-                    task.allowed_paths, task.forbidden_paths, task.grader_ignore
-                )
-                if isinstance(task_prompt_val, list):
-                    task_prompt_val = [prompt + constraints for prompt in task_prompt_val]
-                else:
-                    task_prompt_val += constraints
-                runner.progress(f"Agent starting: {model} · {task.id} · {arm}")
-                arm_skills = (
-                    [
-                        read_skill_name(path) or path.name
-                        for path in workspaces[arm].skill_dirs
-                    ]
-                    if workspaces[arm].skill_dirs
-                    else None
-                )
-                try:
-                    run_sig = inspect.signature(runner.agent_runner.run)
-                    if "skill_names" in run_sig.parameters or any(
-                        p.kind == inspect.Parameter.VAR_KEYWORD
-                        for p in run_sig.parameters.values()
-                    ):
-                        results[arm] = runner.agent_runner.run(
-                            task_prompt_val,
-                            workspaces[arm].root,
-                            model,
-                            execution,
-                            skill_names=arm_skills,
-                        )
+            def _execute_arm(arm: str) -> tuple[str, RunResult]:
+                max_retries = 2
+                delay = 1.0
+                last_res: RunResult | None = None
+                for attempt in range(1, max_retries + 2):
+                    runner._ensure_running()
+                    task_prompt_val = (
+                        task.prompts if getattr(task, "prompts", None) else task.prompt
+                    )
+                    constraints = scope_instructions(
+                        task.allowed_paths, task.forbidden_paths, task.grader_ignore
+                    )
+                    if isinstance(task_prompt_val, list):
+                        task_prompt_val = [prompt + constraints for prompt in task_prompt_val]
                     else:
-                        results[arm] = runner.agent_runner.run(
-                            task_prompt_val,
-                            workspaces[arm].root,
-                            model,
-                            execution,
+                        task_prompt_val += constraints
+                    runner.progress(f"Agent starting: {model} · {task.id} · {arm}")
+                    arm_skills = (
+                        [
+                            read_skill_name(path) or path.name
+                            for path in workspaces[arm].skill_dirs
+                        ]
+                        if workspaces[arm].skill_dirs
+                        else None
+                    )
+                    try:
+                        run_sig = inspect.signature(runner.agent_runner.run)
+                        if "skill_names" in run_sig.parameters or any(
+                            p.kind == inspect.Parameter.VAR_KEYWORD
+                            for p in run_sig.parameters.values()
+                        ):
+                            res = runner.agent_runner.run(
+                                task_prompt_val,
+                                workspaces[arm].root,
+                                model,
+                                execution,
+                                skill_names=arm_skills,
+                            )
+                        else:
+                            res = runner.agent_runner.run(
+                                task_prompt_val,
+                                workspaces[arm].root,
+                                model,
+                                execution,
+                            )
+                    except KeyboardInterrupt:
+                        diff_text, changed = workspaces[arm].get_diff()
+                        runner._save_run_artifacts(
+                            arm_dirs_map[arm],
+                            {
+                                "model": model,
+                                "task_id": task.id,
+                                "repetition": pair.repetition,
+                                "arm": arm,
+                                "complete": False,
+                                "status": "interrupted",
+                                "grade_status": "pending",
+                                "prompt": task_prompt_val,
+                                "cost": None,
+                                "input_tokens": None,
+                                "output_tokens": None,
+                                "files_changed": changed,
+                                "error": "Interrupted before harness telemetry was returned",
+                            },
+                            "Interrupted; harness telemetry unavailable",
+                            diff_text,
                         )
-                except KeyboardInterrupt:
-                    diff_text, changed = workspaces[arm].get_diff()
+                        raise
+
+                    last_res = res
+                    if (
+                        attempt <= max_retries
+                        and (
+                            res.failure_kind == "rate_limit"
+                            or looks_like_rate_limit(res.error or res.transcript)
+                        )
+                    ):
+                        lock = getattr(runner, "_lock", None)
+                        retry_entry = {
+                            "model": model,
+                            "task_id": task.id,
+                            "repetition": pair.repetition,
+                            "arm": arm,
+                            "attempt": attempt,
+                            "status": "rate_limit",
+                            "cost": res.cost,
+                        }
+                        if lock:
+                            with lock:
+                                runner._retry_history.append(retry_entry)
+                        else:
+                            runner._retry_history.append(retry_entry)
+                        runner.progress(
+                            f"Rate limit for {model} · {task.id} · {arm} (attempt {attempt}); "
+                            f"retrying in {delay:.1f}s..."
+                        )
+                        time.sleep(delay + random.uniform(0.1, 0.4))
+                        delay *= 2.0
+                        workspaces[arm].setup()
+                        continue
+
+                    immediate_diff, immediate_files = workspaces[arm].get_diff()
                     runner._save_run_artifacts(
                         arm_dirs_map[arm],
                         {
+                            **{
+                                key: value
+                                for key, value in asdict(res).items()
+                                if key != "transcript"
+                            },
                             "model": model,
                             "task_id": task.id,
                             "repetition": pair.repetition,
                             "arm": arm,
                             "complete": False,
-                            "status": "interrupted",
                             "grade_status": "pending",
-                            "prompt": task_prompt_val,
-                            "cost": None,
-                            "input_tokens": None,
-                            "output_tokens": None,
-                            "files_changed": changed,
-                            "error": "Interrupted before harness telemetry was returned",
+                            "attempt": attempt,
+                            "files_changed": immediate_files,
                         },
-                        "Interrupted; harness telemetry unavailable",
-                        diff_text,
+                        res.transcript,
+                        immediate_diff,
                     )
-                    raise
+                    runner.progress(
+                        f"Agent finished: {model} · {task.id} · {arm}; artifacts saved"
+                    )
+                    return arm, res
 
+                assert last_res is not None
                 immediate_diff, immediate_files = workspaces[arm].get_diff()
                 runner._save_run_artifacts(
                     arm_dirs_map[arm],
                     {
                         **{
                             key: value
-                            for key, value in asdict(results[arm]).items()
+                            for key, value in asdict(last_res).items()
                             if key != "transcript"
                         },
                         "model": model,
@@ -492,15 +557,32 @@ def run_pair(
                         "arm": arm,
                         "complete": False,
                         "grade_status": "pending",
-                        "attempt": 1,
+                        "attempt": max_retries + 1,
                         "files_changed": immediate_files,
                     },
-                    results[arm].transcript,
+                    last_res.transcript,
                     immediate_diff,
                 )
-                runner.progress(
-                    f"Agent finished: {model} · {task.id} · {arm}; artifacts saved"
-                )
+                return arm, last_res
+
+            arm_parallel = getattr(runner.config, "arm_parallel", False)
+            active_arms = [arm for arm in order if arm in workspaces]
+            if arm_parallel and len(active_arms) > 1:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=len(active_arms)
+                ) as executor:
+                    futures = []
+                    for idx, arm in enumerate(active_arms):
+                        if idx > 0:
+                            time.sleep(0.1)
+                        futures.append(executor.submit(_execute_arm, arm))
+                    for fut in concurrent.futures.as_completed(futures):
+                        arm, res = fut.result()
+                        results[arm] = res
+            else:
+                for arm in active_arms:
+                    arm, res = _execute_arm(arm)
+                    results[arm] = res
 
         diffs = {
             arm: workspaces[arm].get_diff()

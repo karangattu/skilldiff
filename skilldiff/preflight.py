@@ -105,7 +105,9 @@ def host_sandbox_fix() -> str:
 
 
 def codex_env(config: CodexConfig, isolation: str, scratch: Path | None) -> dict[str, str]:
-    env = os.environ.copy()
+    from skilldiff.runner import clean_parent_env
+
+    env = clean_parent_env()
     if config.auth in {"subscription", "stored"}:
         env.pop("OPENAI_API_KEY", None)
     if isolation == "macos" and scratch:
@@ -127,6 +129,8 @@ def probe_workspace(
     scratch: Path,
     runtime_probe: str | None = None,
 ) -> dict[str, Any]:
+    from skilldiff.runner import clean_parent_env
+
     report: dict[str, Any] = {"expected_skills": expected_skills,
                               "cli": runner.capabilities(cwd, config, scratch)}
     read_paths = (
@@ -152,7 +156,7 @@ def probe_workspace(
                 cwd,
                 codex_env(config.codex, config.isolation, scratch)
                 if config.harness == "codex"
-                else os.environ.copy(),
+                else clean_parent_env(),
                 10,
                 **kwargs,
             )
@@ -167,7 +171,7 @@ def probe_workspace(
             cwd,
             codex_env(config.codex, config.isolation, scratch)
             if config.harness == "codex"
-            else os.environ.copy(),
+            else clean_parent_env(),
             30,
             **kwargs,
         )

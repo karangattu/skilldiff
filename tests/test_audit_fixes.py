@@ -133,6 +133,7 @@ def test_ab_run_labels_and_source_sizes(tmp_path, monkeypatch):
     assert not any("INVALID" in w for w in res["warnings"])
 
 
+@pytest.mark.slow
 def test_baseline_balanced_order_and_summaries(tmp_path, monkeypatch):
     monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
     _skill(tmp_path, "v1", "d")
@@ -167,6 +168,7 @@ def test_baseline_balanced_order_and_summaries(tmp_path, monkeypatch):
     assert "Baseline comparisons" in md
 
 
+@pytest.mark.slow
 def test_resume_refuses_changed_skill(tmp_path, monkeypatch):
     monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
     a = _skill(tmp_path, "v1", "d", body="one")

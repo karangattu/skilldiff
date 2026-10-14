@@ -311,6 +311,8 @@ def fake_container_runtime(tmp_path, monkeypatch):
     return log
 
 
+@pytest.mark.slow
+@pytest.mark.container
 @pytest.mark.parametrize("harness,credential", [
     ("claude", "ANTHROPIC_API_KEY"), ("claude", "ANTHROPIC_AUTH_TOKEN"),
     ("codex", "OPENAI_API_KEY"),

@@ -14,6 +14,7 @@ from skilldiff.experiment import ExperimentRunner
 from skilldiff.runner import AgentRunner
 
 
+@pytest.mark.slow
 def test_experiment_runner_end_to_end(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
     monkeypatch.setenv("SKILLDIFF_MOCK_RESPONSE", "Found 2 defects")
@@ -116,6 +117,7 @@ def test_experiment_cleans_control_and_reports_warnings(tmp_path: Path, monkeypa
         assert (run_dir / name).exists()
 
 
+@pytest.mark.slow
 def test_experiment_parallel_and_skill_pack(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
     pack = tmp_path / "pack"
@@ -143,6 +145,7 @@ def test_experiment_parallel_and_skill_pack(tmp_path: Path, monkeypatch):
     assert not any(r["success"] for r in results["runs"]["control"])
 
 
+@pytest.mark.slow
 def test_experiment_saves_pricing_basis_and_report_reproduces_it(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
     skill_dir = tmp_path / "skills" / "my-skill"
@@ -245,3 +248,56 @@ def test_experiment_aborts_when_harness_cannot_run(tmp_path: Path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="opencode capability probe failed"):
         runner.run()
+
+
+def test_file_hash_caching(tmp_path: Path):
+    from skilldiff.experiment import _hash_dir
+    from skilldiff.snapshots import _FILE_HASH_CACHE, clear_file_hash_cache, file_hash
+
+    clear_file_hash_cache()
+
+    f = tmp_path / "file.txt"
+    f.write_text("hello world")
+    h1 = file_hash(f)
+    assert len(_FILE_HASH_CACHE) == 1
+    h2 = file_hash(f)
+    assert h1 == h2
+
+    d1, files1, total1 = _hash_dir(tmp_path)
+    d2, files2, total2 = _hash_dir(tmp_path)
+    assert d1 == d2
+    assert files1 == files2
+    assert total1 == total2
+
+
+
+def test_tooling_and_cli_memoization(monkeypatch):
+    import shutil
+
+    from skilldiff.capabilities import clear_capabilities_cache
+    from skilldiff.experiment import _cli_version
+    from skilldiff.runner import PARENT_SESSION_VARS, cached_which, clean_parent_env
+
+    cached_which.cache_clear()
+    _cli_version.cache_clear()
+    clear_capabilities_cache()
+
+    which_python = shutil.which("python3") or shutil.which("python")
+    if which_python:
+        c1 = cached_which("python3")
+        c2 = cached_which("python3")
+        assert c1 == c2
+        assert cached_which.cache_info().hits >= 1
+
+        v1 = _cli_version(which_python)
+        v2 = _cli_version(which_python)
+        assert v1 == v2
+        assert _cli_version.cache_info().hits >= 1
+
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "test")
+    monkeypatch.setenv("OPENCODE_SESSION_ID", "session-123")
+    cleaned = clean_parent_env()
+    assert "CLAUDE_CODE_ENTRYPOINT" not in cleaned
+    assert "OPENCODE_SESSION_ID" not in cleaned
+    for var in PARENT_SESSION_VARS:
+        assert var not in cleaned
