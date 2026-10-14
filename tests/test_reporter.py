@@ -987,3 +987,53 @@ def test_source_size_signed_percentage_without_reduction():
     assert "**Source size:** 160176 → 172934 bytes (+8.0%)" in md
 
 
+def test_reporting_submodules_import_and_parity():
+    from skilldiff import reporting
+    from skilldiff.reporting import (
+        blocks,
+        checks,
+        create,
+        evaluation,
+        html,
+        markdown,
+        metrics,
+        table,
+        types,
+        verdict,
+    )
+
+    runs = [
+        {"score": 0.8, "success": True, "cost": 0.40, "duration": 90.0, "status": "ok"},
+        {"score": 0.6, "success": False, "cost": 0.50, "duration": 100.0, "status": "ok"},
+    ]
+    m_pkg = reporting.calculate_metrics(runs)
+    m_mod = metrics.calculate_metrics(runs)
+    m_rep = reporter.calculate_metrics(runs)
+    assert m_pkg == m_mod == m_rep
+
+    assert table._cell_text(("hello", "good")) == "hello"
+    assert table._tone(1.0, True) == "good"
+    assert table._tone(-1.0, True) == "bad"
+    assert table._strip_inline("**bold** and `code`") == "bold and code"
+
+    assert checks.check_reading(2, 1, 3) == "Helps"
+    assert checks.check_reading(1, 2, 3) == "Hurts"
+    assert checks.check_reading(1, 1, 2) == "No difference"
+
+    assert verdict.adoption_reading(2, 2) == "Full adoption"
+    assert verdict.adoption_reading(1, 2) == "Partial adoption"
+    assert verdict.adoption_reading(0, 2) == "Not used"
+
+    assert hasattr(evaluation, "render_evaluation_table")
+    assert hasattr(blocks, "build_report_blocks")
+    assert hasattr(blocks, "render_report_table")
+    assert hasattr(markdown, "build_markdown_report")
+    assert hasattr(html, "build_html_report")
+    assert hasattr(create, "create_reports")
+    assert hasattr(types, "Cell")
+
+    for symbol in reporting.__all__:
+        assert hasattr(reporter, symbol)
+        assert getattr(reporter, symbol) is getattr(reporting, symbol)
+
+
