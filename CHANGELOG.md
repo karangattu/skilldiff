@@ -6,6 +6,20 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-10-15
+
+This release includes the features listed in 0.21.0, whose GitHub Release was blocked by CI.
+
+### Fixed
+
+- Restored CI and release builds by cleaning lint errors in the Python Shiny benchmark fixtures, reference solutions, and graders.
+- Removed the local Claude CLI dependency from workflow regression tests.
+- CI downloads the current OpenCode CLI from its official standalone endpoint, avoiding missing npm archives.
+
+### Changed
+
+- Development lint instructions now cover the whole repository, including benchmark packs.
+
 ## [0.21.0] - 2026-10-15
 
 ### Added

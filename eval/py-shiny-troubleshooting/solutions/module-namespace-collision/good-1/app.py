@@ -1,5 +1,6 @@
 from shiny import App, module, reactive, render, ui
 
+
 @module.ui
 def counter_ui():
     return ui.card(

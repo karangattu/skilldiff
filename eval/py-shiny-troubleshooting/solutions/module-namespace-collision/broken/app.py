@@ -1,5 +1,6 @@
 from shiny import App, reactive, render, ui
 
+
 def counter_card(label: str):
     return ui.card(
         ui.input_action_button("inc", label),

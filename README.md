@@ -301,11 +301,12 @@ The [reference](docs/reference.md) has the exact rules:
 git clone https://github.com/karangattu/skilldiff && cd skilldiff
 uv sync --frozen --extra dev
 uv run --frozen --extra dev python -m pytest
-uv run --frozen --extra dev ruff check skilldiff tests
+uv run --frozen --extra dev ruff check .
 ```
 
 These commands select the project environment without relying on shell activation.
+Lint the whole repository, including benchmark packs, to match CI and release checks.
 
-See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.21.0.
+See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.21.1.
 
 </details>

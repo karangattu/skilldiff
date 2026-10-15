@@ -175,9 +175,10 @@ def test_env_and_budget_limits_applied(tmp_path: Path) -> None:
 
 
 def test_check_fail_on_ceiling_and_terminate_on_ceiling(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capable_cli, conversation_cli
 ) -> None:
     monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    monkeypatch.setenv("CLAUDE_BIN", conversation_cli)
     skill = tmp_path / "skill"
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: s\ndescription: d\n---\n", encoding="utf-8")
@@ -265,8 +266,11 @@ def test_adoption_failure_in_aggregation_diagnose_and_ci(tmp_path: Path) -> None
     assert cmd_diagnose(diag_args) == 1
 
 
-def test_py_shiny_troubleshooting_pack_validates(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_py_shiny_troubleshooting_pack_validates(
+    monkeypatch: pytest.MonkeyPatch, capable_cli, conversation_cli
+) -> None:
     monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    monkeypatch.setenv("CLAUDE_BIN", conversation_cli)
     pack_cfg = Path("eval/py-shiny-troubleshooting/skilldiff.yaml")
     exp_cfg, tasks = load_experiment(pack_cfg)
     assert len(tasks) == 6

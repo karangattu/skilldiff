@@ -5,7 +5,9 @@ from pathlib import Path
 src = Path("app.py").read_text(encoding="utf-8")
 tree = ast.parse(src)
 
-server_fn = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "server"), None)
+server_fn = next(
+    (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "server"), None
+)
 has_reactive_calc = False
 compute_calls_in_server = 0
 if server_fn:
@@ -19,7 +21,11 @@ if server_fn:
                     and dec.attr in {"calc", "Calc"}
                 ):
                     has_reactive_calc = True
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "compute_metrics":
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "compute_metrics"
+        ):
             compute_calls_in_server += 1
 
 checks = [
