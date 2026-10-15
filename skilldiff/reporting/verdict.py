@@ -769,6 +769,7 @@ def _completeness_reading(
     agent_failures: int,
     grader_errors: int,
     blast_errors: int = 0,
+    adoption_failures: int = 0,
 ) -> str:
     if planned and not completed:
         return "Nothing completed"
@@ -783,6 +784,8 @@ def _completeness_reading(
         gaps.append(f"{grader_errors} grader error(s)")
     if blast_errors:
         gaps.append(f"{blast_errors} blast-radius exclusion(s)")
+    if adoption_failures:
+        gaps.append(f"{adoption_failures} adoption failure(s)")
     if usable < completed:
         gaps.append(f"{completed - usable} pair(s) ungraded")
     return "Complete" if not gaps else "Partial — " + ", ".join(gaps)

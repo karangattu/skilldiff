@@ -437,6 +437,11 @@ def _key_takeaways(
                 " Runs where the skill was ignored dilute any effect. A sharper "
                 "`description` usually fixes this."
             )
+            if used / known < (2.0 / 3.0):
+                text += (
+                    " Tune the `description` on dev tasks first "
+                    "(`skilldiff run --split dev --runs 1`)."
+                )
         bullets.append(text)
 
     try:
@@ -870,6 +875,11 @@ def build_report_blocks(
             if r.get("grade_status") in ("timeout", "error") and not _is_blast_run(r)
         )
         blast_errors = sum(1 for r in control_runs + treatment_runs if _is_blast_run(r))
+        adoption_failures = (
+            sum(1 for r in treatment_runs if r.get("skill_invoked") is False)
+            if results.get("adoption_failed")
+            else 0
+        )
         if not planned:
             planned = completed
         blocks.append(("h", 2, "Evaluation completeness"))
@@ -893,7 +903,7 @@ def build_report_blocks(
                         f"{grader_errors}",
                         _completeness_reading(
                             planned, completed, usable, agent_failures, grader_errors,
-                            blast_errors,
+                            blast_errors, adoption_failures,
                         ),
                     ]
                 ],

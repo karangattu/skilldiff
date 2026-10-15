@@ -23,7 +23,7 @@ from skilldiff.reporting.metrics import (
 )
 from skilldiff.reporting.table import _md_table
 from skilldiff.reporting.types import Cell
-from skilldiff.scope import is_blast_violation
+from skilldiff.scope import is_blast_violation, normalize_changed_paths
 from skilldiff.stats import analysis_run, usable_agent_run
 
 _EVALUATION_HEADERS = [
@@ -401,7 +401,13 @@ def _build_runs_table(
                 _time_cell(run),
                 _turns_cell(run),
                 _tokens_cell(run),
-                str(len(run.get("files_changed") or [])),
+                str(
+                    len(
+                        run.get("files_changed_normalized")
+                        if run.get("files_changed_normalized") is not None
+                        else normalize_changed_paths(run.get("files_changed") or [])
+                    )
+                ),
             ]
             if multi_model:
                 row.insert(0, str(run.get("model", "")))
