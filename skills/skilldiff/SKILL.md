@@ -120,9 +120,12 @@ Other rules:
   error — `N/A (blast radius)` with the path named — never as a wrong answer.
   Patterns match at any depth, so `data/*` also matches a saved copy under
   `outputs/measurements/…/data/`. If the skill under test asks agents to save
-  measurements or copies, add `grader_ignore: ["outputs/*"]` to the task: those
-  paths are hidden from the grader and skipped by the scope check. `check` warns
-  when a forbidden pattern would match nested copies. SkillDiff appends the same
+  measurements or copies, add `grader_ignore: ["outputs/*"]` (or preset
+  `grader_ignore: python-tooling`) to the task: those paths are hidden from the
+  grader and skipped by the scope check. In PR mode, tasks can also overlay extra
+  workspace files via `fixtures: ["../fixtures/broken-app"]`. `check` warns
+  when a forbidden pattern would match nested copies, and `--fail-on-ceiling`
+  fails tasks whose untouched fixture already scores 100%. SkillDiff appends the same
   constraints to both arms' prompts and rejects known-good solutions that conflict
   with them. Fix task scope before accepting grader validation.
 - **Script multi-turn tasks with `prompts:`.** A list of prompts runs in order

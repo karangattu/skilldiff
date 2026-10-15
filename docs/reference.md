@@ -194,7 +194,10 @@ prompt: |
   Fix the parser so that it accepts empty input. Keep all tests green.
 allowed_paths: [parser.py, "tests/**"]   # edits outside these are reported as errors
 forbidden_paths: ["**/*.lock"]
-grader_ignore: ["outputs/*"]            # hidden from the grader, skipped by the scope check
+grader_ignore: ["python-tooling", "outputs/*"]  # hidden from the grader, skipped by the scope check
+fixtures: ["../fixtures/extra-overlay"]  # optional overlay directories (also works in PR mode)
+env:
+  PYTHONPATH: /opt/warm-packages
 grader:
   type: command
   command: python3 "$SKILLDIFF_TASK_DIR/../graders/fix_parser.py"

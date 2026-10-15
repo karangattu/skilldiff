@@ -748,8 +748,7 @@ def load_task(task_path: Path) -> TaskConfig:
     validate_string_list(allowed_paths, f"{context}.allowed_paths")
     validate_string_list(forbidden_paths, f"{context}.forbidden_paths")
     raw_grader_ignore = data.get("grader_ignore", [])
-    if isinstance(raw_grader_ignore, str):
-        validate_string(raw_grader_ignore, f"{context}.grader_ignore")
+    if isinstance(raw_grader_ignore, str) and raw_grader_ignore.strip() in GRADER_IGNORE_PRESETS:
         grader_ignore = [raw_grader_ignore.strip()]
     else:
         grader_ignore = raw_grader_ignore

@@ -20,10 +20,14 @@ def normalize_changed_paths(paths: list[str], grader_ignore: list[str] | None = 
     for path in paths:
         if path_matches(path, ignores):
             continue
-        stripped = path.replace("\\", "/").lstrip("./")
-        top = stripped.split("/", 1)[0]
-        if top in GENERATED_PATH_PREFIXES:
-            result.append(f"<generated:{top}>")
+        stripped = path.replace("\\", "/")
+        while stripped.startswith("./"):
+            stripped = stripped[2:]
+        stripped = stripped.lstrip("/")
+        parts = stripped.split("/")
+        gen_part = next((p for p in parts if p in GENERATED_PATH_PREFIXES), None)
+        if gen_part:
+            result.append(f"<generated:{gen_part}>")
         else:
             result.append(stripped)
     return sorted(set(result))

@@ -190,6 +190,21 @@ def check_workspace_isolation(
     return issues
 
 
+GENERATED_DIFF_EXCLUDES = [
+    ":(exclude).venv",
+    ":(exclude)**/.venv",
+    ":(exclude)node_modules",
+    ":(exclude)**/node_modules",
+    ":(exclude).pytest_cache",
+    ":(exclude)**/.pytest_cache",
+    ":(exclude).uv-cache",
+    ":(exclude)**/.uv-cache",
+    ":(exclude)__pycache__",
+    ":(exclude)**/__pycache__",
+    ":(exclude).cache",
+    ":(exclude)**/.cache",
+]
+
 GIT_DIFF_EXCLUDES = [
     ":(exclude).claude",
     ":(exclude).codex",
@@ -197,12 +212,7 @@ GIT_DIFF_EXCLUDES = [
     ":(exclude).agents",
     ":(exclude).agent",
     ":(exclude).gemini",
-    ":(exclude)**/.venv",
-    ":(exclude)**/node_modules",
-    ":(exclude)**/.pytest_cache",
-    ":(exclude)**/.uv-cache",
-    ":(exclude)**/__pycache__",
-    ":(exclude)**/.cache",
+    *GENERATED_DIFF_EXCLUDES,
 ]
 
 
@@ -387,7 +397,7 @@ class Workspace:
             ):
                 subprocess.run(command, cwd=self.root, env=env, check=True, capture_output=True)
             base = ["git", "diff", "--cached", "--no-renames", "--binary", self.initial_commit]
-            paths = ["--", *([] if self.source_commit else GIT_DIFF_EXCLUDES)]
+            paths = ["--", *(GENERATED_DIFF_EXCLUDES if self.source_commit else GIT_DIFF_EXCLUDES)]
             patch = subprocess.check_output(base + paths, cwd=self.root, env=env, text=True)
             names = subprocess.check_output(
                 base + ["--name-only", "-z"] + paths, cwd=self.root, env=env
