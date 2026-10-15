@@ -166,13 +166,20 @@ def probe_workspace(
                 )
             report["read_boundary"] = "sibling content denied"
     if runtime_probe:
+        probe_env = (
+            codex_env(config.codex, config.isolation, scratch)
+            if config.harness == "codex"
+            else clean_parent_env()
+        )
+        extra_env = dict(getattr(config, "env", None) or {})
+        if extra_env:
+            probe_env.update(extra_env)
         result = runner._exec(
             ["/bin/sh", "-c", runtime_probe],
             cwd,
-            codex_env(config.codex, config.isolation, scratch)
-            if config.harness == "codex"
-            else clean_parent_env(),
+            probe_env,
             30,
+            forward_env=list(extra_env.keys()),
             **kwargs,
         )
         report["runtime_probe"] = {

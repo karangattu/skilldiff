@@ -8,6 +8,7 @@ import random
 import re
 import tempfile
 import time
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -22,7 +23,7 @@ from skilldiff.runner import (
     looks_like_auth_error,
     looks_like_rate_limit,
 )
-from skilldiff.scope import is_blast_violation, scope_instructions
+from skilldiff.scope import is_blast_violation, normalize_changed_paths, scope_instructions
 from skilldiff.snapshots import file_hash
 from skilldiff.stats import analysis_run
 from skilldiff.workspace import Workspace
@@ -268,6 +269,9 @@ def build_arm_record(
         "skill_available": res.skill_available,
         "permission_denials": res.permission_denials,
         "files_changed": files,
+        "files_changed_normalized": normalize_changed_paths(
+            files, getattr(task, "grader_ignore", None)
+        ),
         "score": grade.score,
         "success": grade.success,
         "grade_status": getattr(grade, "grade_status", "graded"),
@@ -334,6 +338,11 @@ def run_pair(
     task = pair.task
     model = pair.model
     execution = runner._execution_config
+    if getattr(task, "env", None):
+        execution = deepcopy(execution)
+        merged_env = dict(getattr(execution, "env", None) or {})
+        merged_env.update(task.env)
+        execution.env = merged_env
     fixture_repo = (
         runner.config.pr.repo
         if runner.config.pr

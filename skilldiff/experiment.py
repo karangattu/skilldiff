@@ -837,10 +837,30 @@ class ExperimentRunner:
                     f"treatment {_run_summary(treat)} [spent: ${spent:.2f}]"
                 )
 
+        terminated_on_ceiling = False
+        ceiling_pairs: set[tuple[str, str]] = set()
         try:
             if self.config.parallel <= 1:
                 for pair in pairs:
-                    record(self._run_pair(pair, run_root))
+                    if (
+                        getattr(self.config, "terminate_on_ceiling", False)
+                        and (pair.model, pair.task.id) in ceiling_pairs
+                    ):
+                        continue
+                    res_pair = self._run_pair(pair, run_root)
+                    record(res_pair)
+                    ctrl_res = res_pair[0]
+                    if (
+                        getattr(self.config, "terminate_on_ceiling", False)
+                        and ctrl_res.get("score") is not None
+                        and float(ctrl_res["score"]) >= 1.0
+                    ):
+                        ceiling_pairs.add((pair.model, pair.task.id))
+                        terminated_on_ceiling = True
+                        self.progress(
+                            f"Ceiling reached on {pair.model} · {pair.task.id} (control 100%); "
+                            "skipping remaining repetitions for this task."
+                        )
             else:
                 self.progress(
                     f"Running {len(pairs)} pair(s) across {self.config.parallel} worker(s)..."
@@ -865,10 +885,16 @@ class ExperimentRunner:
             r for r in self._baseline_runs
             if (r["model"], r["task_id"], r["repetition"]) in self._checkpoint_completed
         ]
+        if terminated_on_ceiling:
+            warnings.append(
+                "Terminated early on ceiling: one or more tasks already scored 100% in control."
+            )
         results = self._aggregate(
             run_root, self._timestamp, control_runs, treatment_runs, warnings,
             interrupted, provenance_snapshot=self._provenance_snapshot,
         )
+        if terminated_on_ceiling:
+            results["terminated_on_ceiling"] = True
         paths = create_reports(results, run_root)
         results["report"] = {k: (str(v) if v else None) for k, v in paths.items()}
         atomic_json(run_root / "results.json", results)
@@ -882,6 +908,8 @@ class ExperimentRunner:
         grader_names: list[str],
     ) -> Grader:
         task_dir = task.source_path.parent if task.source_path else None
+        extra_env = dict(getattr(execution, "env", None) or {})
+        extra_env.update(getattr(task, "env", None) or {})
         return Grader(
             task.grader,
             grader_names,
@@ -894,6 +922,7 @@ class ExperimentRunner:
             isolation="local" if execution.isolation == "macos" else execution.isolation,
             container_image=execution.container_image,
             inputs_root=self.config.config_path.parent if self.config.config_path else None,
+            extra_env=extra_env,
         )
 
     def _grader_names(self, execution: ExperimentConfig) -> list[str]:

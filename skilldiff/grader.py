@@ -101,6 +101,7 @@ class Grader:
         container_image: Optional[str] = None,
         inputs_root: Optional[Path] = None,
         grader_ignore: Optional[list[str]] = None,
+        extra_env: Optional[dict[str, str]] = None,
     ):
         self.config = config
         self.skill_names = [skill_name] if isinstance(skill_name, str) else list(skill_name)
@@ -114,6 +115,7 @@ class Grader:
         self.container_image = container_image
         self.inputs_root = inputs_root
         self.grader_ignore = list(grader_ignore or [])
+        self.extra_env = dict(extra_env or {})
 
     def grade_pair(
         self,
@@ -351,6 +353,8 @@ class Grader:
             shell_command = ["/bin/sh", "-c", command]
             if self.isolation == "local" and os.name == "nt":
                 shell_command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", command]
+            if self.extra_env:
+                env.update(self.extra_env)
             proc = AgentRunner()._exec(
                 shell_command,
                 cand.workspace_dir,
@@ -359,7 +363,9 @@ class Grader:
                 isolation=self.isolation,
                 container_image=self.container_image,
                 readonly_mounts=mounts,
-                forward_env=[key for key in env if key.startswith("SKILLDIFF_")],
+                forward_env=[
+                    key for key in env if key.startswith("SKILLDIFF_") or key in self.extra_env
+                ],
             )
             if proc.cleanup_error:
                 return GradeResult(None, None, cand.label, proc.cleanup_error, "error")

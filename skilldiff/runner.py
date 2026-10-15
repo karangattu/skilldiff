@@ -159,24 +159,31 @@ def clean_parent_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k not in PARENT_SESSION_VARS}
 
 
+DEFAULT_CONTAINER_IMAGE = "ghcr.io/karangattu/skilldiff-sandbox:latest"
+
+
 def resolve_container_image(runtime: str, image: Optional[str], timeout: float = 20) -> str:
     binary = cached_which(runtime)
     if not binary:
         raise ValueError(f"Container runtime '{runtime}' not found on PATH")
-    proc = subprocess.run(
-        [binary, "image", "inspect", "--format", "{{.Id}}", image or "python:3.11"],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
-    identity = proc.stdout.strip()
-    if proc.returncode or not identity.startswith("sha256:") or "\n" in identity:
-        raise ValueError(
-            "Container image must be available locally and inspectable: "
-            + (proc.stderr.strip() or image or "python:3.11")
+    candidates = [image] if image else [DEFAULT_CONTAINER_IMAGE, "python:3.11"]
+    last_err = ""
+    for candidate in candidates:
+        proc = subprocess.run(
+            [binary, "image", "inspect", "--format", "{{.Id}}", candidate],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
         )
-    return identity
+        identity = proc.stdout.strip()
+        if not proc.returncode and identity.startswith("sha256:") and "\n" not in identity:
+            return identity
+        last_err = proc.stderr.strip() or candidate
+    raise ValueError(
+        "Container image must be available locally and inspectable: "
+        + (last_err or image or DEFAULT_CONTAINER_IMAGE)
+    )
 
 
 def validate_container_auth(config: ExperimentConfig) -> None:
@@ -962,9 +969,11 @@ class AgentRunner:
 
         if os.environ.get("SKILLDIFF_MOCK_RUNNER"):
             if isinstance(prompt, list):
-                return self._run_multi_turn(prompt, cwd, model, config, harness, skill_names,
-                                            timeout, temp_dir)
-            return self._run_mock(prompt, cwd, model)
+                res = self._run_multi_turn(prompt, cwd, model, config, harness, skill_names,
+                                           timeout, temp_dir)
+            else:
+                res = self._run_mock(prompt, cwd, model)
+            return self._apply_budget_limits(res, config)
 
         isolation = getattr(config, "isolation", "local")
         container_image = getattr(config, "container_image", None)
@@ -1025,9 +1034,14 @@ class AgentRunner:
             opencode_cfg, antigravity_cfg = configs["opencode"], configs["antigravity"]
 
         names = skill_names or []
+        extra_env = dict(getattr(config, "env", None) or {})
         if active_harness == "opencode" and isinstance(prompt, list):
-            return self._run_multi_turn(prompt, cwd, model, config, active_harness, names,
-                                        timeout, temp_dir)
+            return self._apply_budget_limits(
+                self._run_multi_turn(
+                    prompt, cwd, model, config, active_harness, names, timeout, temp_dir
+                ),
+                config,
+            )
         if active_harness == "codex":
             result = self._run_codex(
                 prompt,
@@ -1041,6 +1055,7 @@ class AgentRunner:
                 protected_paths=(protected_read_paths(config)
                                  if isinstance(config, ExperimentConfig) else []),
                 skill_names=names,
+                extra_env=extra_env,
             )
         elif active_harness == "opencode":
             result = self._run_opencode(
@@ -1053,6 +1068,7 @@ class AgentRunner:
                 container_image=container_image,
                 temp_dir=temp_dir,
                 skill_names=names, session_id=session_id,
+                extra_env=extra_env,
             )
         elif active_harness in {"antigravity", "agy"}:
             result = self._run_antigravity(
@@ -1065,6 +1081,7 @@ class AgentRunner:
                 isolation=isolation,
                 container_image=container_image,
                 temp_dir=temp_dir,
+                extra_env=extra_env,
             )
         else:
             result = self._run_claude(
@@ -1079,8 +1096,31 @@ class AgentRunner:
                 temp_dir=temp_dir,
                 protected_paths=(protected_read_paths(config)
                                  if isinstance(config, ExperimentConfig) else []),
+                extra_env=extra_env,
             )
 
+        return self._apply_budget_limits(result, config)
+
+    @staticmethod
+    def _apply_budget_limits(result: RunResult, config: Any) -> RunResult:
+        max_tool_budget = getattr(config, "max_tool_budget", None)
+        if (
+            max_tool_budget is not None
+            and result.tool_calls is not None
+            and result.tool_calls > max_tool_budget
+        ):
+            result.status = "error"
+            result.exit_code = result.exit_code or 1
+            result.error = f"Tool budget exceeded ({result.tool_calls} > {max_tool_budget})"
+        max_turns = getattr(config, "max_turns", None)
+        if (
+            max_turns is not None
+            and result.num_turns is not None
+            and result.num_turns > max_turns
+        ):
+            result.status = "error"
+            result.exit_code = result.exit_code or 1
+            result.error = f"Turn budget exceeded ({result.num_turns} > {max_turns})"
         return result
 
     def probe_claude_auth(
@@ -1188,6 +1228,7 @@ class AgentRunner:
         container_image: Optional[str] = None,
         temp_dir: Optional[Path] = None,
         protected_paths: Optional[list[str]] = None,
+        extra_env: Optional[dict[str, str]] = None,
     ) -> RunResult:
         prompts = prompt if isinstance(prompt, list) else [prompt]
         cmd = self.claude_command(prompts[0], model, claude_cfg, isolation, protected_paths)
@@ -1200,6 +1241,8 @@ class AgentRunner:
         if claude_cfg.auth == "subscription":
             env.pop("ANTHROPIC_API_KEY", None)
             env.pop("ANTHROPIC_AUTH_TOKEN", None)
+        if extra_env:
+            env.update(extra_env)
 
         start_time = time.perf_counter()
         try:
@@ -1207,6 +1250,7 @@ class AgentRunner:
                 cmd, cwd, env, timeout, isolation=isolation, container_image=container_image,
                 temp_dir=temp_dir, read_paths=claude_cfg.read_paths,
                 protected_paths=protected_paths, conversation=conversation,
+                forward_env=list((extra_env or {}).keys()),
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
@@ -1254,6 +1298,7 @@ class AgentRunner:
         temp_dir: Optional[Path] = None,
         protected_paths: Optional[list[str]] = None,
         skill_names: Optional[list[str]] = None,
+        extra_env: Optional[dict[str, str]] = None,
     ) -> RunResult:
         bin_path = codex_cfg.bin_path or self.codex_bin
         cmd = [bin_path, "exec", prompt, "-m", model, "--json"]
@@ -1277,6 +1322,8 @@ class AgentRunner:
             cmd.extend(codex_cfg.extra_args)
 
         env = codex_env(codex_cfg, isolation, temp_dir)
+        if extra_env:
+            env.update(extra_env)
 
         start_time = time.perf_counter()
         try:
@@ -1284,6 +1331,7 @@ class AgentRunner:
                 cmd, cwd, env, timeout, isolation=isolation, container_image=container_image,
                 temp_dir=temp_dir, read_paths=codex_cfg.read_paths,
                 protected_paths=protected_paths, conversation=conversation,
+                forward_env=list((extra_env or {}).keys()),
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
@@ -1313,6 +1361,7 @@ class AgentRunner:
         temp_dir: Optional[Path] = None,
         skill_names: Optional[list[str]] = None,
         session_id: Optional[str] = None,
+        extra_env: Optional[dict[str, str]] = None,
     ) -> RunResult:
         bin_path = opencode_cfg.bin_path or self.opencode_bin
         target_model = model
@@ -1345,6 +1394,8 @@ class AgentRunner:
             env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] = "true"
             env["OPENCODE_DISABLE_DEFAULT_PLUGINS"] = "true"
             env["OPENCODE_DISABLE_AUTOUPDATE"] = "true"
+        if extra_env:
+            env.update(extra_env)
 
         start_time = time.perf_counter()
         try:
@@ -1356,6 +1407,7 @@ class AgentRunner:
                 isolation=isolation,
                 container_image=container_image,
                 temp_dir=temp_dir,
+                forward_env=list((extra_env or {}).keys()),
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))
@@ -1432,6 +1484,7 @@ class AgentRunner:
         container_image: Optional[str] = None,
         temp_dir: Optional[Path] = None,
         skill_names: Optional[list[str]] = None,
+        extra_env: Optional[dict[str, str]] = None,
     ) -> RunResult:
         bin_path = antigravity_cfg.bin_path or self.antigravity_bin
         prompts = prompt if isinstance(prompt, list) else [prompt]
@@ -1455,16 +1508,22 @@ class AgentRunner:
         if antigravity_cfg.extra_args:
             cmd.extend(antigravity_cfg.extra_args)
 
+        env = clean_parent_env()
+        if extra_env:
+            env.update(extra_env)
+
         start_time = time.perf_counter()
         try:
             execution = self._exec(
                 cmd,
                 cwd,
-                clean_parent_env(),
+                env,
                 timeout,
                 isolation=isolation,
                 container_image=container_image,
-                temp_dir=temp_dir, conversation=conversation,
+                temp_dir=temp_dir,
+                conversation=conversation,
+                forward_env=list((extra_env or {}).keys()),
             )
         except Exception as exc:
             return _failed_result(prompt, exc, round(time.perf_counter() - start_time, 2))

@@ -1173,6 +1173,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         if getattr(args, "seed", None) is not None:
             validate_integer(args.seed, "seed")
             exp_config.seed = args.seed
+        if getattr(args, "max_turns", None) is not None:
+            validate_integer(args.max_turns, "max_turns", positive=True)
+            exp_config.max_turns = args.max_turns
+            exp_config.claude.max_turns = args.max_turns
+        if getattr(args, "max_tool_budget", None) is not None:
+            validate_integer(args.max_tool_budget, "max_tool_budget", positive=True)
+            exp_config.max_tool_budget = args.max_tool_budget
+        if getattr(args, "terminate_on_ceiling", False):
+            exp_config.terminate_on_ceiling = True
     except ValueError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
@@ -1235,12 +1244,23 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"Experiment error: {exc}", file=sys.stderr)
         return 1
 
-    print("\n" + _format_results(results))
-    _print_report_paths(results)
+    if getattr(args, "json", False):
+        print(json.dumps(results, indent=2))
+    else:
+        print("\n" + _format_results(results))
+        _print_report_paths(results)
     if results.get("valid") is False:
-        print("\nINVALID: no clean baseline (control contamination).", file=sys.stderr)
+        if not getattr(args, "json", False):
+            print("\nINVALID: no clean baseline (control contamination).", file=sys.stderr)
         return 2
-    return 130 if results.get("interrupted") else 0
+    if results.get("interrupted"):
+        return 130
+    if getattr(args, "ci", False):
+        if results.get("terminated_on_ceiling"):
+            return 3
+        if results.get("adoption_failed"):
+            return 4
+    return 0
 
 
 def _latest_run_dir(runs_parent: Path) -> Optional[Path]:
@@ -1281,6 +1301,13 @@ def cmd_results(args: argparse.Namespace) -> int:
 
     if getattr(args, "json", False):
         print(json.dumps(results, indent=2))
+        if getattr(args, "ci", False):
+            if results.get("valid") is False:
+                return 2
+            if results.get("terminated_on_ceiling"):
+                return 3
+            if results.get("adoption_failed"):
+                return 4
         return 0
     if getattr(args, "markdown", False):
         md = run_dir / "report.md"
@@ -1296,6 +1323,13 @@ def cmd_results(args: argparse.Namespace) -> int:
 
     print(_format_results(results))
     _print_report_paths(results)
+    if getattr(args, "ci", False):
+        if results.get("valid") is False:
+            return 2
+        if results.get("terminated_on_ceiling"):
+            return 3
+        if results.get("adoption_failed"):
+            return 4
     return 0
 
 
@@ -1466,6 +1500,13 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
 
     if getattr(args, "json", False):
         print(json.dumps(report, indent=2))
+        if getattr(args, "ci", False) and (
+            report.get("adoption_failed")
+            or report.get("regressions")
+            or report.get("agent_failures")
+            or report.get("grader_failures")
+        ):
+            return 1
         return 0
 
     print(f"Diagnosis for {report.get('run_dir')} ({report.get('total_pairs')} pairs):")
@@ -1489,6 +1530,13 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     for rec in report.get("recommendations", []):
         print(f"  • {rec}")
 
+    if getattr(args, "ci", False) and (
+        report.get("adoption_failed")
+        or report.get("regressions")
+        or report.get("agent_failures")
+        or report.get("grader_failures")
+    ):
+        return 1
     return 0
 
 
@@ -1719,6 +1767,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--scan-home", action="store_true",
         help="Also scan HOME for possible skill copies (bounded, advisory; local runs only)",
     )
+    check_parser.add_argument("--ci", action="store_true", help="Enable strict CI exit checks")
     check_parser.set_defaults(func=cmd_check)
 
     run_parser = subparsers.add_parser("run", help="Run both arms of the experiment")
@@ -1757,6 +1806,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume-from", help="Resume a specific run directory (strict hash check)"
     )
     run_parser.add_argument("--seed", type=int, help="Override the randomization seed")
+    run_parser.add_argument("--max-turns", type=int, help="Override max turns per session")
+    run_parser.add_argument(
+        "--max-tool-budget", type=int, help="Fail sessions exceeding this tool-call count"
+    )
+    run_parser.add_argument(
+        "--terminate-on-ceiling",
+        action="store_true",
+        help="Skip remaining repetitions when a task scores 100% in control",
+    )
+    run_parser.add_argument("--json", action="store_true", help="Output results as JSON")
+    run_parser.add_argument(
+        "--ci",
+        action="store_true",
+        help="Exit non-zero on invalid baseline, ceiling termination, or adoption failure",
+    )
     run_parser.set_defaults(func=cmd_run)
 
     results_parser = subparsers.add_parser(
@@ -1767,6 +1831,11 @@ def build_parser() -> argparse.ArgumentParser:
     results_parser.add_argument("--json", action="store_true", help="Output results as JSON")
     results_parser.add_argument(
         "--markdown", action="store_true", help="Print the Markdown report (for PRs)"
+    )
+    results_parser.add_argument(
+        "--ci",
+        action="store_true",
+        help="Exit non-zero on invalid baseline, ceiling termination, or adoption failure",
     )
     results_parser.set_defaults(func=cmd_results)
 
@@ -1804,6 +1873,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Reject incompatible experiments (different models/tasks/hashes) instead of warning",
     )
+    compare_parser.add_argument("--ci", action="store_true", help="Enable strict CI exit checks")
     compare_parser.set_defaults(func=cmd_compare)
 
     lint_parser = subparsers.add_parser(
@@ -1819,6 +1889,11 @@ def build_parser() -> argparse.ArgumentParser:
     diagnose_parser.add_argument("run_dir", nargs="?", help="Path to run directory or results.json")
     diagnose_parser.add_argument("--config", "-c", help="Look for runs next to this config")
     diagnose_parser.add_argument("--json", action="store_true", help="Output diagnosis as JSON")
+    diagnose_parser.add_argument(
+        "--ci",
+        action="store_true",
+        help="Exit non-zero when adoption failures, regressions, or session/grader errors occur",
+    )
     diagnose_parser.set_defaults(func=cmd_diagnose)
 
     return parser

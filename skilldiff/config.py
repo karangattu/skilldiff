@@ -40,6 +40,10 @@ EXPERIMENT_KEYS = frozenset(
         "cost_basis",
         "isolation",
         "container_image",
+        "env",
+        "max_turns",
+        "max_tool_budget",
+        "terminate_on_ceiling",
     }
 )
 CLAUDE_KEYS = frozenset(
@@ -108,6 +112,7 @@ TASK_KEYS = frozenset(
         "forbidden_paths",
         "grader_ignore",
         "fixtures",
+        "env",
         "runtime_probe",
     }
 )
@@ -176,6 +181,20 @@ def validate_enum(value: Any, key: str, choices: set[str], *, nullable: bool = F
         raise ValueError(f"{key} must be {expected}")
 
 
+def validate_env_mapping(value: Any, key: str) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} must be a mapping of environment variable names to string values")
+    out: dict[str, str] = {}
+    for k, v in value.items():
+        validate_string(k, f"{key} key")
+        if v is None or isinstance(v, (dict, list, bool)):
+            raise ValueError(f"{key}.{k} must be a string or number")
+        out[str(k).strip()] = str(v)
+    return out
+
+
 def validate_experiment_values(data: dict[str, Any]) -> None:
     """Reject coercions that silently alter safety, budgets, or execution."""
     if "name" in data:
@@ -197,6 +216,14 @@ def validate_experiment_values(data: dict[str, Any]) -> None:
         validate_boolean(data["arm_parallel"], "arm_parallel")
     if "reflink" in data:
         validate_boolean(data["reflink"], "reflink")
+    if "terminate_on_ceiling" in data:
+        validate_boolean(data["terminate_on_ceiling"], "terminate_on_ceiling")
+    if "max_turns" in data and data["max_turns"] is not None:
+        validate_integer(data["max_turns"], "max_turns", positive=True)
+    if "max_tool_budget" in data and data["max_tool_budget"] is not None:
+        validate_integer(data["max_tool_budget"], "max_tool_budget", positive=True)
+    if "env" in data:
+        validate_env_mapping(data["env"], "env")
     if "timeout_seconds" in data and data["timeout_seconds"] is not None:
         validate_number(data["timeout_seconds"], "timeout_seconds", positive=True)
     if "isolation" in data:
@@ -373,6 +400,7 @@ class TaskConfig:
     # Extra fixtures mounted into the workspace for this task (for example a
     # broken app used to diagnose a PR that only changes skills/docs).
     fixtures: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
     prompts: list[str] = field(default_factory=list)
     runtime_probe: Optional[str] = None
 
@@ -444,6 +472,10 @@ class ExperimentConfig:
     isolation: str = "local"
     container_image: Optional[str] = None
     cost_basis: str = "harness"
+    env: dict[str, str] = field(default_factory=dict)
+    max_turns: Optional[int] = None
+    max_tool_budget: Optional[int] = None
+    terminate_on_ceiling: bool = False
 
     @property
     def is_skill_comparison(self) -> bool:
@@ -715,8 +747,13 @@ def load_task(task_path: Path) -> TaskConfig:
     forbidden_paths = data.get("forbidden_paths", [])
     validate_string_list(allowed_paths, f"{context}.allowed_paths")
     validate_string_list(forbidden_paths, f"{context}.forbidden_paths")
-    grader_ignore = data.get("grader_ignore", [])
-    validate_string_list(grader_ignore, f"{context}.grader_ignore")
+    raw_grader_ignore = data.get("grader_ignore", [])
+    if isinstance(raw_grader_ignore, str):
+        validate_string(raw_grader_ignore, f"{context}.grader_ignore")
+        grader_ignore = [raw_grader_ignore.strip()]
+    else:
+        grader_ignore = raw_grader_ignore
+        validate_string_list(grader_ignore, f"{context}.grader_ignore")
     expanded_grader_ignore: list[str] = []
     for item in grader_ignore:
         if item in GRADER_IGNORE_PRESETS:
@@ -727,6 +764,7 @@ def load_task(task_path: Path) -> TaskConfig:
         validate_string_list(data["fixtures"], f"{context}.fixtures")
     fixtures = data.get("fixtures", [])
     validate_string_list(fixtures, f"{context}.fixtures")
+    task_env = validate_env_mapping(data.get("env"), f"{context}.env")
     if "repo" in data:
         validate_string(data["repo"], f"{context}.repo", nullable=True)
 
@@ -767,6 +805,7 @@ def load_task(task_path: Path) -> TaskConfig:
         forbidden_paths=forbidden_paths,
         grader_ignore=expanded_grader_ignore,
         fixtures=list(fixtures or []),
+        env=task_env,
         prompts=prompts,
         runtime_probe=data.get("runtime_probe"),
     )
@@ -1011,6 +1050,12 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     if isolation == "macos" and harness not in {"codex", "claude"}:
         raise ValueError("isolation: macos supports the Codex and Claude harnesses only")
     container_image = data.get("container_image")
+    exp_env = validate_env_mapping(data.get("env"), "env")
+    max_turns = data.get("max_turns")
+    if max_turns is not None:
+        claude_cfg.max_turns = int(max_turns)
+    max_tool_budget = data.get("max_tool_budget")
+    terminate_on_ceiling = bool(data.get("terminate_on_ceiling", False))
 
     exp_config = ExperimentConfig(
         name=name,
@@ -1040,6 +1085,10 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         cost_basis=cost_basis,
         isolation=isolation,
         container_image=container_image,
+        env=exp_env,
+        max_turns=int(max_turns) if max_turns is not None else None,
+        max_tool_budget=int(max_tool_budget) if max_tool_budget is not None else None,
+        terminate_on_ceiling=terminate_on_ceiling,
     )
 
     # Preset consistency: each preset configures the shared runner with clear

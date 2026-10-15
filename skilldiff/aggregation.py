@@ -502,6 +502,28 @@ def aggregate_results(
         base_runs, control_runs, treatment_runs
     )
 
+    non_discriminating_tasks: list[str] = []
+    for t in tasks:
+        t_scores = [
+            float(r["score"])
+            for r in control_runs
+            if r.get("task_id") == t.id
+            and r.get("score") is not None
+            and r.get("grade_status") not in ("ungraded", "timeout", "error")
+        ]
+        if t_scores and all(s >= 1.0 for s in t_scores):
+            non_discriminating_tasks.append(t.id)
+
+    known_adoption = [
+        r for r in raw_treatment_runs if r.get("skill_invoked") is not None
+    ]
+    used_adoption = sum(1 for r in known_adoption if r.get("skill_invoked"))
+    adoption_failed = bool(
+        not comparison
+        and known_adoption
+        and (used_adoption / len(known_adoption)) < (2.0 / 3.0)
+    )
+
     return {
         "name": config.name,
         "skilldiff_version": __version__,
@@ -525,6 +547,8 @@ def aggregate_results(
         "seed": seed,
         "failure_policy": dict(getattr(config, "failure_policy", {}) or {}),
         "valid": valid,
+        "adoption_failed": adoption_failed,
+        "non_discriminating_tasks": non_discriminating_tasks,
         "interrupted": interrupted,
         "incomplete_runs": incomplete_runs,
         "warnings": all_warnings,
