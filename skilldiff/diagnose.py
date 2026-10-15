@@ -386,6 +386,7 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         "unmatched_runs": unmatched_runs,
         "unknown_adoption_runs": unknown_adoption_runs,
         "unknown_token_pairs": unknown_token_pairs,
+        "adoption_failed": bool(under_triggered),
         "under_triggered": under_triggered,
         "over_triggered": over_triggered,
         "regressions": regressions,
