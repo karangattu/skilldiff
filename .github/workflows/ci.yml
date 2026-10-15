@@ -80,9 +80,10 @@ jobs:
               echo "$RUNNER_TEMP/agy" >> "$GITHUB_PATH"
               ;;
             opencode)
-              curl -fsSL https://opencode.ai/v2/install -o "$RUNNER_TEMP/opencode-install.sh"
-              bash "$RUNNER_TEMP/opencode-install.sh"
-              echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+              mkdir -p "$RUNNER_TEMP/opencode"
+              curl -fsSL https://opencode.ai/update/api/latest/cli/opencode/opencode-linux-x64-baseline.tar.gz -o "$RUNNER_TEMP/opencode.tar.gz"
+              tar -xzf "$RUNNER_TEMP/opencode.tar.gz" -C "$RUNNER_TEMP/opencode"
+              echo "$RUNNER_TEMP/opencode" >> "$GITHUB_PATH"
               ;;
           esac
       - name: Check native commands, formats, and Codex discovery without model calls
