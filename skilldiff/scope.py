@@ -7,6 +7,28 @@ import re
 BLAST_RADIUS_PREFIX = "Blast radius violation"
 
 
+GENERATED_PATH_PREFIXES = (
+    ".venv", "node_modules", ".pytest_cache", ".uv-cache",
+    "__pycache__", ".cache", "dist", "build",
+)
+
+
+def normalize_changed_paths(paths: list[str], grader_ignore: list[str] | None = None) -> list[str]:
+    """Normalize changed paths for reports: drop ignores and collapse generated dirs."""
+    result: list[str] = []
+    ignores = grader_ignore or []
+    for path in paths:
+        if path_matches(path, ignores):
+            continue
+        stripped = path.replace("\\", "/").lstrip("./")
+        top = stripped.split("/", 1)[0]
+        if top in GENERATED_PATH_PREFIXES:
+            result.append(f"<generated:{top}>")
+        else:
+            result.append(stripped)
+    return sorted(set(result))
+
+
 def is_blast_violation(feedback: object) -> bool:
     """True when a grade's feedback is a blast-radius violation, not a grader failure."""
     return isinstance(feedback, str) and feedback.startswith(BLAST_RADIUS_PREFIX)
