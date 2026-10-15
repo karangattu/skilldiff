@@ -1,0 +1,21 @@
+id: blocking-work
+category: intended
+split: held-out
+repo: ../../fixtures/blocking-work
+allowed_paths:
+  - app.py
+grader_ignore: python-tooling
+validation:
+  good:
+    - ../../solutions/blocking-work/good-1
+    - ../../solutions/blocking-work/good-2
+  broken:
+    - ../../solutions/blocking-work/broken
+prompt: |
+  In `app.py`, both `total_out` and `average_out` call `compute_metrics(input.n())`
+  directly, running the expensive calculation twice on every input change.
+  Refactor `app.py` so the reactive calculation is shared and computed only once
+  per input update.
+grader:
+  type: command
+  command: python3 "$SKILLDIFF_TASK_DIR/../../graders/grade_blocking_work.py"

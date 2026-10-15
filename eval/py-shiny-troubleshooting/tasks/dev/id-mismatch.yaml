@@ -1,0 +1,19 @@
+id: id-mismatch
+category: intended
+split: dev
+repo: ../../fixtures/id-mismatch
+allowed_paths:
+  - app.py
+grader_ignore: python-tooling
+validation:
+  good:
+    - ../../solutions/id-mismatch/good-1
+    - ../../solutions/id-mismatch/good-2
+  broken:
+    - ../../solutions/id-mismatch/broken
+prompt: |
+  The Shiny app in `app.py` renders an empty summary and crashes when the region
+  selector changes. Diagnose and fix the ID mismatches in `app.py`.
+grader:
+  type: command
+  command: python3 "$SKILLDIFF_TASK_DIR/../../graders/grade_id_mismatch.py"

@@ -1,0 +1,20 @@
+id: stale-state
+category: intended
+split: dev
+repo: ../../fixtures/stale-state
+allowed_paths:
+  - app.py
+grader_ignore: python-tooling
+validation:
+  good:
+    - ../../solutions/stale-state/good-1
+    - ../../solutions/stale-state/good-2
+  broken:
+    - ../../solutions/stale-state/broken
+prompt: |
+  Users report that clicking the "Add item" button in `app.py` never updates the
+  displayed item count or list, even though the click handler runs. Fix the bug
+  in `app.py` without changing the input or output IDs.
+grader:
+  type: command
+  command: python3 "$SKILLDIFF_TASK_DIR/../../graders/grade_stale_state.py"

@@ -1,0 +1,20 @@
+id: express-core-mix
+category: intended
+split: held-out
+repo: ../../fixtures/express-core-mix
+allowed_paths:
+  - app.py
+grader_ignore: python-tooling
+validation:
+  good:
+    - ../../solutions/express-core-mix/good-1
+    - ../../solutions/express-core-mix/good-2
+  broken:
+    - ../../solutions/express-core-mix/broken
+prompt: |
+  `app.py` mixes `shiny.express` with `shiny.App(app_ui, server)` and fails at
+  startup. Convert `app.py` into a consistent Shiny Core application that keeps
+  the `greeting` output working.
+grader:
+  type: command
+  command: python3 "$SKILLDIFF_TASK_DIR/../../graders/grade_express_core_mix.py"

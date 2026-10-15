@@ -1,0 +1,32 @@
+name: py-shiny-troubleshooting
+
+preset: skill
+skill: ./skills/shiny-doctor
+
+harness: claude
+
+models:
+  - sonnet
+
+tasks:
+  - ./tasks/dev/*.yaml
+  - ./tasks/heldout/*.yaml
+
+runs: 3
+timeout_seconds: 900
+parallel: 1
+max_turns: 20
+max_tool_budget: 30
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+claude:
+  auth: subscription
+  effort: high
+  max_turns: 20
+  max_budget_usd: 1.50
+  permission_mode: acceptEdits
+  isolate: true
+  sandbox: true
+  allowed_domains: []

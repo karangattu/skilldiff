@@ -1,0 +1,21 @@
+id: module-namespace-collision
+category: intended
+split: held-out
+repo: ../../fixtures/module-namespace-collision
+allowed_paths:
+  - app.py
+grader_ignore: python-tooling
+validation:
+  good:
+    - ../../solutions/module-namespace-collision/good-1
+    - ../../solutions/module-namespace-collision/good-2
+  broken:
+    - ../../solutions/module-namespace-collision/broken
+prompt: |
+  `app.py` renders two counter cards ("alpha" and "beta"), but clicking either
+  button collides because their IDs are not namespaced with Shiny modules.
+  Refactor `app.py` to use `@module.ui` and `@module.server` so both counters
+  work independently.
+grader:
+  type: command
+  command: python3 "$SKILLDIFF_TASK_DIR/../../graders/grade_module_namespace_collision.py"
