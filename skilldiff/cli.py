@@ -1100,10 +1100,16 @@ def cmd_check(args: argparse.Namespace) -> int:
                 f"{last or grade.grade_status}"
             )
         elif grade.score is not None and grade.score >= 1.0:
-            warn(
-                f"task {task.id}: the untouched fixture already scores 100%, so this "
-                "task cannot show a difference"
-            )
+            if getattr(args, "fail_on_ceiling", False):
+                fail(
+                    f"task {task.id}: the untouched fixture already scores 100%, so this "
+                    "task cannot show a difference"
+                )
+            else:
+                warn(
+                    f"task {task.id}: the untouched fixture already scores 100%, so this "
+                    "task cannot show a difference"
+                )
         elif grade.score is None:
             warn(f"task {task.id}: grader returned {grade.grade_status}; scores will be N/A")
         else:
@@ -1703,6 +1709,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check_parser.add_argument(
         "--no-grade", action="store_true", help="Skip running graders on the untouched fixtures"
+    )
+    check_parser.add_argument(
+        "--fail-on-ceiling",
+        action="store_true",
+        help="Fail tasks whose untouched fixture already scores 100%",
     )
     check_parser.add_argument(
         "--scan-home", action="store_true",

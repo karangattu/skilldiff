@@ -197,6 +197,12 @@ GIT_DIFF_EXCLUDES = [
     ":(exclude).agents",
     ":(exclude).agent",
     ":(exclude).gemini",
+    ":(exclude)**/.venv",
+    ":(exclude)**/node_modules",
+    ":(exclude)**/.pytest_cache",
+    ":(exclude)**/.uv-cache",
+    ":(exclude)**/__pycache__",
+    ":(exclude)**/.cache",
 ]
 
 
