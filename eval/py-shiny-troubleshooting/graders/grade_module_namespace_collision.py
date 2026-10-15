@@ -10,7 +10,11 @@ has_module_server = False
 for node in ast.walk(tree):
     if isinstance(node, ast.FunctionDef):
         for dec in node.decorator_list:
-            if isinstance(dec, ast.Attribute) and isinstance(dec.value, ast.Name) and dec.value.id == "module":
+            if (
+                isinstance(dec, ast.Attribute)
+                and isinstance(dec.value, ast.Name)
+                and dec.value.id == "module"
+            ):
                 if dec.attr == "ui":
                     has_module_ui = True
                 elif dec.attr == "server":

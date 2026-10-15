@@ -1,5 +1,5 @@
 from shiny import App
-from shiny.express import input, render, ui
+from shiny.express import render, ui
 
 ui.input_text("name", "Name", value="World")
 

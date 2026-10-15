@@ -12,9 +12,17 @@ server_inputs = set()
 
 for node in ast.walk(tree):
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-        if node.func.attr.startswith("input_") and node.args and isinstance(node.args[0], ast.Constant):
+        if (
+            node.func.attr.startswith("input_")
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
             ui_inputs.add(str(node.args[0].value))
-        elif node.func.attr.startswith("output_") and node.args and isinstance(node.args[0], ast.Constant):
+        elif (
+            node.func.attr.startswith("output_")
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
             ui_outputs.add(str(node.args[0].value))
         elif isinstance(node.func.value, ast.Name) and node.func.value.id == "input":
             server_inputs.add(node.func.attr)

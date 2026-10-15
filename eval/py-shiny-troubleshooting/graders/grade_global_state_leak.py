@@ -10,7 +10,9 @@ module_mutable = any(
     and isinstance(node.value, (ast.List, ast.Dict, ast.Set))
     for node in tree.body
 )
-server_fn = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "server"), None)
+server_fn = next(
+    (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "server"), None
+)
 has_session_reactive = False
 if server_fn:
     has_session_reactive = any(

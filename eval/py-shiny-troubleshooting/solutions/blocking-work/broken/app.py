@@ -1,5 +1,6 @@
 from shiny import App, render, ui
 
+
 def compute_metrics(n: int) -> list[int]:
     return [i * i for i in range(max(1, n))]
 
