@@ -306,6 +306,6 @@ uv run --frozen --extra dev ruff check skilldiff tests
 
 These commands select the project environment without relying on shell activation.
 
-See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.20.0.
+See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.21.0.
 
 </details>

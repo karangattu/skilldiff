@@ -6,6 +6,21 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-15
+
+### Added
+
+- Task-level `fixtures: [...]` support in PR mode to overlay broken apps or diagnostic files into each arm's workspace before the initial commit.
+- Built-in `grader_ignore: python-tooling` preset expansion and automatic exclusion of Python tooling noise (`.venv`, `.pytest_cache`, `.uv-cache`, `__pycache__`, `*.pyc`, `uv.lock`) from blast-radius failures.
+- Default generated-directory exclusions in workspace diffs and `normalize_changed_paths` (`files_changed_normalized`) in run records and reports.
+- Ceiling detection guards: `skilldiff check --fail-on-ceiling`, `terminate_on_ceiling: true` / `--terminate-on-ceiling`, and `non_discriminating_tasks` in `results.json`.
+- First-class adoption failure reporting (`adoption_failed` in `results.json` and `skilldiff diagnose`, adoption failure counts in **Evaluation completeness**, and dev-split tuning guidance when treatment skill use is below two-thirds).
+- Warm environment support via `env:` in experiment and task configurations, forwarded into agent sessions, runtime probes, and graders.
+- Per-session turn and tool-call budget limits (`max_turns` / `--max-turns` and `max_tool_budget` / `--max-tool-budget`).
+- CI and JSON output flags (`--ci` and `--json`) across `run`, `results`, `check`, `diagnose`, and `compare`.
+- Sandbox container image definition (`docker/Dockerfile`, `ghcr.io/karangattu/skilldiff-sandbox:latest`) with Python, `uv`, Node/Playwright, and `/opt/venv` outside `/workspace`.
+- Reusable 6-task Python Shiny troubleshooting benchmark pack under `eval/py-shiny-troubleshooting/` with broken fixtures, two known-good solutions, a known-bad solution, and deterministic AST graders per task.
+
 ## [0.20.0] - 2026-10-14
 
 ### Added
