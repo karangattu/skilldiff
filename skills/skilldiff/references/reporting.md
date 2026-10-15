@@ -64,8 +64,15 @@ can add a labelled estimate to a summary, but must not change its recorded
 verdict or masquerade as pre-registered pricing.
 
 Discovery preflight establishes skill availability, not adoption. Report
-"Skill loaded" from transcript evidence. Incomplete trial telemetry and diffs
-are audit evidence; incomplete pairs do not enter this table or the decision.
+"Skill loaded" from transcript evidence. When fewer than two-thirds of treatment
+runs load the skill, `results.json` and `diagnose` set `adoption_failed: true`
+and **Evaluation completeness** counts adoption failures. Tasks where every
+control run scores 100% are recorded in `non_discriminating_tasks`. Run records
+also include `files_changed_normalized` (with `grader_ignore` paths removed and
+generated directories such as `.venv` and `node_modules` collapsed) and Run
+details shows status, score, and checks before cost, time, turns, and tokens.
+Incomplete trial telemetry and diffs are audit evidence; incomplete pairs do not
+enter this table or the decision.
 
 ## Closing decision
 

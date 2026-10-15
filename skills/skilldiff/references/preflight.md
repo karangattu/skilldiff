@@ -39,10 +39,18 @@ No matches cannot certify a clean host. Host checks are skipped for agent
 containers, whose image must also be clean.
 
 Container execution needs a locally available image containing the harness CLI,
-graders, and dependencies. `bin_path` refers to an executable inside that image.
-Claude and Codex container runs require API authentication; host login directories
-are not mounted. Run `skilldiff check` first. Resume also requires the same
-isolation mode and immutable container image identity.
+graders, and dependencies (defaults to `ghcr.io/karangattu/skilldiff-sandbox:latest`,
+built from `docker/Dockerfile` with Python, `uv`, Node, and `/opt/venv` outside
+`/workspace`, or falls back to `python:3.11`). `bin_path` refers to an executable
+inside that image. Claude and Codex container runs require API authentication;
+host login directories are not mounted. Run `skilldiff check` first (pass
+`--fail-on-ceiling` to fail tasks whose untouched fixture already scores 100%).
+During runs, `--terminate-on-ceiling` (or `terminate_on_ceiling: true`) skips
+remaining repetitions for tasks where control scores 100%, `--max-turns` and
+`--max-tool-budget` cap per-session turns and tool calls, `env:` forwards warm
+environment variables (`PYTHONPATH`, `PYTHONDONTWRITEBYTECODE`) into agents,
+probes, and graders, and `--ci` enforces strict exit codes. Resume also
+requires the same isolation mode and immutable container image identity.
 
 ## Trial evidence and cost decisions
 

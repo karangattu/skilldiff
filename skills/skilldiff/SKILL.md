@@ -79,7 +79,9 @@ Claude, `.agents/skills` for Codex, `.opencode/skills`
 for OpenCode, `.agents/skills` for Antigravity).
 
 Use [examples/csv-totals](https://github.com/karangattu/skilldiff/tree/main/examples/csv-totals)
-for dev and held-out tasks, fixtures, a grader, and a sample report.
+for dev and held-out tasks, fixtures, a grader, and a sample report, or
+[eval/py-shiny-troubleshooting](https://github.com/karangattu/skilldiff/tree/main/eval/py-shiny-troubleshooting)
+for a reusable 6-task Python Shiny diagnostic benchmark pack.
 
 ## 3. Design tasks (the important part)
 
@@ -116,54 +118,32 @@ Other rules:
 - **Don't mention the skill in the prompt.** Write the request the way a real user
   would write it. Adoption is part of what you measure.
 - **Contain the blast radius.** Set `allowed_paths` (and optionally
-  `forbidden_paths`) on each task. An edit outside scope is then reported as an
-  error — `N/A (blast radius)` with the path named — never as a wrong answer.
-  Patterns match at any depth, so `data/*` also matches a saved copy under
-  `outputs/measurements/…/data/`. If the skill under test asks agents to save
-  measurements or copies, add `grader_ignore: ["outputs/*"]` (or preset
-  `grader_ignore: python-tooling`) to the task: those paths are hidden from the
-  grader and skipped by the scope check. In PR mode, tasks can also overlay extra
-  workspace files via `fixtures: ["../fixtures/broken-app"]`. `check` warns
-  when a forbidden pattern would match nested copies, and `--fail-on-ceiling`
-  fails tasks whose untouched fixture already scores 100%. SkillDiff appends the same
-  constraints to both arms' prompts and rejects known-good solutions that conflict
-  with them. Fix task scope before accepting grader validation.
-- **Script multi-turn tasks with `prompts:`.** A list of prompts runs in order
-  in one conversation and workspace, with one overall deadline. Stop on any failed
-  turn. Claude uses streaming input without session persistence; Codex uses one
-  ephemeral app-server thread; AGY uses streaming input; OpenCode V2 uses a unique
-  explicit session ID and standalone server. Use final cumulative counters once
-  and sum only per-turn counters.
-- **Keep fixtures small and self-contained.** The fixture is copied into a fresh
-  workspace for every run, without `.git` history. Escaping symlinks are rejected.
-  Put graders in `graders/`, outside the fixture, and call them through
-  `$SKILLDIFF_TASK_DIR`. Outside the fixture is not isolation by itself: confine
-  agents with an enforced read sandbox or container so they cannot read parent paths.
-  Each agent run has its own temporary directory outside the workspace;
-  `TMPDIR`, `TMP`, and `TEMP` point there, scripted turns share it, and it is
-  cleaned up after the run. This reduces accidental sharing, but does not block
-  reads of sibling sessions or host files.
-- **Grade outcomes deterministically.** Run tests or parse files with `ast` or regex.
-  Print `{"score": 0.0-1.0, "success": bool, "checks": [...]}` as the last line.
-  Accept every valid solution, not only the one that the skill suggests. A grader that
-  rejects an equivalent API call creates a false "improvement". Parse code instead of
-  searching raw text: a comment such as `# instead of renderUI()` fails a text search
-  on a correct solution, and an alias (`result = task.result`) fails a search for a
-  literal call. Print free-text diagnostics under `notes` (string, list, or mapping)
-  rather than as fake checks; notes are shown in the report but never scored.
-- **Test the grader three ways.** The untouched fixture must score below 100%, a
-  known-good solution must score 100%, and deliberately broken solutions must fail.
-  Add them as `validation: {good: ..., broken: [...]}` in the task file so `check`
-  grades all three. `good` takes a list: give two differently shaped valid solutions
-  (another API call, an alias, a different structure) so `check` can tell a strict
-  grader from a correct one; it warns when there is only one. A grader that fails
-  everything is broken, not strict. Crashing graders report `error` (N/A), never a
-  plain zero.
-  A broken fixture that crashes or times out does not validate the grader: fix
-  the infrastructure until it returns a graded failing result. `check` also flags
-  deprecated Python APIs in fixtures and graders, and warns when a Python fixture has
-  an empty `allowed_domains`. For an LLM/rubric grader, supply a judge `command:`;
-  SkillDiff has no built-in judge.
+  `forbidden_paths`). Out-of-scope edits report `N/A (blast radius)` with the
+  path named, never `0%`. Patterns match at any depth, so `data/*` matches a copy
+  under `outputs/measurements/…/data/`. Add `grader_ignore: ["outputs/*"]` or
+  `grader_ignore: python-tooling` to hide audit or tool files from the grader and
+  scope check. In PR mode, overlay extra files via `fixtures: ["../fixtures/app"]`.
+  `check --fail-on-ceiling` fails tasks whose untouched fixture scores 100%.
+  SkillDiff appends constraints to both arms' prompts and rejects known-good
+  solutions that conflict with them.
+- **Script multi-turn tasks with `prompts:`.** Prompts run in order in one
+  conversation and workspace under one deadline, stopping on any failed turn.
+  Claude and AGY use streaming input; Codex uses an ephemeral app-server thread;
+  OpenCode V2 uses an explicit session ID with `--standalone`. Sum only per-turn
+  counters and take cumulative counters once.
+- **Keep fixtures small and self-contained.** Fixtures are copied fresh without
+  `.git` history and escaping symlinks are rejected. Keep graders in `graders/`
+  (`$SKILLDIFF_TASK_DIR`) and use an enforced read sandbox or container to block
+  parent reads. Each session gets a private `TMPDIR`/`TMP`/`TEMP` outside the
+  workspace, shared across scripted turns and cleaned up afterward.
+- **Grade outcomes deterministically.** Run tests or parse with `ast`/regex and
+  print `{"score": 0.0-1.0, "success": bool, "checks": [...]}` last. Accept all
+  valid solutions (aliases, equivalent APIs) and parse code rather than raw text
+  comments. Put ungraded diagnostics under `notes`.
+- **Test the grader three ways.** Untouched fixtures must score `<100%`,
+  known-good solutions `100%`, and broken solutions must fail cleanly (not crash
+  or time out). Set `validation: {good: [...], broken: [...]}` with at least two
+  differently shaped `good` solutions. For LLM/rubric graders, supply `command:`.
 
 Graders run with the workspace as the working directory. They also get these
 environment variables: `SKILLDIFF_RESPONSE_FILE` (the agent's final message),
@@ -182,7 +162,7 @@ them and rerun before interpreting scores. For defaults and read-isolation limit
 ## 4. Validate, then smoke-test
 
 ```bash
-skilldiff check -c skill-eval/skilldiff.yaml
+skilldiff check -c skill-eval/skilldiff.yaml --fail-on-ceiling
 ```
 
 Codex discovery is checked before paid sessions. For native macOS isolation,
@@ -202,8 +182,11 @@ certify a clean host.
 Then run one pair per development task only:
 
 ```bash
-skilldiff run -c skill-eval/skilldiff.yaml --split dev --runs 1
+skilldiff run -c skill-eval/skilldiff.yaml --split dev --runs 1 --terminate-on-ceiling
 ```
+
+Use `--terminate-on-ceiling`, `--max-turns`, `--max-tool-budget`, and `env:` for
+fast smoke runs; see [preflight safeguards](references/preflight.md).
 
 Inspect and fix dev results only; add dev tasks if absent. Start the full
 evaluation without `--split dev` or `--resume`. Never tune against held-out results.
@@ -275,6 +258,10 @@ against the report before you write your summary. Report these results:
    evidence controls it when present, and contaminated controls cannot ship.
 2. **Adoption.** Say how many skill runs actually used the skill. Low adoption usually
    means that the skill's `description` doesn't match how users ask for the task.
+   When fewer than two-thirds of treatment runs invoke the skill, `results.json` and
+   `skilldiff diagnose` set `adoption_failed: true`, **Evaluation completeness**
+   counts adoption failures, and the report suggests tuning the description on dev
+   tasks first (`skilldiff run --split dev --runs 1`).
 3. **Efficiency.** Give the cost, time, and token changes, and say which ones are
    inside the noise. On subscription auth the real spend is $0 at the margin, so
    the API-equivalent cost is the comparison that matters. The report ends with
@@ -298,8 +285,11 @@ against the report before you write your summary. Report these results:
    repetitions, depending on the result.
 
 Don't overstate the result. "Faster in 3 runs" is an anecdote, not a finding. Useful
-commands: `skilldiff results --markdown` prints a Markdown summary for a PR, and
-`skilldiff report` rebuilds the reports for an old run.
+commands: `skilldiff results --markdown` prints a Markdown summary for a PR,
+`skilldiff results --json` and `skilldiff diagnose --json` emit structured JSON
+for dashboards, `--ci` enforces non-zero exit codes on invalid baselines, ceiling
+termination, or adoption failures, and `skilldiff report` rebuilds the reports
+for an old run.
 
 **Before you trust a surprising per-run difference, read the diff.** Open the
 `diff.patch` of any run that scored below its pair and confirm the grader judged real
@@ -357,6 +347,11 @@ git -C ~/code/pkg fetch origin refs/pull/42/head:refs/pull/42/head
 skilldiff init --pr 42 --repo ~/code/pkg --base origin/main --dir ./pr-42-eval
 # add --pr-mode correctness --pr-pair base-merge as needed
 ```
+
+PR tasks cannot set `repo` (both arms start from `pr.repo`), but when a PR only
+changes skills or documentation and needs a broken app to diagnose, set
+`fixtures: ["../fixtures/broken-app"]` on the task to overlay those files into
+each arm's workspace before the initial commit.
 
 Choose the decision `cost_basis` before the run; see [reporting](references/reporting.md).
 Incomplete trials retain telemetry and diffs but never enter paired decisions.

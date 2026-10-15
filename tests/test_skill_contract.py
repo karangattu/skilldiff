@@ -81,3 +81,21 @@ def test_documented_smoke_commands_select_dev_tasks():
     for command in commands:
         args = parser.parse_args(shlex.split(command, comments=True)[1:])
         assert args.split == "dev", "The skill's smoke command must not run held-out tasks"
+
+
+def test_skill_documents_workflow_improvements():
+    for token in (
+        "python-tooling",
+        "fixtures:",
+        "--fail-on-ceiling",
+        "--terminate-on-ceiling",
+        "--max-turns",
+        "--max-tool-budget",
+        "--ci",
+        "adoption_failed",
+        "non_discriminating_tasks",
+        "files_changed_normalized",
+        "eval/py-shiny-troubleshooting",
+        "skilldiff-sandbox",
+    ):
+        assert token in ALL_DOCS, f"expected skill docs to cover {token!r}"
