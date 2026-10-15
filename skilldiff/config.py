@@ -107,9 +107,23 @@ TASK_KEYS = frozenset(
         "allowed_paths",
         "forbidden_paths",
         "grader_ignore",
+        "fixtures",
         "runtime_probe",
     }
 )
+
+GRADER_IGNORE_PRESETS = {
+    "python-tooling": [
+        ".pytest_cache/**",
+        ".uv-cache/**",
+        "__pycache__/**",
+        "*.pyc",
+        "*.pyo",
+        ".venv/**",
+        "uv.lock",
+        ".cache/**",
+    ],
+}
 GRADER_KEYS = frozenset({"type", "command", "rubric", "prompt", "model"})
 VALIDATION_KEYS = frozenset({"good", "broken", "bad", "reference", "deprecated"})
 
@@ -356,6 +370,9 @@ class TaskConfig:
     # Globs hidden from graders and skipped by the blast-radius check, e.g. the
     # audit files an agent writes under outputs/.
     grader_ignore: list[str] = field(default_factory=list)
+    # Extra fixtures mounted into the workspace for this task (for example a
+    # broken app used to diagnose a PR that only changes skills/docs).
+    fixtures: list[str] = field(default_factory=list)
     prompts: list[str] = field(default_factory=list)
     runtime_probe: Optional[str] = None
 
@@ -700,6 +717,16 @@ def load_task(task_path: Path) -> TaskConfig:
     validate_string_list(forbidden_paths, f"{context}.forbidden_paths")
     grader_ignore = data.get("grader_ignore", [])
     validate_string_list(grader_ignore, f"{context}.grader_ignore")
+    expanded_grader_ignore: list[str] = []
+    for item in grader_ignore:
+        if item in GRADER_IGNORE_PRESETS:
+            expanded_grader_ignore.extend(GRADER_IGNORE_PRESETS[item])
+        else:
+            expanded_grader_ignore.append(item)
+    if "fixtures" in data:
+        validate_string_list(data["fixtures"], f"{context}.fixtures")
+    fixtures = data.get("fixtures", [])
+    validate_string_list(fixtures, f"{context}.fixtures")
     if "repo" in data:
         validate_string(data["repo"], f"{context}.repo", nullable=True)
 
@@ -738,7 +765,8 @@ def load_task(task_path: Path) -> TaskConfig:
         validation=dict(validation or {}),
         allowed_paths=allowed_paths,
         forbidden_paths=forbidden_paths,
-        grader_ignore=grader_ignore,
+        grader_ignore=expanded_grader_ignore,
+        fixtures=list(fixtures or []),
         prompts=prompts,
         runtime_probe=data.get("runtime_probe"),
     )

@@ -875,6 +875,14 @@ def cmd_check(args: argparse.Namespace) -> int:
         fixture = (
             cfg.pr.repo if cfg.pr else ((task_dir / task.repo).resolve() if task.repo else None)
         )
+        mounted_fixtures = [
+            (task_dir / item).resolve() for item in (getattr(task, "fixtures", None) or [])
+        ]
+        missing_mounted = [m for m in mounted_fixtures if not m.exists()]
+        if missing_mounted:
+            for mounted in missing_mounted:
+                fail(f"task {task.id}: fixture not found: {mounted}")
+            continue
         if fixture and not fixture.exists():
             fail(f"task {task.id}: repo not found: {fixture}")
             continue
@@ -997,6 +1005,7 @@ def cmd_check(args: argparse.Namespace) -> int:
                     if (comparison and (comparison.get("mode") or "agent") == "agent")
                     else None
                 ),
+                mounted_fixtures=mounted_fixtures,
             )
             try:
                 ws.setup()

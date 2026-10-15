@@ -159,10 +159,13 @@ def tree_contents(root: Path, *, grader: bool = False) -> list[dict[str, Any]]:
 
 def input_sources(config: ExperimentConfig, tasks: list[TaskConfig]) -> list[Path]:
     sources = [p for p in (config.skill, config.skill_a, config.skill_b) if p]
-    if not config.pr:
-        sources.extend(
-            (t.source_path.parent / t.repo).resolve() for t in tasks if t.source_path and t.repo
-        )
+    for t in tasks:
+        if not t.source_path:
+            continue
+        if t.repo and not config.pr:
+            sources.append(t.source_path.parent / t.repo)
+        for fixture in getattr(t, "fixtures", []) or []:
+            sources.append(t.source_path.parent / fixture)
     return list(dict.fromkeys(p.resolve(strict=True) for p in sources))
 
 

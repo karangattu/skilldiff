@@ -317,6 +317,7 @@ class ExperimentRunner:
         self._execution_config = self.config
         self._snapshot_paths: dict[Path, Path] = {}
         self._fixture_snapshots: dict[str, Path] = {}
+        self._mounted_fixture_snapshots: dict[str, list[Path]] = {}
         self._record_hashes: dict[str, str] = {}
         self._grader_inputs: dict[str, Any] = {}
         self._snapshot_manifest_hash: str | None = None
@@ -682,6 +683,14 @@ class ExperimentRunner:
             source = getattr(self.config, field)
             if source:
                 setattr(self._execution_config, field, self._snapshot_paths[source.resolve()])
+        self._mounted_fixture_snapshots = {}
+        for task in self.tasks:
+            snapshots = []
+            for fixture in getattr(task, "fixtures", []) or []:
+                if task.source_path:
+                    source = (task.source_path.parent / fixture).resolve()
+                    snapshots.append(self._snapshot_paths.get(source, source))
+            self._mounted_fixture_snapshots[task.id] = snapshots
         if self._container_image_id:
             self._execution_config.container_image = self._container_image_id
 

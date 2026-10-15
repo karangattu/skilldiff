@@ -25,6 +25,10 @@ DEFAULT_GRADER_TIMEOUT = 600
 
 
 DEFAULT_BYTECODE_IGNORES = ["__pycache__/*", "*.pyc", "*/__pycache__/*", "*/*.pyc"]
+DEFAULT_INFRASTRUCTURE_IGNORES = [
+    ".venv/**", ".pytest_cache/**", ".uv-cache/**", ".cache/**",
+    "uv.lock", ".pytest_cache", ".uv-cache", "__pycache__",
+]
 
 
 def check_blast_radius(
@@ -33,7 +37,11 @@ def check_blast_radius(
     forbidden_paths: list[str],
     ignore_paths: Optional[list[str]] = None,
 ) -> Optional[str]:
-    combined_ignores = (ignore_paths or []) + DEFAULT_BYTECODE_IGNORES
+    combined_ignores = (
+        (ignore_paths or [])
+        + DEFAULT_BYTECODE_IGNORES
+        + DEFAULT_INFRASTRUCTURE_IGNORES
+    )
     for file_path in changed_files:
         if path_matches(file_path, combined_ignores):
             continue

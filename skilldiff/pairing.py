@@ -111,6 +111,7 @@ def prepare_pair_workspaces(
     tmp_ctrl: Path,
     tmp_treat: Path,
     tmp_base: Path,
+    mounted_fixtures: list[Path] | None = None,
 ) -> dict[str, Workspace]:
     is_ab = config.is_skill_comparison
     pr_mode = (comparison or {}).get("mode", "agent") if comparison else "agent"
@@ -149,6 +150,7 @@ def prepare_pair_workspaces(
             harness=config.harness,
             pr_touched_skills=pr_skills,
             reflink=reflink_enabled,
+            mounted_fixtures=mounted_fixtures,
         ),
         "treatment": Workspace(
             root=tmp_treat / "workspace",
@@ -160,6 +162,7 @@ def prepare_pair_workspaces(
             harness=config.harness,
             pr_touched_skills=pr_skills,
             reflink=reflink_enabled,
+            mounted_fixtures=mounted_fixtures,
         ),
     }
     if is_ab and config.include_baseline:
@@ -174,6 +177,7 @@ def prepare_pair_workspaces(
             fixture_repo=fixture_repo,
             harness=config.harness,
             reflink=reflink_enabled,
+            mounted_fixtures=mounted_fixtures,
         )
     for ws in workspaces.values():
         ws.setup()
@@ -335,6 +339,7 @@ def run_pair(
         if runner.config.pr
         else runner._fixture_snapshots.get(task.id)
     )
+    mounted_fixtures = getattr(runner, "_mounted_fixture_snapshots", {}).get(task.id) or []
     grader = runner._make_grader(task, model, execution, runner._grader_names(execution))
 
     rep_str = f"{pair.repetition:03d}"
@@ -365,6 +370,7 @@ def run_pair(
             tmp_ctrl=Path(tmp_ctrl),
             tmp_treat=Path(tmp_treat),
             tmp_base=Path(tmp_base),
+            mounted_fixtures=mounted_fixtures,
         )
 
         preflight_reports: dict[str, Any] = {}

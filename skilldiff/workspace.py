@@ -214,6 +214,7 @@ class Workspace:
         strip_skill_dirs: list[Path] | None = None,
         pr_touched_skills: list[str] | None = None,
         reflink: bool | None = None,
+        mounted_fixtures: list[Path] | None = None,
     ):
         self.root = root.resolve()
         self.reflink = reflink
@@ -221,6 +222,7 @@ class Workspace:
         self.skill_dir = skill_dir.resolve() if skill_dir else None
         self.source_commit = source_commit
         self.fixture_repo = fixture_repo.resolve() if fixture_repo else None
+        self.mounted_fixtures = [Path(p) for p in (mounted_fixtures or [])]
         self.harness = harness
         self.skill_dirs = (find_skill_dirs(self.skill_dir) or [self.skill_dir]) if skill_dir else []
         self.strip_skill_dirs: list[Path] = []
@@ -259,6 +261,11 @@ class Workspace:
             export_revision(self.fixture_repo, self.source_commit, self.root)
         elif self.fixture_repo and self.fixture_repo.exists():
             copy_fixture_clean(self.fixture_repo, self.root, reflink=self.reflink)
+
+        for mounted in self.mounted_fixtures:
+            if not mounted.exists():
+                raise ValueError(f"Mounted fixture not found: {mounted}")
+            copy_fixture_clean(mounted, self.root, reflink=self.reflink)
 
         if not (self.root / ".git").exists():
             subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
