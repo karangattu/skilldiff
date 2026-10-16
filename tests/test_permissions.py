@@ -76,8 +76,8 @@ def test_external_isolation_replaces_claude_sandbox(isolation):
     )
     assert "--settings" not in cmd
     mode = cmd[cmd.index("--permission-mode") + 1]
-    # Claude's seatbelt cannot nest in sandbox-exec; the outer boundary confines it.
-    assert mode == ("bypassPermissions" if isolation == "macos" else "acceptEdits")
+    # Claude's own sandbox cannot nest inside external isolation; the outer boundary confines it.
+    assert mode == "bypassPermissions"
 
 
 def test_codex_sandbox_is_bypassed_only_inside_external_isolation():

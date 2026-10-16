@@ -349,7 +349,10 @@ class Grader:
                         if not any(source == existing for existing, _ in mounts):
                             mounts.append((source, f"/evaluation/artifacts-{len(mounts)}"))
                 for source, target in mounts:
-                    command = command.replace(str(source), target)
+                    resolved = str(source.resolve())
+                    command = command.replace(resolved, target).replace(str(source), target)
+                    if resolved.startswith("/private/"):
+                        command = command.replace(resolved[len("/private") :], target)
             shell_command = ["/bin/sh", "-c", command]
             if self.isolation == "local" and os.name == "nt":
                 shell_command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", command]

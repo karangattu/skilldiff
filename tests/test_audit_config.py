@@ -357,7 +357,15 @@ def test_check_versions_image_binary_and_grades_inside_container(
 def test_check_rejects_unsupported_container_auth_before_runtime(
     tmp_path, monkeypatch, capsys, harness, auth
 ):
-    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+        "OPENAI_API_KEY",
+        "CODEX_HOME",
+    ):
         monkeypatch.delenv(key, raising=False)
     log = fake_container_runtime(tmp_path, monkeypatch)
     harness_auth = "api_key" if auth == "missing_key" else (

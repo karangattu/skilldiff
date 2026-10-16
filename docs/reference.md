@@ -461,18 +461,21 @@ already exist locally. SkillDiff records its immutable image ID and uses that
 identity for execution and resume; it does not pull images automatically.
 
 Use an image containing the harness CLI, grader programs, and their dependencies.
-The default `python:3.11` image only supplies Python; it is not a ready-to-run
-agent image. An explicit harness `bin_path` refers to a path inside the image.
-Automatically discovered host CLIs use their executable name inside the image.
-Workspace arguments are translated to `/workspace`; agents receive their own
-temporary directory at `/session-tmp`. Graders also receive
+The default `ghcr.io/karangattu/skilldiff-sandbox:latest` image (built from
+`docker/Dockerfile`) includes Python, `uv`, Node.js, Playwright Chromium, and the
+`claude`, `codex`, `opencode`, and `agy`/`antigravity` CLIs; the `python:3.11`
+fallback only supplies Python. An explicit harness `bin_path` refers to a path
+inside the image. Automatically discovered host CLIs use their executable name
+inside the image. Workspace arguments are translated to `/workspace`; agents
+receive their own temporary directory at `/session-tmp`. Graders also receive
 read-only mounts of task inputs and candidate artifacts.
 
 Only selected authentication variables and grader `SKILLDIFF_*` variables are
-forwarded. Host login directories are not mounted. Claude and Codex container
-runs require API authentication; their host subscription logins are unavailable
-inside the image. Run `skilldiff check` to verify the image, executable,
-authentication configuration, and graders before starting an evaluation.
+forwarded. Host skill, plugin, and session directories are not mounted; container
+runs stage only the required subscription login tokens into the session temporary
+directory (or forward configured API keys). Run `skilldiff check` to verify the
+image, executable, authentication configuration, and graders before starting an
+evaluation.
 For Codex skill experiments, `check` queries `app-server skills/list` in fresh workspaces to verify skill discovery prior to paid sessions. Codex and Claude also support opt-in macOS native isolation (`isolation: macos`) via `sandbox-exec` with private session directories; Claude takes its runtime root from `claude.read_paths`, as Codex does from `codex.read_paths`. Tasks can declare a `runtime_probe` command. See [preflight reference](../skills/skilldiff/references/preflight.md) for details.
 
 Running these from inside an agent needs a few things too:

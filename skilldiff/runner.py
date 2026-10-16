@@ -5,12 +5,14 @@ import queue
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -123,19 +125,75 @@ PARENT_SESSION_VARS = frozenset(
     }
 )
 
+CONTAINER_PATH_VARS = frozenset(
+    {
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "XDG_DATA_HOME",
+        "OPENCODE_CONFIG_DIR",
+        "IS_SANDBOX",
+    }
+)
+
 CONTAINER_AUTH_VARS = frozenset(
     {
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
         "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+        "IS_SANDBOX",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
+        "CODEX_HOME",
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "GOOGLE_CLOUD_PROJECT",
         "GOOGLE_CLOUD_LOCATION",
+        "OPENCODE_API_KEY",
+        "OPENROUTER_API_KEY",
+        "XDG_DATA_HOME",
+        "OPENCODE_CONFIG_DIR",
+        "OPENCODE_DISABLE_CLAUDE_CODE",
+        "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS",
+        "OPENCODE_DISABLE_DEFAULT_PLUGINS",
+        "OPENCODE_DISABLE_AUTOUPDATE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "all_proxy",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
     }
+)
+
+_CLAUDE_SAFE_STATE_KEYS = (
+    "oauthAccount",
+    "userID",
+    "hasCompletedOnboarding",
+    "lastOnboardingVersion",
+    "firstStartTime",
+    "claudeCodeFirstTokenDate",
+    "bypassPermissionsModeAccepted",
+)
+
+_ANTIGRAVITY_AUTH_FILES = (
+    "jetski-standalone-oauth-token",
+    "oauth_creds.json",
+    "google_accounts.json",
+    "google_account_id",
+    "installation_id",
+    "state.json",
+    "antigravity-cli/jetski_state.pbtxt",
+    "antigravity-cli/installation_id",
 )
 
 
@@ -154,9 +212,304 @@ cached_which.cache_clear = _cached_which_impl.cache_clear
 cached_which.cache_info = _cached_which_impl.cache_info
 
 
-
 def clean_parent_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k not in PARENT_SESSION_VARS}
+
+
+def _real_user_home() -> Path:
+    try:
+        import pwd
+
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        return Path.home()
+
+
+def _read_claude_keychain() -> Optional[str]:
+    if sys.platform != "darwin":
+        return None
+    try:
+        if Path.home().resolve() != _real_user_home().resolve():
+            return None
+    except OSError:
+        return None
+    try:
+        proc = subprocess.run(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        secret = proc.stdout.strip()
+        if proc.returncode == 0 and secret.startswith("{"):
+            return secret
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def _claude_credentials_json(env: Mapping[str, str]) -> Optional[str]:
+    config_dir = Path(env.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+    cred_file = config_dir / ".credentials.json"
+    if cred_file.is_file():
+        try:
+            text = cred_file.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+        except OSError:
+            pass
+    if "CLAUDE_CONFIG_DIR" not in env:
+        return _read_claude_keychain()
+    return None
+
+
+def _has_claude_subscription_auth(env: Mapping[str, str]) -> bool:
+    return bool(env.get("CLAUDE_CODE_OAUTH_TOKEN") or _claude_credentials_json(env))
+
+
+def _has_codex_stored_auth(env: Mapping[str, str]) -> bool:
+    codex_home = Path(env.get("CODEX_HOME") or (Path.home() / ".codex"))
+    auth_file = codex_home / "auth.json"
+    try:
+        return auth_file.is_file() and auth_file.stat().st_size > 2
+    except OSError:
+        return False
+
+
+def _collect_opencode_auth(env: Mapping[str, str]) -> dict[str, Any]:
+    data_root = Path(env.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "opencode"
+    merged: dict[str, Any] = {}
+    auth_file = data_root / "auth.json"
+    if auth_file.is_file():
+        try:
+            raw = json.loads(auth_file.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                merged.update(raw)
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+    db_file = data_root / "opencode.db"
+    if db_file.is_file():
+        try:
+            conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True, timeout=2.0)
+            try:
+                rows = conn.execute("SELECT integration_id, value FROM credential").fetchall()
+            finally:
+                conn.close()
+            for integration_id, raw_val in rows:
+                if not integration_id or not raw_val:
+                    continue
+                try:
+                    parsed = json.loads(raw_val)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(parsed, dict):
+                    if parsed.get("type") == "key" and "key" in parsed:
+                        merged.setdefault(
+                            str(integration_id), {"type": "api", "key": parsed["key"]}
+                        )
+                    else:
+                        merged.setdefault(str(integration_id), parsed)
+        except (OSError, sqlite3.Error):
+            pass
+    return merged
+
+
+def _has_opencode_auth(env: Mapping[str, str]) -> bool:
+    if _collect_opencode_auth(env):
+        return True
+    config_root = Path(env.get("OPENCODE_CONFIG_DIR") or (Path.home() / ".config" / "opencode"))
+    if (config_root / "service.json").is_file():
+        return True
+    return any(
+        env.get(k)
+        for k in (
+            "OPENCODE_API_KEY",
+            "OPENROUTER_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+        )
+    )
+
+
+def _antigravity_auth_files() -> list[tuple[Path, str]]:
+    gemini_root = Path.home() / ".gemini"
+    found: list[tuple[Path, str]] = []
+    for rel in _ANTIGRAVITY_AUTH_FILES:
+        src = gemini_root / rel
+        if src.is_file():
+            found.append((src, rel))
+    return found
+
+
+def _has_antigravity_auth(env: Mapping[str, str]) -> bool:
+    if env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY"):
+        return True
+    present = {rel for _, rel in _antigravity_auth_files()}
+    return bool(
+        present
+        & {
+            "jetski-standalone-oauth-token",
+            "oauth_creds.json",
+            "antigravity-cli/jetski_state.pbtxt",
+        }
+    )
+
+
+def _stage_opencode_db(
+    host_db: Path, target_db: Path, opencode_creds: Mapping[str, Any]
+) -> None:
+    if target_db.exists() or not host_db.is_file():
+        return
+    try:
+        src = sqlite3.connect(f"file:{host_db}?mode=ro", uri=True, timeout=2.0)
+        dst = sqlite3.connect(target_db)
+        try:
+            for (sql,) in src.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%'"
+            ).fetchall():
+                dst.execute(sql)
+            for (sql,) in src.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' "
+                "AND sql IS NOT NULL AND name NOT LIKE 'sqlite_%'"
+            ).fetchall():
+                dst.execute(sql)
+            for table in (
+                "__drizzle_migrations",
+                "migration",
+                "credential",
+                "account",
+                "account_state",
+                "control_account",
+            ):
+                try:
+                    rows = src.execute(f'SELECT * FROM "{table}"').fetchall()
+                    if rows:
+                        placeholders = ",".join("?" * len(rows[0]))
+                        dst.executemany(
+                            f'INSERT INTO "{table}" VALUES ({placeholders})', rows
+                        )
+                except sqlite3.Error:
+                    pass
+            now_ms = int(time.time() * 1000)
+            for provider, entry in opencode_creds.items():
+                if not isinstance(entry, dict):
+                    continue
+                exists = dst.execute(
+                    "SELECT 1 FROM credential WHERE integration_id = ?", (provider,)
+                ).fetchone()
+                if exists:
+                    continue
+                if entry.get("type") in {"api", "key"} and "key" in entry:
+                    value = json.dumps({"type": "key", "key": entry["key"]})
+                    label = "API key"
+                else:
+                    value = json.dumps(entry)
+                    label = "OAuth"
+                dst.execute(
+                    "INSERT INTO credential "
+                    "(id, integration_id, label, value, time_created, time_updated) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (f"cred_{uuid.uuid4().hex[:24]}", provider, label, value, now_ms, now_ms),
+                )
+            dst.commit()
+        finally:
+            dst.close()
+            src.close()
+        target_db.chmod(0o600)
+    except (OSError, sqlite3.Error):
+        pass
+
+
+def stage_container_auth(temp_dir: Path, env: dict[str, str]) -> Optional[Path]:
+    """Stage host subscription credentials into temp_dir without exposing skills or history."""
+    env["IS_SANDBOX"] = "1"
+    claude_creds = _claude_credentials_json(env)
+    if claude_creds or env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        claude_home = temp_dir / "claude-home"
+        claude_home.mkdir(parents=True, exist_ok=True)
+        cred_path = claude_home / ".credentials.json"
+        if claude_creds and not cred_path.exists():
+            cred_path.write_text(claude_creds, encoding="utf-8")
+            cred_path.chmod(0o600)
+        state: dict[str, Any] = {}
+        for candidate in (
+            Path(env["CLAUDE_CONFIG_DIR"]) / ".claude.json"
+            if env.get("CLAUDE_CONFIG_DIR")
+            else None,
+            Path.home() / ".claude.json",
+            Path.home() / ".claude" / ".claude.json",
+        ):
+            if candidate and candidate.is_file():
+                try:
+                    loaded = json.loads(candidate.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        for key in _CLAUDE_SAFE_STATE_KEYS:
+                            if key in loaded:
+                                state[key] = loaded[key]
+                        break
+                except (OSError, json.JSONDecodeError, ValueError):
+                    pass
+        state["hasCompletedOnboarding"] = True
+        state["bypassPermissionsModeAccepted"] = True
+        state_path = claude_home / ".claude.json"
+        if not state_path.exists():
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            state_path.chmod(0o600)
+        env["CLAUDE_CONFIG_DIR"] = str(claude_home.resolve())
+
+    host_codex = Path(env.get("CODEX_HOME") or (Path.home() / ".codex"))
+    codex_auth = host_codex / "auth.json"
+    if codex_auth.is_file():
+        codex_home = temp_dir / "codex-home"
+        codex_home.mkdir(parents=True, exist_ok=True)
+        target_codex = codex_home / "auth.json"
+        if not target_codex.exists():
+            shutil.copyfile(codex_auth, target_codex)
+            target_codex.chmod(0o600)
+        env["CODEX_HOME"] = "/root/.codex"
+
+    opencode_data_root = (
+        Path(env.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "opencode"
+    )
+    opencode_creds = _collect_opencode_auth(env)
+    if opencode_creds:
+        opencode_data = temp_dir / "opencode-data"
+        opencode_dir = opencode_data / "opencode"
+        opencode_dir.mkdir(parents=True, exist_ok=True)
+        target_opencode = opencode_dir / "auth.json"
+        if not target_opencode.exists():
+            target_opencode.write_text(json.dumps(opencode_creds), encoding="utf-8")
+            target_opencode.chmod(0o600)
+        _stage_opencode_db(
+            opencode_data_root / "opencode.db", opencode_dir / "opencode.db", opencode_creds
+        )
+        env["XDG_DATA_HOME"] = str(opencode_data.resolve())
+    host_opencode_cfg = Path(
+        env.get("OPENCODE_CONFIG_DIR") or (Path.home() / ".config" / "opencode")
+    )
+    if (host_opencode_cfg / "service.json").is_file():
+        isolated_cfg = temp_dir / "opencode_config"
+        isolated_cfg.mkdir(parents=True, exist_ok=True)
+        target_service = isolated_cfg / "service.json"
+        if not target_service.exists():
+            shutil.copyfile(host_opencode_cfg / "service.json", target_service)
+        env.setdefault("OPENCODE_CONFIG_DIR", str(isolated_cfg.resolve()))
+
+    agy_files = _antigravity_auth_files()
+    if agy_files:
+        gemini_home = temp_dir / "gemini-home"
+        for src, rel in agy_files:
+            dst = gemini_home / rel
+            if not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dst)
+                dst.chmod(0o600)
+        return gemini_home
+    return None
 
 
 DEFAULT_CONTAINER_IMAGE = "ghcr.io/karangattu/skilldiff-sandbox:latest"
@@ -189,18 +542,42 @@ def resolve_container_image(runtime: str, image: Optional[str], timeout: float =
 def validate_container_auth(config: ExperimentConfig) -> None:
     if config.isolation not in {"docker", "podman"}:
         return
+    env = clean_parent_env()
+    if getattr(config, "env", None):
+        env.update(config.env)
     harness = config.harness
-    if harness in {"claude", "codex"}:
-        if getattr(config, harness).auth != "api_key":
-            raise ValueError(f"Container {harness} execution requires {harness}.auth: api_key")
-        credentials = (
-            ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
-            if harness == "claude"
-            else ("OPENAI_API_KEY",)
-        )
-        if not any(os.environ.get(key) for key in credentials):
+    if harness == "claude":
+        if config.claude.auth == "api_key":
+            credentials = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+            if not any(env.get(key) for key in credentials):
+                raise ValueError(
+                    f"Container claude api_key authentication requires {' or '.join(credentials)}"
+                )
+        elif not _has_claude_subscription_auth(env):
             raise ValueError(
-                f"Container {harness} api_key authentication requires {' or '.join(credentials)}"
+                "Container claude subscription authentication requires a signed-in Claude login "
+                "(`claude auth login`) or claude.auth: api_key"
+            )
+    elif harness == "codex":
+        if config.codex.auth == "api_key":
+            if not env.get("OPENAI_API_KEY"):
+                raise ValueError("Container codex api_key authentication requires OPENAI_API_KEY")
+        elif not _has_codex_stored_auth(env):
+            raise ValueError(
+                "Container codex stored authentication requires a signed-in Codex login "
+                "(`codex login`) or codex.auth: api_key"
+            )
+    elif harness == "opencode":
+        if not _has_opencode_auth(env):
+            raise ValueError(
+                "Container opencode execution requires a signed-in OpenCode login "
+                "(`opencode auth login`) or provider api_key"
+            )
+    elif harness in {"antigravity", "agy"}:
+        if not _has_antigravity_auth(env):
+            raise ValueError(
+                "Container antigravity execution requires a signed-in Antigravity login "
+                "(`agy login`) or GEMINI_API_KEY"
             )
 
 
@@ -574,17 +951,24 @@ class AgentRunner:
             except subprocess.TimeoutExpired:
                 return ExecResult("", "Container image inspection timed out", -1,
                                   round(time.monotonic() - started, 2), True)
+            gemini_home = None
+            if temp_dir is not None:
+                gemini_home = stage_container_auth(temp_dir, env)
             container_name = "skilldiff-" + uuid.uuid4().hex
             mounts = list(readonly_mounts or [])
-            mappings = [(cwd.resolve(), "/workspace"), *mounts]
+            mappings = [(cwd, "/workspace"), *mounts]
             if temp_dir is not None:
-                mappings.append((temp_dir.resolve(), "/session-tmp"))
+                mappings.append((temp_dir, "/session-tmp"))
 
             def translate(value: str) -> str:
                 for source, target in mappings:
-                    original = str(source.resolve())
-                    if value == original or value.startswith(original + "/"):
-                        return target + value[len(original) :]
+                    resolved = str(source.resolve())
+                    candidates = [resolved, str(source)]
+                    if resolved.startswith("/private/"):
+                        candidates.append(resolved[len("/private") :])
+                    for candidate in dict.fromkeys(candidates):
+                        if value == candidate or value.startswith(candidate + "/"):
+                            return target + value[len(candidate) :]
                 return value
 
             container_cmd = [translate(arg) for arg in cmd]
@@ -603,6 +987,10 @@ class AgentRunner:
                 exec_cmd.append("-i")
             if temp_dir is not None:
                 exec_cmd.extend(["-v", f"{temp_dir.resolve()}:/session-tmp"])
+                if (temp_dir / "codex-home").is_dir():
+                    exec_cmd.extend(["-v", f"{(temp_dir / 'codex-home').resolve()}:/root/.codex"])
+                if gemini_home is not None and gemini_home.is_dir():
+                    exec_cmd.extend(["-v", f"{gemini_home.resolve()}:/root/.gemini"])
             for source, target in mounts:
                 exec_cmd.extend(["-v", f"{source.resolve()}:{target}:ro"])
             container_env = {
@@ -613,9 +1001,9 @@ class AgentRunner:
             }
             # Pass values through the client's environment, keeping credentials out of argv.
             for key, value in container_env.items():
-                if temp_dir is not None and key in {"TMPDIR", "TMP", "TEMP"}:
-                    # These paths are not secrets. Keep the runtime client's temp
-                    # directory usable on the host, and set the container path explicitly.
+                if key in CONTAINER_PATH_VARS:
+                    # These paths/flags are not secrets. Keep the runtime client's
+                    # environment usable on the host, and set the container value explicitly.
                     exec_cmd.extend(["-e", f"{key}={translate(value)}"])
                 else:
                     env[key] = translate(value)
@@ -976,6 +1364,12 @@ class AgentRunner:
             return self._apply_budget_limits(res, config)
 
         isolation = getattr(config, "isolation", "local")
+        if temp_dir is None and isolation in EXTERNAL_ISOLATION:
+            with tempfile.TemporaryDirectory(prefix="tmp-", dir=cwd.resolve().parent) as tmp:
+                return self._run_session(
+                    prompt, cwd, model, config, harness, skill_names, timeout,
+                    temp_dir=Path(tmp), session_id=session_id,
+                )
         container_image = getattr(config, "container_image", None)
 
         if isinstance(config, ExperimentConfig):
@@ -1199,8 +1593,12 @@ class AgentRunner:
         if settings:
             cmd.extend(["--settings", json.dumps(settings)])
         permission_mode = claude_cfg.permission_mode
-        if claude_cfg.sandbox and isolation == "macos" and permission_mode in PROMPTING_MODES:
-            # The outer sandbox confines the session and Claude's own seatbelt cannot
+        if (
+            claude_cfg.sandbox
+            and isolation in EXTERNAL_ISOLATION
+            and permission_mode in PROMPTING_MODES
+        ):
+            # The outer sandbox confines the session and Claude's own sandbox cannot
             # nest inside it, so commands would otherwise be denied rather than sandboxed.
             permission_mode = "bypassPermissions"
         if permission_mode:
@@ -1384,12 +1782,12 @@ class AgentRunner:
             cmd.append("--standalone")
         cmd.extend(opencode_cfg.extra_args)
         cmd.extend(["-m", target_model, prompt])
-        env = os.environ.copy()
+        env = clean_parent_env()
         if opencode_cfg.isolate:
             if temp_dir is not None:
                 isolated_config = temp_dir / "opencode_config"
                 isolated_config.mkdir(parents=True, exist_ok=True)
-                env["OPENCODE_CONFIG_DIR"] = str(isolated_config)
+                env["OPENCODE_CONFIG_DIR"] = str(isolated_config.resolve())
             env["OPENCODE_DISABLE_CLAUDE_CODE"] = "true"
             env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] = "true"
             env["OPENCODE_DISABLE_DEFAULT_PLUGINS"] = "true"

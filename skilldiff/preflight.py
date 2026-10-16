@@ -110,7 +110,7 @@ def codex_env(config: CodexConfig, isolation: str, scratch: Path | None) -> dict
     env = clean_parent_env()
     if config.auth in {"subscription", "stored"}:
         env.pop("OPENAI_API_KEY", None)
-    if isolation == "macos" and scratch:
+    if isolation in {"macos", "docker", "podman"} and scratch:
         home = scratch / "codex-home"
         home.mkdir(exist_ok=True)
         auth = Path(env.get("CODEX_HOME", str(Path.home() / ".codex"))) / "auth.json"

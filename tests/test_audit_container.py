@@ -20,8 +20,24 @@ def test_unknown_isolation_never_falls_back_to_host(tmp_path):
     assert not (tmp_path / "escaped").exists()
 
 
-@pytest.mark.parametrize("harness", ["claude", "codex"])
-def test_container_refuses_host_login_auth_before_starting(tmp_path, harness):
+@pytest.mark.parametrize("harness", ["claude", "codex", "opencode", "antigravity"])
+def test_container_refuses_missing_auth_before_starting(tmp_path, monkeypatch, harness):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+        "OPENAI_API_KEY",
+        "CODEX_HOME",
+        "OPENCODE_API_KEY",
+        "OPENROUTER_API_KEY",
+        "XDG_DATA_HOME",
+        "OPENCODE_CONFIG_DIR",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
     config = ExperimentConfig(
         name="t",
         skill=tmp_path,
@@ -30,9 +46,130 @@ def test_container_refuses_host_login_auth_before_starting(tmp_path, harness):
         harness=harness,
         isolation="docker",
     )
-    with pytest.raises(ValueError, match="api_key"):
+    with pytest.raises(ValueError, match="api_key|GEMINI_API_KEY"):
         ExperimentRunner(config, [], output_dir=tmp_path / "runs").run()
     assert not (tmp_path / "runs").exists()
+
+
+def test_container_stages_subscription_credentials_for_all_harnesses(tmp_path, monkeypatch):
+    import sqlite3
+
+    from skilldiff.runner import stage_container_auth, validate_container_auth
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "OPENAI_API_KEY",
+        "OPENCODE_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+        "XDG_DATA_HOME",
+        "OPENCODE_CONFIG_DIR",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    (home / ".claude" / "skills" / "secret-skill").mkdir(parents=True)
+    (home / ".claude" / "skills" / "secret-skill" / "SKILL.md").write_text("leaked")
+    (home / ".claude" / ".credentials.json").write_text('{"claudeAiOauth":{"accessToken":"tok"}}')
+    (home / ".claude.json").write_text(
+        json.dumps(
+            {
+                "oauthAccount": {"emailAddress": "user@example.com"},
+                "userID": "u1",
+                "projects": {"/secret/project": {}},
+            }
+        )
+    )
+
+    (home / ".codex" / "skills" / "secret-skill").mkdir(parents=True)
+    (home / ".codex" / "auth.json").write_text('{"tokens":{"access_token":"codex-tok"}}')
+
+    opencode_share = home / ".local" / "share" / "opencode"
+    opencode_share.mkdir(parents=True)
+    (opencode_share / "auth.json").write_text('{"anthropic":{"type":"api","key":"sk-ant"}}')
+    db_path = opencode_share / "opencode.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE credential ("
+        "id text PRIMARY KEY, integration_id text, label text NOT NULL, value text NOT NULL, "
+        "connector_id text, method_id text, active integer, "
+        "time_created integer NOT NULL, time_updated integer NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE session_v2 (id text PRIMARY KEY, title text)"
+    )
+    conn.execute(
+        "INSERT INTO credential VALUES "
+        "('c1','opencode-go','API key','{\"type\":\"key\",\"key\":\"oc_sk_1\"}',NULL,NULL,1,1,1)"
+    )
+    conn.execute("INSERT INTO session_v2 VALUES ('s1', 'secret history')")
+    conn.commit()
+    conn.close()
+
+    (home / ".config" / "opencode").mkdir(parents=True)
+    (home / ".config" / "opencode" / "service.json").write_text('{"service":"go"}')
+
+    (home / ".gemini" / "antigravity-cli" / "skills" / "secret").mkdir(parents=True)
+    (home / ".gemini" / "GEMINI.md").write_text("secret instructions")
+    (home / ".gemini" / "jetski-standalone-oauth-token").write_text("agy-oauth-token")
+    (home / ".gemini" / "antigravity-cli" / "jetski_state.pbtxt").write_text("oauth_token: {}")
+
+    for harness in ("claude", "codex", "opencode", "antigravity"):
+        cfg = ExperimentConfig(
+            name="t",
+            skill=tmp_path,
+            models=["m"],
+            tasks_patterns=[],
+            harness=harness,
+            isolation="docker",
+        )
+        validate_container_auth(cfg)
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    env: dict[str, str] = {}
+    gemini_home = stage_container_auth(scratch, env)
+
+    assert env["IS_SANDBOX"] == "1"
+    assert (scratch / "claude-home" / ".credentials.json").read_text() == (
+        '{"claudeAiOauth":{"accessToken":"tok"}}'
+    )
+    claude_state = json.loads((scratch / "claude-home" / ".claude.json").read_text())
+    assert claude_state["oauthAccount"] == {"emailAddress": "user@example.com"}
+    assert claude_state["hasCompletedOnboarding"] is True
+    assert claude_state["bypassPermissionsModeAccepted"] is True
+    assert "projects" not in claude_state
+    assert not (scratch / "claude-home" / "skills").exists()
+
+    assert env["CODEX_HOME"] == "/root/.codex"
+    assert (scratch / "codex-home" / "auth.json").is_file()
+    assert not (scratch / "codex-home" / "skills").exists()
+
+    staged_oc_auth = json.loads(
+        (scratch / "opencode-data" / "opencode" / "auth.json").read_text()
+    )
+    assert staged_oc_auth["opencode-go"] == {"type": "api", "key": "oc_sk_1"}
+    assert staged_oc_auth["anthropic"] == {"type": "api", "key": "sk-ant"}
+    staged_db = sqlite3.connect(scratch / "opencode-data" / "opencode" / "opencode.db")
+    creds = dict(
+        staged_db.execute("SELECT integration_id, value FROM credential").fetchall()
+    )
+    sessions = staged_db.execute("SELECT count(*) FROM session_v2").fetchone()[0]
+    staged_db.close()
+    assert "opencode-go" in creds and "anthropic" in creds
+    assert sessions == 0
+    assert (scratch / "opencode_config" / "service.json").is_file()
+
+    assert gemini_home is not None
+    assert (gemini_home / "jetski-standalone-oauth-token").read_text() == "agy-oauth-token"
+    assert (gemini_home / "antigravity-cli" / "jetski_state.pbtxt").is_file()
+    assert not (gemini_home / "GEMINI.md").exists()
+    assert not (gemini_home / "antigravity-cli" / "skills").exists()
 
 
 @pytest.mark.parametrize(

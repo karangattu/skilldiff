@@ -22,8 +22,7 @@ Under `isolation: macos`, Codex runs with `--dangerously-bypass-approvals-and-sa
 and Claude with `bypassPermissions` (when `claude.sandbox` is true). Their own
 seatbelt sandboxes fail inside another sandbox (`sandbox_apply: Operation not
 permitted`), so every command would otherwise fail while the session still ends
-`ok`. Containers bypass Codex's sandbox the same way. In a container, set Claude's
-`permission_mode: bypassPermissions` yourself.
+`ok`. Containers bypass Codex's and Claude's internal sandboxes the same way.
 
 Add a task `runtime_probe:` for imports, versions, or a short browser launch
 under the actual agent execution boundary. It has a 30-second limit and runs
@@ -40,10 +39,12 @@ containers, whose image must also be clean.
 
 Container execution needs a locally available image containing the harness CLI,
 graders, and dependencies (defaults to `ghcr.io/karangattu/skilldiff-sandbox:latest`,
-built from `docker/Dockerfile` with Python, `uv`, Node, and `/opt/venv` outside
+built from `docker/Dockerfile` with Python, `uv`, Node.js, Playwright Chromium,
+`claude`, `codex`, `opencode`, `agy`/`antigravity`, and `/opt/venv` outside
 `/workspace`, or falls back to `python:3.11`). `bin_path` refers to an executable
-inside that image. Claude and Codex container runs require API authentication;
-host login directories are not mounted. Run `skilldiff check` first (pass
+inside that image. Container runs stage only the required subscription login
+credentials into the session scratch directory (or forward configured API keys);
+host skill, plugin, and session directories are not mounted. Run `skilldiff check` first (pass
 `--fail-on-ceiling` to fail tasks whose untouched fixture already scores 100%).
 During runs, `--terminate-on-ceiling` (or `terminate_on_ceiling: true`) skips
 remaining repetitions for tasks where control scores 100%, `--max-turns` and

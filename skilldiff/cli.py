@@ -607,8 +607,13 @@ def permission_summary(cfg: ExperimentConfig) -> list[tuple[str, str]]:
             lines.append(("ok", "claude permissions: Bash runs in Claude's sandbox without "
                                 "prompts; writes stay in the workspace; graders and skill "
                                 f"sources are unreadable to commands; network hosts: {network}"))
-        elif claude.sandbox and isolation == "macos" and claude.permission_mode in PROMPTING_MODES:
-            lines.append(("ok", "claude permissions: bypassPermissions inside the macOS "
+        elif (
+            claude.sandbox
+            and isolation in EXTERNAL_ISOLATION
+            and claude.permission_mode in PROMPTING_MODES
+        ):
+            boundary = "macOS" if isolation == "macos" else isolation
+            lines.append(("ok", f"claude permissions: bypassPermissions inside the {boundary} "
                                 "isolation boundary"))
         elif claude.permission_mode in PROMPTING_MODES and not claude.allowed_tools:
             lines.append(("warn", f"claude permission_mode {claude.permission_mode} without "
@@ -805,7 +810,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         if (cfg.isolation == "local" and cfg.claude.auth == "api_key"
                 and not os.environ.get("ANTHROPIC_API_KEY")):
             fail("claude.auth is api_key but ANTHROPIC_API_KEY is not set")
-        if cfg.claude.permission_mode == "bypassPermissions":
+        if cfg.claude.permission_mode == "bypassPermissions" and cfg.isolation == "local":
             warn("bypassPermissions lets agents run any command outside the workspace")
         if (
             resolved
