@@ -100,10 +100,28 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
-      - run: docker pull python:3.11-slim
+      - name: Build sandbox Docker image
+        run: docker build -t ghcr.io/karangattu/skilldiff-sandbox:latest docker
+      - name: Verify sandbox image tools and agent CLIs
+        run: |
+          docker run --rm ghcr.io/karangattu/skilldiff-sandbox:latest /bin/sh -lc "
+            claude --version &&
+            codex --version &&
+            opencode --version &&
+            agy --version &&
+            antigravity --version &&
+            uv --version &&
+            pytest --version &&
+            ruff --version &&
+            rg --version &&
+            fd --version &&
+            jq --version &&
+            sqlite3 --version &&
+            curl -fsSI https://example.com >/dev/null
+          "
       - name: Verify real container paths, grading, and cleanup
         env:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
           SKILLDIFF_CONTAINER_RUNTIME: docker
-          SKILLDIFF_CONTAINER_IMAGE: python:3.11-slim
+          SKILLDIFF_CONTAINER_IMAGE: ghcr.io/karangattu/skilldiff-sandbox:latest
         run: pytest tests/test_audit_container.py -v
