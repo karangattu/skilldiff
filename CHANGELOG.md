@@ -6,6 +6,19 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-15
+
+### Added
+
+- The sandbox Docker image now bundles Claude Code, Codex, OpenCode, and Antigravity CLIs, Playwright Chromium, and common development tools.
+- Container runs support subscription logins by staging the required credentials in each session's temporary directory without mounting host skills, plugins, or session history.
+- CI builds the sandbox image, verifies its tools and network access, and tests container execution, grading, and cleanup.
+
+### Fixed
+
+- Claude container runs automatically bypass its internal sandbox within the external isolation boundary.
+- Container graders translate resolved macOS temporary paths and their `/private` aliases to mounted paths.
+
 ## [0.21.1] - 2026-10-15
 
 This release includes the features listed in 0.21.0, whose GitHub Release was blocked by CI.
