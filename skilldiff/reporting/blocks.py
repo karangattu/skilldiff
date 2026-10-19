@@ -1,6 +1,12 @@
 from pathlib import Path
 from typing import Any, Optional
 
+from skilldiff.adoption import (
+    adoption_actions,
+    adoption_failure_detail,
+    adoption_summary,
+    no_effect_findings,
+)
 from skilldiff.reporting.checks import (
     _check_table_rows,
     compare_checks,
@@ -34,7 +40,6 @@ from skilldiff.reporting.metrics import (
     _score_percent,
     _signed_tokens,
     _skill_usage,
-    calculate_metrics,
     format_cost_diff,
     format_count_diff,
     format_pp_diff,
@@ -53,6 +58,7 @@ from skilldiff.reporting.verdict import (
     adoption_reading,
     build_decision_context,
     category_reading,
+    dual_adoption_reading,
     row_reading,
 )
 from skilldiff.stats import analysis_run, paired_comparison
@@ -320,16 +326,21 @@ def render_report_table(
             if (preset in {"revision", "compression"} and control_metrics.get("skill_known_count"))
             else "-"
         )
+        reading = adoption_reading(
+            skill_metrics.get("skill_used_count", 0),
+            skill_metrics.get("skill_known_count", 0),
+        )
+        if preset in {"revision", "compression"} and control_metrics.get(
+            "skill_known_count"
+        ):
+            reading = dual_adoption_reading(control_metrics, skill_metrics)
         lines.append(
             row(
                 "Skill used",
                 ctrl_used,
                 _skill_usage(skill_metrics),
                 "",
-                adoption_reading(
-                    skill_metrics.get("skill_used_count", 0),
-                    skill_metrics.get("skill_known_count", 0),
-                ),
+                reading,
             )
         )
     lines.extend(
@@ -343,6 +354,7 @@ def render_report_table(
         t_score = (
             decision["skill"] if decision is not None else skill_metrics
         ).get("task_score")
+        adoption = (decision or {}).get("decision_adoption") or {}
         verdict, _ = _verdict(
             verdict_paired,
             treatment_label.lower(),
@@ -353,6 +365,8 @@ def render_report_table(
             treatment_score=t_score,
             control_denials=decision.get("control_denials", 0) if decision is not None else 0,
             treatment_denials=decision.get("treatment_denials", 0) if decision is not None else 0,
+            adoption_failed=bool(adoption.get("adoption_failed")),
+            adoption_detail=adoption_failure_detail(adoption),
         )
         lines.append(_strip_inline(verdict))
         if preset == "revision":
@@ -382,8 +396,6 @@ def _key_takeaways(
     subject = "treatment" if results.get("comparison") else "skill"
     paired = paired_comparison(control_runs, treatment_runs)
     control, skill = _paired_comparison_metrics(control_runs, treatment_runs)
-    all_control = calculate_metrics(control_runs)
-    all_skill = calculate_metrics(treatment_runs)
     bullets: list[str] = []
 
     n = paired.get("pairs", 0)
@@ -423,24 +435,48 @@ def _key_takeaways(
             totals.insert(0, f"cost {cc} → {ss}")
         bullets.append(f"**Efficiency.** {efficiency} Totals: {', '.join(totals)}.")
 
-    if all_skill.get("skill_known_count"):
-        used, known = all_skill["skill_used_count"], all_skill["skill_known_count"]
-        text = f"**Adoption.** The agent used the skill in {used} of {known} skill runs"
-        c_used = all_control.get("skill_used_count", 0)
-        text += (
-            f"; {c_used} control run(s) also referenced it."
-            if c_used
-            else "; no control run referenced it."
-        )
-        if used < known:
+    adoption = adoption_summary(
+        results, {"control": control_runs, "treatment": treatment_runs}
+    )
+    if adoption.get("arms"):
+        parts = []
+        for data in adoption["arms"].values():
+            known = int(data.get("known") or 0)
+            hits = int(data.get("hits") or 0)
+            rate = (
+                f", {data['hit_rate'] * 100:.0f}%"
+                if data.get("hit_rate") is not None
+                else ""
+            )
+            loads = data.get("loads")
+            loads_txt = f", {loads} load event(s)" if loads is not None else ""
+            parts.append(
+                f"{data.get('label', 'Skill')} {hits}/{known}{rate}{loads_txt}"
+            )
+        text = "**Adoption.** " + "; ".join(parts) + "."
+        if any(data.get("unknown") for data in adoption["arms"].values()):
+            unknown = sum(int(data.get("unknown") or 0) for data in adoption["arms"].values())
+            text += f" Skill use is unknown for {unknown} eligible run(s)."
+        if any(data.get("hits", 0) < data.get("known", 0) for data in adoption["arms"].values()):
             text += (
                 " Runs where the skill was ignored dilute any effect. A sharper "
                 "`description` usually fixes this."
             )
-            if used / known < (2.0 / 3.0):
+        if adoption.get("adoption_failed"):
+            text += (
+                " Tune the `description` on dev tasks first "
+                "(`skilldiff run --split dev --runs 1`)."
+            )
+        if len(adoption["arms"]) > 1:
+            rates = [
+                data["hit_rate"]
+                for data in adoption["arms"].values()
+                if data.get("hit_rate") is not None
+            ]
+            if len(rates) > 1 and max(rates) - min(rates) >= 0.2:
                 text += (
-                    " Tune the `description` on dev tasks first "
-                    "(`skilldiff run --split dev --runs 1`)."
+                    " The revisions triggered at different rates, so adoption "
+                    "confounds the body comparison."
                 )
         bullets.append(text)
 
@@ -543,6 +579,7 @@ def _group_headers(
     treatment_label: str = "Skill",
     control_label: str = "Control",
     show_usage: bool = True,
+    dual_usage: bool = False,
 ) -> list[str]:
     return [
         first,
@@ -552,7 +589,13 @@ def _group_headers(
         "Better/worse/tie",
         "Δ cost (mean)",
         "Δ time (mean)",
-        *(["Skill used"] if show_usage else []),
+        *(
+            ["Skill A used", "Skill B used"]
+            if show_usage and dual_usage
+            else ["Skill used"]
+            if show_usage
+            else []
+        ),
         "Reading",
     ]
 
@@ -561,6 +604,7 @@ def _category_summary(
     control_runs: list[dict[str, Any]],
     treatment_runs: list[dict[str, Any]],
     task_categories: dict[str, str],
+    dual_usage: bool = False,
 ) -> list[list[Cell]]:
     from skilldiff.stats import paired_comparison as _paired
 
@@ -594,7 +638,11 @@ def _category_summary(
             else ("N/A", None)
         )
         c_pct, s_pct = _score_percent(m_control), _score_percent(m_skill)
-        adoption = _skill_usage(m_skill)
+        adoption = (
+            f"A {_skill_usage(m_control)} · B {_skill_usage(m_skill)}"
+            if dual_usage
+            else _skill_usage(m_skill)
+        )
         cost_m = (m_paired.get("cost") or {}).get("mean_diff", None)
         cost_txt: Cell = (
             (format_cost_diff(float(cost_m)), _tone(round(float(cost_m), 2), False))
@@ -637,6 +685,7 @@ def _group_row(
     skill: dict[str, Any],
     paired: dict[str, Any],
     show_usage: bool = True,
+    dual_usage: bool = False,
 ) -> list[Cell]:
     total = paired.get("pairs", 0) if paired else 0
     score_m = ((paired or {}).get("score") or {}).get("mean_diff", None) if paired else None
@@ -686,6 +735,11 @@ def _group_row(
         score_reading = row_reading("score", score_diff / 100.0, None, None, 0, 0, True)
     else:
         score_reading = "Unknown"
+    usage_cells = (
+        [_skill_usage(control), _skill_usage(skill)]
+        if dual_usage
+        else [_skill_usage(skill)]
+    )
     return [
         label,
         f"{c_pct}%" if c_pct is not None else "N/A",
@@ -700,7 +754,7 @@ def _group_row(
         (format_time_diff(time_diff), _tone(round(time_diff), False))
         if time_diff is not None
         else ("N/A", None),
-        *([_skill_usage(skill)] if show_usage else []),
+        *([*usage_cells] if show_usage else []),
         score_reading,
     ]
 
@@ -731,6 +785,7 @@ def build_report_blocks(
         label = str(arm_labels["treatment"])
         subject = label.lower()
     name = str(results.get("name", "experiment"))
+    dual_usage = preset in {"revision", "compression"}
     runs_data = _load_runs_for_report(results, run_root)
     failure_policy = results.get("failure_policy") or (results.get("settings") or {}).get(
         "failure_policy") or {}
@@ -741,8 +796,9 @@ def build_report_blocks(
     }
     control_runs = runs_data["control"]
     treatment_runs = runs_data["treatment"]
+    baseline_runs = runs_data.get("baseline") or []
     decision = build_decision_context(
-        results, control_runs, treatment_runs, run_root, label
+        results, control_runs, treatment_runs, run_root, label, baseline_runs=baseline_runs
     )
     control, skill, paired = (
         decision["overall_control"], decision["overall_skill"], decision["overall_paired"]
@@ -784,6 +840,12 @@ def build_report_blocks(
             treatment_score=headline_skill.get("task_score"),
             control_denials=decision.get("control_denials", 0),
             treatment_denials=decision.get("treatment_denials", 0),
+            adoption_failed=bool(
+                (decision.get("decision_adoption") or {}).get("adoption_failed")
+            ),
+            adoption_detail=adoption_failure_detail(
+                decision.get("decision_adoption") or {}
+            ),
         )
     else:
         diff = _score_difference(headline_control, headline_skill)
@@ -841,7 +903,7 @@ def build_report_blocks(
         (
             "table",
             ["Metric", control_label, label, "Paired mean Δ", "95% CI", "Reading"],
-            _metric_rows(control, skill, paired),
+            _metric_rows(control, skill, paired, dual_usage=dual_usage),
             ["l", "r", "r", "r", "r", "l"],
         )
     )
@@ -875,11 +937,16 @@ def build_report_blocks(
             if r.get("grade_status") in ("timeout", "error") and not _is_blast_run(r)
         )
         blast_errors = sum(1 for r in control_runs + treatment_runs if _is_blast_run(r))
-        adoption_failures = (
-            sum(1 for r in treatment_runs if r.get("skill_invoked") is False)
-            if results.get("adoption_failed")
-            else 0
-        )
+        adoption_failures = 0
+        if results.get("adoption_failed"):
+            skill_arms = set(
+                ((decision.get("adoption") or {}).get("arms") or {}).keys()
+            )
+            adoption_failures = sum(
+                1
+                for r in control_runs + treatment_runs
+                if r.get("arm") in skill_arms and r.get("skill_invoked") is False
+            )
         if not planned:
             planned = completed
         blocks.append(("h", 2, "Evaluation completeness"))
@@ -1006,7 +1073,13 @@ def build_report_blocks(
             blocks.append(("ul", takeaways))
 
     by_model = results.get("by_model", {})
-    group_align = _GROUP_ALIGN if not comparison else [*_GROUP_ALIGN[:7], "l"]
+    group_align = (
+        [*_GROUP_ALIGN[:7], "l"]
+        if comparison
+        else [*_GROUP_ALIGN[:7], "r", "r", "l"]
+        if dual_usage
+        else _GROUP_ALIGN
+    )
 
     if (control_runs or treatment_runs) and (
         task_splits or any(r.get("task_split") for r in control_runs + treatment_runs)
@@ -1024,13 +1097,15 @@ def build_report_blocks(
                     *_paired_comparison_metrics(sc, st),
                     paired_comparison(sc, st),
                     show_usage=not comparison,
+                    dual_usage=dual_usage,
                 )
             )
         blocks.append(
             (
                 "table",
                 _group_headers(
-                    "Split", label, control_label=control_label, show_usage=not comparison
+                    "Split", label, control_label=control_label,
+                    show_usage=not comparison, dual_usage=dual_usage,
                 ),
                 split_rows,
                 group_align,
@@ -1068,12 +1143,18 @@ def build_report_blocks(
                 m_control = by_model.get(model, {}).get("control", {})
                 m_skill = by_model.get(model, {}).get("skill", {})
                 m_paired = {}
-            rows.append(_group_row(model, m_control, m_skill, m_paired, show_usage=not comparison))
+            rows.append(
+                _group_row(
+                    model, m_control, m_skill, m_paired,
+                    show_usage=not comparison, dual_usage=dual_usage,
+                )
+            )
         blocks.append(
             (
                 "table",
                 _group_headers(
-                    "Model", label, control_label=control_label, show_usage=not comparison
+                    "Model", label, control_label=control_label,
+                    show_usage=not comparison, dual_usage=dual_usage,
                 ),
                 rows,
                 group_align,
@@ -1104,13 +1185,17 @@ def build_report_blocks(
                 t_paired = {}
             task_label = f"{task_id} ({model})" if len(models) > 1 else task_id
             task_rows.append(
-                _group_row(task_label, t_control, t_skill, t_paired, show_usage=not comparison)
+                _group_row(
+                    task_label, t_control, t_skill, t_paired,
+                    show_usage=not comparison, dual_usage=dual_usage,
+                )
             )
     blocks.append(
         (
             "table",
             _group_headers(
-                "Task", label, control_label=control_label, show_usage=not comparison
+                "Task", label, control_label=control_label,
+                show_usage=not comparison, dual_usage=dual_usage,
             ),
             task_rows,
             group_align,
@@ -1162,7 +1247,9 @@ def build_report_blocks(
         if isinstance(td, dict) and td.get("id") and td.get("category"):
             task_cats.setdefault(str(td["id"]), str(td["category"]))
     if task_cats and len(set(task_cats.values())) > 1:
-        cat_rows = _category_summary(control_runs, treatment_runs, task_cats)
+        cat_rows = _category_summary(
+            control_runs, treatment_runs, task_cats, dual_usage=dual_usage
+        )
         if cat_rows:
             blocks.append(("h", 2, "By category"))
             blocks.append(
@@ -1183,7 +1270,7 @@ def build_report_blocks(
                         control_label,
                         label,
                         "Δ score",
-                        "Skill used",
+                        "Skill A / B used" if dual_usage else "Skill used",
                         "Δ cost",
                         "Pairs",
                         "Reading",
@@ -1525,6 +1612,83 @@ def build_report_blocks(
         blocks.append(("p", _EVALUATION_NOTE))
         blocks.append(("table", _EVALUATION_HEADERS, evaluation_rows, _EVALUATION_ALIGN))
 
+    adoption = decision.get("adoption") or {}
+    if adoption.get("arms"):
+        blocks.append(("h", 2, "Skill adoption and next steps"))
+        adoption_note = (
+            "Hits are eligible runs where the skill loaded at least once. "
+            "Loads count matching skill load/read events (`N/A` when the run "
+            "predates event counting). Unknown runs have no measurement and are "
+            "not counted as misses."
+        )
+        if decision.get("held_out"):
+            gate = decision.get("decision_adoption") or {}
+            gate_bits = []
+            for data in (gate.get("arms") or {}).values():
+                gate_bits.append(
+                    f"{data.get('label', 'Skill')} "
+                    f"{data.get('hits', 0)}/{data.get('known', 0)}"
+                )
+            if gate_bits:
+                adoption_note += (
+                    " The closing decision checks held-out adoption: "
+                    + ", ".join(gate_bits)
+                    + "."
+                )
+        blocks.append(("p", adoption_note))
+        adoption_rows: list[list[Cell]] = []
+        for data in adoption["arms"].values():
+            rate = (
+                f"{data['hit_rate'] * 100:.0f}%"
+                if data.get("hit_rate") is not None
+                else "N/A"
+            )
+            loads = (
+                str(data["loads"])
+                if data.get("loads") is not None
+                else "N/A"
+            )
+            adoption_rows.append(
+                [
+                    str(data.get("label") or "Skill"),
+                    str(data.get("hits", 0)),
+                    str(data.get("eligible", 0)),
+                    str(data.get("unknown", 0)),
+                    rate,
+                    loads,
+                    str(data.get("reading") or "Unknown"),
+                ]
+            )
+        blocks.append(
+            (
+                "table",
+                ["Arm", "Hits", "Eligible", "Unknown", "Hit rate", "Loads", "Reading"],
+                adoption_rows,
+                ["l", "r", "r", "r", "r", "r", "l"],
+            )
+        )
+        actions = adoption_actions(
+            results,
+            adoption,
+            no_effect_findings(
+                results,
+                {
+                    "control": control_runs,
+                    "treatment": treatment_runs,
+                    "baseline": baseline_runs,
+                },
+            ),
+        )
+        if actions:
+            blocks.append(("ul", [action["advice"] for action in actions]))
+        else:
+            blocks.append(
+                (
+                    "p",
+                    "No adoption action needed: every eligible skill run loaded the skill.",
+                )
+            )
+
     rec_kind, rec_label, rec_reason = decision["recommendation"]
     blocks.append(("h", 2, "Closing decision"))
     if decision["held_out"]:
@@ -1540,7 +1704,10 @@ def build_report_blocks(
         (
             "table",
             ["Metric", control_label, label, "Paired change", "95% CI", "Reading"],
-            _decision_rows(headline_control, headline_skill, headline_paired),
+            _decision_rows(
+                headline_control, headline_skill, headline_paired,
+                dual_usage=dual_usage,
+            ),
             ["l", "r", "r", "r", "r", "l"],
         )
     )

@@ -4,6 +4,12 @@ import re
 from pathlib import Path
 from typing import Any
 
+from skilldiff.adoption import (
+    adoption_actions,
+    adoption_summary,
+    no_effect_findings,
+    skill_arm_names,
+)
 from skilldiff.scope import is_blast_violation
 from skilldiff.stats import METRICS, analysis_run, pair_runs, usable_agent_run
 
@@ -127,9 +133,10 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
     recommendations = []
     unknown_adoption_runs = 0
     is_pr = bool(data.get("comparison")) or data.get("preset") == "pr"
-    skill_arms = {"treatment"}
-    if data.get("skill_comparison") or data.get("preset") in {"revision", "compression"}:
-        skill_arms.add("control")
+    skill_arms = set(skill_arm_names(data, arms))
+    adoption = adoption_summary(data, arms)
+    no_effect = no_effect_findings(data, arms)
+    next_actions = adoption_actions(data, adoption, no_effect)
     for arm, records in arms.items():
         for record in records:
             identity = {
@@ -334,16 +341,34 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
 
     if under_triggered:
         tasks_list = sorted({item["task_id"] for item in under_triggered})
+        arm_counts = ", ".join(
+            f"{arm}: {sum(1 for item in under_triggered if item['arm'] == arm)}"
+            for arm in sorted({item["arm"] for item in under_triggered})
+        )
         recommendations.append(
-            f"Adoption: skill failed to trigger on {len(under_triggered)} intended task run(s) "
-            f"({', '.join(tasks_list)}). Refine SKILL.md description with explicit trigger terms."
+            f"Adoption: the skill failed to trigger on {len(under_triggered)} intended "
+            f"task run(s) ({arm_counts}; tasks: {', '.join(tasks_list)}). Refine the "
+            "SKILL.md description with explicit trigger terms and retest on dev."
         )
 
     if over_triggered:
         tasks_list = sorted({item["task_id"] for item in over_triggered})
+        arm_counts = ", ".join(
+            f"{arm}: {sum(1 for item in over_triggered if item['arm'] == arm)}"
+            for arm in sorted({item["arm"] for item in over_triggered})
+        )
         recommendations.append(
-            f"Over-triggering: skill triggered on {len(over_triggered)} irrelevant task run(s) "
-            f"({', '.join(tasks_list)}). Add scoping boundaries in the SKILL.md description."
+            f"Over-triggering: the skill triggered on {len(over_triggered)} irrelevant "
+            f"task run(s) ({arm_counts}; tasks: {', '.join(tasks_list)}). Add scoping "
+            "boundaries to the SKILL.md description."
+        )
+
+    if no_effect:
+        tasks_list = sorted({str(item["task_id"]) for item in no_effect})
+        recommendations.append(
+            f"Loaded without effect: the skill triggered on {', '.join(tasks_list)} "
+            "but those runs did not beat control. Inspect a transcript to check whether "
+            "the skill body was applied, not just loaded."
         )
 
     if blast_violations:
@@ -386,9 +411,13 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         "unmatched_runs": unmatched_runs,
         "unknown_adoption_runs": unknown_adoption_runs,
         "unknown_token_pairs": unknown_token_pairs,
-        "adoption_failed": bool(under_triggered),
+        "adoption_failed": bool(adoption["adoption_failed"]),
+        "adoption_failed_arms": adoption["adoption_failed_arms"],
+        "skill_usage": adoption["arms"],
+        "next_actions": next_actions,
         "under_triggered": under_triggered,
         "over_triggered": over_triggered,
+        "no_effect_tasks": no_effect,
         "regressions": regressions,
         "blast_violations": blast_violations,
         "agent_failures": agent_failures,

@@ -71,8 +71,10 @@ skilldiff diagnose -c /abs/path/to/skill-eval/skilldiff.yaml --json
 Save the exact run directory returned by execution. Pass it to `results` and
 `diagnose` when evaluating an earlier run or when other runs can finish concurrently.
 Inspect `valid`, `warnings`, incomplete trials, and each arm's status, grading,
-usage, and skill adoption. Missing measurements remain unknown. Preserve failed
-attempts; do not retry them silently or treat them as valid comparisons.
+usage, and skill adoption. `diagnose --json` exposes per-arm `skill_usage` and
+structured `next_actions`; carry the hit rates and action items into the summary.
+Missing measurements remain unknown. Preserve failed attempts; do not retry them
+silently or treat them as valid comparisons.
 
 Read the saved report for SkillDiff's computed decision, or print it:
 

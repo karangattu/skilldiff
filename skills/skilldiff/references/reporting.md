@@ -64,15 +64,21 @@ can add a labelled estimate to a summary, but must not change its recorded
 verdict or masquerade as pre-registered pricing.
 
 Discovery preflight establishes skill availability, not adoption. Report
-"Skill loaded" from transcript evidence. When fewer than two-thirds of treatment
-runs load the skill, `results.json` and `diagnose` set `adoption_failed: true`
-and **Evaluation completeness** counts adoption failures. Tasks where every
-control run scores 100% are recorded in `non_discriminating_tasks`. Run records
-also include `files_changed_normalized` (with `grader_ignore` paths removed and
-generated directories such as `.venv` and `node_modules` collapsed) and Run
-details shows status, score, and checks before cost, time, turns, and tokens.
-Incomplete trial telemetry and diffs are audit evidence; incomplete pairs do not
-enter this table or the decision.
+"Skill loaded" from transcript evidence. The report's **Skill adoption and next
+steps** section lists, per skill arm, hits/eligible runs, unknown runs, hit rate,
+and distinct load/read events, then gives concrete description and scope actions
+for missed or over-triggered tasks. A *hit* is an eligible run where the skill
+loaded at least once; failed runs and unknown measurements never count as misses.
+When fewer than two-thirds of measured runs load any skill arm, `results.json`
+and `diagnose` set `adoption_failed: true`, **Evaluation completeness** counts
+adoption failures, and a would-be SHIP becomes NEEDS MORE RUNS with the
+description fix as the next action. Tasks where every control run scores 100%
+are recorded in `non_discriminating_tasks`. Run records also include
+`files_changed_normalized` (with `grader_ignore` paths removed and generated
+directories such as `.venv` and `node_modules` collapsed) and Run details shows
+status, score, and checks before cost, time, turns, and tokens. Incomplete trial
+telemetry and diffs are audit evidence; incomplete pairs do not enter this table
+or the decision.
 
 ## Closing decision
 
@@ -80,9 +86,11 @@ The report itself ends with a **Closing decision** table — score, cost, time,
 tokens, tool calls, turns, and adoption, each with paired change, 95% CI, and
 one plain reading — followed by the bottom line: SHIP, DO NOT SHIP, or
 NEEDS MORE RUNS (with ceiling or floor effects noted when tasks cannot discriminate),
-plus one sentence that states why. End your summary with that
-same bottom line and reason; do not invent a different verdict from the one the
-report computed.
+plus one sentence that states why. Low adoption on any skill arm downgrades a
+would-be SHIP to NEEDS MORE RUNS and names the description fix. End your summary
+with that same bottom line and reason; do not invent a different verdict from the
+one the report computed, and carry the **Skill adoption and next steps** actions
+into the summary.
 
 When held-out tasks were planned but have no results, the decision must remain
 NEEDS MORE RUNS; development results cannot replace them. Shipping requires at

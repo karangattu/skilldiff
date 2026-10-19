@@ -130,6 +130,7 @@ def test_parse_claude_stream_json_detects_skill_and_cache_tokens() -> None:
     assert parsed["response"] == "Done."
     assert parsed["skill_available"] is True
     assert parsed["skill_invoked"] is True
+    assert parsed["skill_invocations"] == 1
     assert parsed["tool_calls"] == 2
     assert parsed["num_turns"] == 3
     assert parsed["cost"] == 0.12
@@ -155,6 +156,70 @@ def test_parse_claude_detects_skill_read_via_file_path() -> None:
     ) + "\n" + json.dumps({"type": "result", "result": "ok", "subtype": "success"})
     assert parse_claude_output(stream, ["my-skill"])["skill_invoked"] is True
     assert parse_claude_output(stream, ["other-skill"])["skill_invoked"] is False
+
+
+def test_parse_claude_ignores_incidental_skill_paths() -> None:
+    stream = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Edit",
+                        "input": {
+                            "file_path": "notes.md",
+                            "new_string": "see .claude/skills/my-skill/SKILL.md",
+                        },
+                    }
+                ]
+            },
+        }
+    ) + "\n" + json.dumps({"type": "result", "result": "ok", "subtype": "success"})
+    parsed = parse_claude_output(stream, ["my-skill"])
+    assert parsed["skill_invoked"] is False
+    assert parsed["skill_invocations"] == 0
+
+
+def test_parse_claude_does_not_count_a_denied_skill_tool() -> None:
+    stream = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "tool-1",
+                                "name": "Skill",
+                                "input": {"skill": "my-skill"},
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "tool-1",
+                                "is_error": True,
+                                "content": "denied",
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps({"type": "result", "result": "ok", "subtype": "success"}),
+        ]
+    )
+    parsed = parse_claude_output(stream, ["my-skill"])
+    assert parsed["skill_invoked"] is False
+    assert parsed["skill_invocations"] == 0
 
 
 def test_parse_claude_marks_error_results() -> None:

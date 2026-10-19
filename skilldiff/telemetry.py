@@ -111,7 +111,20 @@ def parse_codex(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     session_id = None
     turns = tools = 0
     invoked = False
+    invocations = 0
     complete = False
+    skill_item_types = {
+        "command_execution",
+        "commandExecution",
+        "mcp_tool_call",
+        "mcpToolCall",
+        "tool_call",
+        "toolCall",
+        "file_read",
+        "fileRead",
+        "read_file",
+        "skill",
+    }
     for event in stream:
         kind = event.get("type") or event.get("method")
         params = event.get("params") or {}
@@ -156,10 +169,28 @@ def parse_codex(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                 response = item.get("text") or response
             elif item_type not in {"reasoning", "todo_list", "plan", "error"}:
                 tools += 1
-            if item_type in {"command_execution", "commandExecution"}:
-                successful = (item.get("exit_code", item.get("exitCode")) == 0)
-                invoked |= successful and detect_skill_reference(
-                    str(item.get("command") or ""), skill_names)
+            if item_type in skill_item_types:
+                failed = (
+                    item.get("exit_code", item.get("exitCode")) not in (0, None)
+                    or item.get("status") in {"failed", "error", "declined"}
+                    or bool(item.get("error"))
+                )
+                payload = str(
+                    item.get("command")
+                    or item.get("path")
+                    or item.get("file_path")
+                    or item.get("filePath")
+                    or ""
+                )
+                if not payload:
+                    payload = json.dumps(
+                        item.get("input")
+                        or item.get("arguments")
+                        or item.get("parameters")
+                        or {}
+                    )
+                if not failed and detect_skill_reference(payload, skill_names):
+                    invocations += 1
         if "id" in event and "error" in event:
             error = str(event["error"])
     usage = usage or {}
@@ -168,6 +199,7 @@ def parse_codex(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     output = count(usage.get("output_tokens"))
     if total is None and raw_input is not None and output is not None:
         total = raw_input + output
+    invoked = invocations > 0
     err_msg = error or (None if complete else "Codex exited without a completed turn")
     return {
         "response": redact_secrets(response),
@@ -179,6 +211,7 @@ def parse_codex(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             if raw_input is not None and output is not None else None,
             "tool_calls": tools if complete or tools else None,
             "num_turns": turns or None, "skill_invoked": invoked,
+            "skill_invocations": invocations,
             "session_id": session_id, "reported_total_tokens": total}
 
 
@@ -192,6 +225,7 @@ def parse_agy(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     session_id = None
     response = ""
     invoked = False
+    invocations = 0
     cost = num_turns = None
     for event in stream:
         session_id = event.get("conversation_id") or session_id
@@ -204,8 +238,9 @@ def parse_agy(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                 info = step.get("tool_info") or {}
                 name = info.get("name") or step.get("tool_name")
                 if not info.get("error") and name in {"view_file", "read_file", "run_command"}:
-                    invoked |= detect_skill_reference(json.dumps(info.get("parameters") or {}),
-                                                      skill_names)
+                    if detect_skill_reference(json.dumps(info.get("parameters") or {}),
+                                              skill_names):
+                        invocations += 1
         if event.get("event") == "result":
             current = event.get("result")
             if not isinstance(current, dict):
@@ -229,6 +264,7 @@ def parse_agy(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                             f"Antigravity status: {current.get('status')}")
     raw_input = count(usage.get("input_tokens"))
     cached = count(usage.get("cache_read_tokens"))
+    invoked = invocations > 0
     err_msg = error or (None if terminal else "Antigravity exited without a result event")
     return {
         "response": redact_secrets(response),
@@ -241,11 +277,12 @@ def parse_agy(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             "reported_total_tokens": count(usage.get("total_tokens")),
             "session_id": session_id, "num_turns": num_turns,
             "tool_calls": len(completed_tools) if terminal or completed_tools else None,
-            "skill_invoked": invoked}
+            "skill_invoked": invoked,
+            "skill_invocations": invocations}
 
 
 def parse_opencode(stdout: str, skill_names: list[str]) -> dict[str, Any]:
-    from skilldiff.runner import detect_opencode_skill_load
+    from skilldiff.runner import detect_opencode_skill_loads
 
     stream, error = events(stdout)
     steps = {}
@@ -253,6 +290,7 @@ def parse_opencode(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     texts = []
     session_id = None
     complete = False
+    invocations = detect_opencode_skill_loads(stdout, skill_names) if skill_names else None
     for index, event in enumerate(stream):
         session_id = event.get("sessionID") or session_id
         part = event.get("part") or {}
@@ -293,8 +331,8 @@ def parse_opencode(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             "reported_total_tokens": total("tokens", "total"),
             "session_id": session_id, "num_turns": 1 if complete else None,
             "tool_calls": len(tools) if stream else None,
-            "skill_invoked": detect_opencode_skill_load(stdout, skill_names)
-            if skill_names else None}
+            "skill_invoked": (invocations > 0) if invocations is not None else None,
+            "skill_invocations": invocations}
 
 
 def parse_opencode_export(
@@ -343,6 +381,7 @@ def parse_opencode_export(
     texts = []
     tool_count = 0
     invoked = False
+    invocations = 0
     inputs, outputs, cache_reads, cache_writes = [], [], [], []
     costs = []
 
@@ -372,10 +411,12 @@ def parse_opencode_export(
                     target_path = str(t_input.get("filePath") or t_input.get("path") or "")
                     if t_name == "skill" and _skill_matches(target_id, list(skill_names)):
                         invoked = True
+                        invocations += 1
                     elif t_name in {"read", "read_file"} and detect_skill_reference(
                         target_path, list(skill_names)
                     ):
                         invoked = True
+                        invocations += 1
 
     def sum_or_none(vals: list[Any]) -> int | None:
         return sum(vals) if vals and all(v is not None for v in vals) else None
@@ -398,5 +439,6 @@ def parse_opencode_export(
         "num_turns": 1 if complete else None,
         "tool_calls": tool_count,
         "skill_invoked": invoked if skill_names else None,
+        "skill_invocations": invocations if skill_names else None,
     }
 

@@ -66,10 +66,12 @@ Your agent explains the score, skill use, cost, time, and tokens. It links the
 report and gives SkillDiff's decision: **SHIP**, **DO NOT SHIP**, or
 **NEEDS MORE RUNS**, with the evidence and uncertainty. A first trial checks setup;
 it does not establish a shipping decision. Missing measurements stay `N/A`.
+Low adoption blocks a SHIP result.
 
-Reports include JSON for agent analysis, Markdown for summaries, and HTML for
-optional viewing. See [reports and outputs](docs/reference.md#reports-and-outputs)
-for the full format.
+Reports include per-arm hit rates, load counts, and concrete next steps for
+improving a skill's description, plus JSON for agent analysis, Markdown for
+summaries, and HTML for optional viewing. See
+[reports and outputs](docs/reference.md#reports-and-outputs) for the full format.
 
 ## Agent instructions
 

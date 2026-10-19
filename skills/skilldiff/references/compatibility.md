@@ -14,9 +14,11 @@ installation use `npx skills add karangattu/skilldiff -g -y --copy -a antigravit
 Native global skills are in `~/.gemini/antigravity-cli/skills`
 and plugins can also supply skills. AGY has no `isolate: true` option. Treat
 filesystem exposure scans as advisory; confirmed target discovery or successful
-loading in control invalidates the baseline. Claude's project/local settings
-selection is not proof that global skills are absent. Preserve subscription
-authentication; do not select `--bare` as the default.
+loading in control invalidates the baseline. Count adoption only from successful
+target-skill loads or reads, not denied calls or other installed skills.
+Claude's project/local settings selection is not proof that global skills are
+absent. Preserve subscription authentication; do not select `--bare` as the
+default.
 
 Use credential-free CLI probes and sanitized transcripts for regression checks.
 Before certifying end-to-end support on a host, verify a dev-only control/treatment

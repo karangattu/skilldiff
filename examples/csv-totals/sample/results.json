@@ -1,6 +1,6 @@
 {
   "name": "csv-totals",
-  "skilldiff_version": "0.10.0",
+  "skilldiff_version": "0.22.0",
   "preset": "skill",
   "arm_labels": {},
   "harness": "claude",
@@ -26,6 +26,7 @@
       "id": "fix-total",
       "category": "intended",
       "split": "dev",
+      "prompt": "Fix the CSV total script so it sums the amount column correctly.",
       "repo": "../../fixtures/dev-fix",
       "grader": "python3 ../../graders/grade_csv_totals.py"
     },
@@ -33,6 +34,7 @@
       "id": "write-total",
       "category": "intended",
       "split": "held-out",
+      "prompt": "Write a CSV total script that prints one decimal total.",
       "repo": "../../fixtures/heldout-write",
       "grader": "python3 ../../graders/grade_csv_totals.py"
     }
@@ -92,6 +94,7 @@
         "output_tokens": 6400,
         "num_turns": 13,
         "skill_invoked": false,
+        "skill_invocations": 0,
         "skill_available": false,
         "files_changed": [
           "sum_csv.py"
@@ -150,6 +153,7 @@
         "output_tokens": 6400,
         "num_turns": 14,
         "skill_invoked": false,
+        "skill_invocations": 0,
         "skill_available": false,
         "files_changed": [
           "sum_csv.py"
@@ -208,6 +212,7 @@
         "output_tokens": 6400,
         "num_turns": 15,
         "skill_invoked": false,
+        "skill_invocations": 0,
         "skill_available": false,
         "files_changed": [
           "sum_csv.py"
@@ -239,6 +244,7 @@
         "output_tokens": 6400,
         "num_turns": 16,
         "skill_invoked": false,
+        "skill_invocations": 0,
         "skill_available": false,
         "files_changed": [
           "sum_csv.py"
@@ -297,6 +303,7 @@
         "output_tokens": 6400,
         "num_turns": 14,
         "skill_invoked": false,
+        "skill_invocations": 0,
         "skill_available": false,
         "files_changed": [
           "sum_csv.py"
@@ -355,6 +362,7 @@
         "output_tokens": 6400,
         "num_turns": 15,
         "skill_invoked": false,
+        "skill_invocations": 0,
         "skill_available": false,
         "files_changed": [
           "sum_csv.py"
@@ -413,6 +421,7 @@
         "output_tokens": 6400,
         "num_turns": 16,
         "skill_invoked": false,
+        "skill_invocations": 0,
         "skill_available": false,
         "files_changed": [
           "sum_csv.py"
@@ -471,6 +480,7 @@
         "output_tokens": 6400,
         "num_turns": 17,
         "skill_invoked": false,
+        "skill_invocations": 0,
         "skill_available": false,
         "files_changed": [
           "sum_csv.py"
@@ -531,6 +541,7 @@
         "output_tokens": 5200,
         "num_turns": 11,
         "skill_invoked": true,
+        "skill_invocations": 1,
         "skill_available": true,
         "files_changed": [
           "sum_csv.py"
@@ -589,6 +600,7 @@
         "output_tokens": 5200,
         "num_turns": 12,
         "skill_invoked": false,
+        "skill_invocations": 0,
         "skill_available": true,
         "files_changed": [
           "sum_csv.py"
@@ -647,6 +659,7 @@
         "output_tokens": 5200,
         "num_turns": 13,
         "skill_invoked": true,
+        "skill_invocations": 1,
         "skill_available": true,
         "files_changed": [
           "sum_csv.py"
@@ -705,6 +718,7 @@
         "output_tokens": 5200,
         "num_turns": 14,
         "skill_invoked": true,
+        "skill_invocations": 1,
         "skill_available": true,
         "files_changed": [
           "sum_csv.py"
@@ -763,6 +777,7 @@
         "output_tokens": 5600,
         "num_turns": 12,
         "skill_invoked": true,
+        "skill_invocations": 1,
         "skill_available": true,
         "files_changed": [
           "sum_csv.py"
@@ -821,6 +836,7 @@
         "output_tokens": 5600,
         "num_turns": 13,
         "skill_invoked": true,
+        "skill_invocations": 1,
         "skill_available": true,
         "files_changed": [
           "sum_csv.py"
@@ -852,6 +868,7 @@
         "output_tokens": 5600,
         "num_turns": 14,
         "skill_invoked": true,
+        "skill_invocations": 1,
         "skill_available": true,
         "files_changed": [
           "sum_csv.py"
@@ -910,6 +927,7 @@
         "output_tokens": 5600,
         "num_turns": 15,
         "skill_invoked": true,
+        "skill_invocations": 1,
         "skill_available": true,
         "files_changed": [
           "sum_csv.py"
@@ -948,5 +966,83 @@
         "artifacts": "claude-sonnet-5/write-total/treatment/004"
       }
     ]
+  },
+  "adoption_failed": false,
+  "adoption_failed_arms": [],
+  "skill_usage": {
+    "treatment": {
+      "label": "Skill",
+      "skill": "./skills/csv-totals",
+      "hits": 7,
+      "known": 8,
+      "eligible": 8,
+      "unknown": 0,
+      "failed": 0,
+      "hit_rate": 0.875,
+      "loads": 7,
+      "loads_unknown": 0,
+      "reading": "Partial adoption",
+      "unavailable_runs": 0,
+      "untriggered": [
+        {
+          "arm": "treatment",
+          "task_id": "fix-total",
+          "model": "claude-sonnet-5",
+          "rep": 2
+        }
+      ],
+      "untriggered_tasks": [],
+      "partial_intended_tasks": [
+        "fix-total"
+      ],
+      "over_triggered": [],
+      "over_triggered_tasks": [],
+      "by_task": {
+        "fix-total": {
+          "hits": 3,
+          "known": 4,
+          "unknown": 0,
+          "loads": 3,
+          "loads_unknown": 0,
+          "hit_rate": 0.75
+        },
+        "write-total": {
+          "hits": 4,
+          "known": 4,
+          "unknown": 0,
+          "loads": 4,
+          "loads_unknown": 0,
+          "hit_rate": 1.0
+        }
+      },
+      "by_category": {
+        "intended": {
+          "hits": 7,
+          "known": 8,
+          "unknown": 0,
+          "loads": 7,
+          "loads_unknown": 0,
+          "hit_rate": 0.875
+        }
+      },
+      "by_split": {
+        "dev": {
+          "hits": 3,
+          "known": 4,
+          "unknown": 0,
+          "loads": 3,
+          "loads_unknown": 0,
+          "hit_rate": 0.75
+        },
+        "held-out": {
+          "hits": 4,
+          "known": 4,
+          "unknown": 0,
+          "loads": 4,
+          "loads_unknown": 0,
+          "hit_rate": 1.0
+        }
+      }
+    }
   }
 }

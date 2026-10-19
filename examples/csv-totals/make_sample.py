@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 from skilldiff import __version__
+from skilldiff.adoption import adoption_summary
 from skilldiff.reporter import (
     build_html_report,
     build_markdown_report,
@@ -95,6 +96,7 @@ def make_run(
         "output_tokens": output,
         "num_turns": turns,
         "skill_invoked": skill_invoked if arm == "treatment" else False,
+        "skill_invocations": 1 if (arm == "treatment" and skill_invoked) else 0,
         "skill_available": arm == "treatment",
         "files_changed": ["sum_csv.py"],
         "score": score,
@@ -183,7 +185,8 @@ def build_runs() -> dict:
 
 
 def build_results() -> dict:
-    return {
+    runs = build_runs()
+    results = {
         "name": "csv-totals",
         "skilldiff_version": __version__,
         "preset": "skill",
@@ -201,6 +204,7 @@ def build_results() -> dict:
                 "id": "fix-total",
                 "category": "intended",
                 "split": "dev",
+                "prompt": "Fix the CSV total script so it sums the amount column correctly.",
                 "repo": "../../fixtures/dev-fix",
                 "grader": "python3 ../../graders/grade_csv_totals.py",
             },
@@ -208,6 +212,7 @@ def build_results() -> dict:
                 "id": "write-total",
                 "category": "intended",
                 "split": "held-out",
+                "prompt": "Write a CSV total script that prints one decimal total.",
                 "repo": "../../fixtures/heldout-write",
                 "grader": "python3 ../../graders/grade_csv_totals.py",
             },
@@ -227,8 +232,13 @@ def build_results() -> dict:
         "settings": {"harness": "claude", "timeout_seconds": 600, "parallel": 1},
         "thresholds": {},
         "pricing": PRICING,
-        "runs": build_runs(),
+        "runs": runs,
     }
+    adoption = adoption_summary(results, runs)
+    results["adoption_failed"] = adoption["adoption_failed"]
+    results["adoption_failed_arms"] = adoption["adoption_failed_arms"]
+    results["skill_usage"] = adoption["arms"]
+    return results
 
 
 def main() -> None:

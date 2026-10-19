@@ -2,6 +2,7 @@ import math
 from pathlib import Path
 from typing import Any, Optional
 
+from skilldiff.adoption import adoption_summary
 from skilldiff.reporting.evaluation import _load_runs_for_report
 from skilldiff.reporting.metrics import (
     _cost_basis_note,
@@ -122,6 +123,16 @@ def adoption_reading(used: int, known: int) -> str:
     return "Partial adoption"
 
 
+def dual_adoption_reading(control: dict[str, Any], skill: dict[str, Any]) -> str:
+    a = adoption_reading(
+        control.get("skill_used_count", 0), control.get("skill_known_count", 0)
+    )
+    b = adoption_reading(
+        skill.get("skill_used_count", 0), skill.get("skill_known_count", 0)
+    )
+    return f"A {a} · B {b}"
+
+
 def category_reading(
     category: str, score_text: str, used: int, known: int, cost_mean: Optional[float]
 ) -> str:
@@ -153,6 +164,8 @@ def _verdict(
     treatment_score: float | None = None,
     control_denials: int = 0,
     treatment_denials: int = 0,
+    adoption_failed: bool = False,
+    adoption_detail: str = "",
 ) -> tuple[str, str]:
     total = int(paired.get("pairs", 0))
     score = paired.get("score") or {}
@@ -200,6 +213,9 @@ def _verdict(
             )
         else:
             cautions.append(f"denials: control {control_denials}, treatment {treatment_denials}")
+    if adoption_failed:
+        detail = f" ({adoption_detail})" if adoption_detail else ""
+        cautions.append(f"adoption below two-thirds{detail}; fix the description and rerun")
     caution_txt = f" ({'; '.join(cautions)})" if cautions else ""
 
     def _out(msg: str, k: str) -> tuple[str, str]:
@@ -503,7 +519,10 @@ def _reading_for(
 
 
 def _metric_rows(
-    control: dict[str, Any], skill: dict[str, Any], paired: dict[str, Any]
+    control: dict[str, Any],
+    skill: dict[str, Any],
+    paired: dict[str, Any],
+    dual_usage: bool = False,
 ) -> list[list[Cell]]:
     total_pairs = paired.get("pairs", 0)
     fb = _summary_fallbacks(control, skill, total_pairs)
@@ -648,6 +667,11 @@ def _metric_rows(
                 (txt, tone), ci, reading,
             ])
     if skill.get("skill_known_count") or control.get("skill_known_count"):
+        reading = adoption_reading(
+            skill.get("skill_used_count", 0), skill.get("skill_known_count", 0)
+        )
+        if dual_usage:
+            reading = dual_adoption_reading(control, skill)
         rows.append(
             [
                 "Skill used",
@@ -655,9 +679,7 @@ def _metric_rows(
                 _skill_usage(skill),
                 "",
                 "",
-                adoption_reading(
-                    skill.get("skill_used_count", 0), skill.get("skill_known_count", 0)
-                ),
+                reading,
             ]
         )
     score_n = ((paired or {}).get("score") or {}).get("n", None)
@@ -676,7 +698,10 @@ def _metric_rows(
 
 
 def _decision_rows(
-    control: dict[str, Any], skill: dict[str, Any], paired: dict[str, Any]
+    control: dict[str, Any],
+    skill: dict[str, Any],
+    paired: dict[str, Any],
+    dual_usage: bool = False,
 ) -> list[list[Cell]]:
     total_pairs = paired.get("pairs", 0)
     fb = _summary_fallbacks(control, skill, total_pairs)
@@ -755,8 +780,12 @@ def _decision_rows(
             _skill_usage(skill),
             "",
             "",
-            adoption_reading(
-                skill.get("skill_used_count", 0), skill.get("skill_known_count", 0)
+            (
+                dual_adoption_reading(control, skill)
+                if dual_usage
+                else adoption_reading(
+                    skill.get("skill_used_count", 0), skill.get("skill_known_count", 0)
+                )
             ),
         ],
     ]
@@ -802,17 +831,25 @@ def build_decision_context(
     treatment_runs: list[dict[str, Any]] | None = None,
     run_root: Path | None = None,
     treatment_label: str = "Skill",
+    baseline_runs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     policy = results.get("failure_policy") or (results.get("settings") or {}).get(
         "failure_policy") or {}
     if control_runs is None or treatment_runs is None:
         runs = _load_runs_for_report(results, run_root)
         control_runs, treatment_runs = runs["control"], runs["treatment"]
+        if baseline_runs is None:
+            baseline_runs = runs.get("baseline") or []
+    if baseline_runs is None:
+        baseline_runs = (results.get("runs") or {}).get("baseline") or []
     control_runs = decision_cost_runs(control_runs, results)
     treatment_runs = decision_cost_runs(treatment_runs, results)
+    baseline_runs = decision_cost_runs(baseline_runs, results)
     control_runs = [analysis_run(r, policy.get("agent_failure", "exclude")) for r in control_runs]
     treatment_runs = [analysis_run(r, policy.get("agent_failure", "exclude"))
                       for r in treatment_runs]
+    baseline_runs = [analysis_run(r, policy.get("agent_failure", "exclude"))
+                     for r in baseline_runs]
     splits = {
         str(task["id"]): str(task.get("split", ""))
         for task in results.get("task_details") or []
@@ -824,6 +861,7 @@ def build_decision_context(
         split.strip().lower() in _HELD_OUT_ALIASES for split in splits.values()
     )
     held = paired_comparison(held_control, held_treatment) if has_held_out else {}
+    selected_control, selected_treatment = control_runs, treatment_runs
     if control_runs or treatment_runs:
         control, skill = _paired_comparison_metrics(control_runs, treatment_runs)
         paired = paired_comparison(control_runs, treatment_runs)
@@ -844,6 +882,33 @@ def build_decision_context(
             selected_paired = held
             selected_metrics = _paired_comparison_metrics(held_control, held_treatment)
             tasks_count = 0
+    adoption = adoption_summary(
+        results,
+        {
+            "control": control_runs,
+            "treatment": treatment_runs,
+            "baseline": baseline_runs,
+        },
+    )
+    decision_adoption = (
+        adoption_summary(
+            results,
+            {
+                "control": selected_control,
+                "treatment": selected_treatment,
+                "baseline": baseline_runs,
+            },
+        )
+        if has_held_out
+        else adoption
+    )
+    if not adoption.get("arms") and isinstance(results.get("skill_usage"), dict):
+        adoption = {
+            "arms": results["skill_usage"],
+            "adoption_failed": bool(results.get("adoption_failed")),
+            "adoption_failed_arms": results.get("adoption_failed_arms") or [],
+        }
+        decision_adoption = adoption
     pairs = int(held.get("pairs", 0))
     scored = int((held.get("score") or {}).get("n", 0))
     coverage = f"{scored}/{pairs} usable score pair(s)"
@@ -863,6 +928,7 @@ def build_decision_context(
         paired_held_out=held if has_held_out else None,
         control_score=selected_metrics[0].get("task_score"),
         treatment_score=selected_metrics[1].get("task_score"),
+        adoption=decision_adoption,
     )
     control_denials = sum(1 for r in (control_runs or []) if r.get("permission_denials"))
     treatment_denials = sum(1 for r in (treatment_runs or []) if r.get("permission_denials"))
@@ -872,6 +938,8 @@ def build_decision_context(
         "paired": selected_paired, "held_out": held, "tasks_count": tasks_count,
         "basis_note": note, "coverage": coverage, "recommendation": recommendation,
         "control_denials": control_denials, "treatment_denials": treatment_denials,
+        "adoption": adoption,
+        "decision_adoption": decision_adoption,
     }
 
 
@@ -885,6 +953,7 @@ def _recommendation(
     paired_held_out: dict[str, Any] | None = None,
     control_score: float | None = None,
     treatment_score: float | None = None,
+    adoption: dict[str, Any] | None = None,
 ) -> tuple[str, str, str]:
     if not valid:
         return (
@@ -892,6 +961,39 @@ def _recommendation(
             "DO NOT SHIP",
             "Control contamination: there is no clean baseline, so differences "
             "cannot be attributed to the skill.",
+        )
+
+    adoption_failed = bool((adoption or {}).get("adoption_failed"))
+    failed_arms = (adoption or {}).get("adoption_failed_arms") or []
+    adoption_detail = ""
+    if adoption_failed:
+        parts = []
+        for arm in failed_arms:
+            data = ((adoption or {}).get("arms") or {}).get(arm) or {}
+            label = data.get("label") or arm
+            known = int(data.get("known") or 0)
+            hits = int(data.get("hits") or 0)
+            if known:
+                parts.append(f"{label} loaded in {hits}/{known} measured runs")
+        if parts:
+            adoption_detail = "; ".join(parts)
+
+    def gate_ship(reason: str) -> tuple[str, str, str]:
+        if not adoption_failed:
+            return _RECOMMENDATION_KIND["SHIP"], "SHIP", reason
+        detail = f" ({adoption_detail})" if adoption_detail else ""
+        fix = (
+            "Both arms share the trigger, so improve the shared description on dev "
+            "tasks and rerun before choosing a body version."
+            if preset == "compression"
+            else "Sharpen the skill description on dev tasks and rerun before "
+            "deciding (see Skill adoption and next steps)."
+        )
+        return (
+            _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
+            "NEEDS MORE RUNS",
+            f"{reason} Adoption is below two-thirds{detail}, so the measured gain "
+            f"does not cover the runs where the skill never loaded. {fix}",
         )
 
     basis = ""
@@ -977,11 +1079,9 @@ def _recommendation(
                     f"{'; '.join(evidence_cautions)}. "
                     "Treat the result as preliminary; add representative tasks or runs.",
                 )
-            return (
-                _RECOMMENDATION_KIND["SHIP"],
-                "SHIP",
+            return gate_ship(
                 f"{basis}{effect_sentence('up' if mean_pp >= 0 else 'down')}, and "
-                f"{practical[0].lower() + practical[1:]}",
+                f"{practical[0].lower() + practical[1:]}"
             )
         if "does not clear the allowed regression" in practical or "below required" in practical:
             return (
@@ -1051,10 +1151,8 @@ def _recommendation(
                 f"{basis}{effect_sentence('up')}, but {joined}. "
                 "Treat the gain as preliminary and add runs before shipping.",
             )
-        return (
-            _RECOMMENDATION_KIND["SHIP"],
-            "SHIP",
-            f"{basis}{effect_sentence('up')}; the interval excludes zero.",
+        return gate_ship(
+            f"{basis}{effect_sentence('up')}; the interval excludes zero."
         )
     if control_score is not None and control_score >= 0.95 and abs(mean_pp) <= 5:
         c_pct = round(control_score * 100)

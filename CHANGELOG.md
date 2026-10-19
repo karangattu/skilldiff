@@ -6,6 +6,21 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Per-arm skill adoption reporting: hits, eligible and unknown runs, hit rate, distinct load/read events, and by-task/category/split rollups for treatment and both A/B revisions.
+- A **Skill adoption and next steps** report section with task-prompt-driven advice for missing, partial, and over-triggering, discovery failures, and loaded-but-no-effect runs.
+- Structured `skill_usage` and `next_actions` in `skilldiff diagnose --json`, plus per-arm adoption in terminal results.
+
+### Changed
+
+- `adoption_failed` now uses eligible runs and applies to every skill arm; a would-be SHIP is downgraded to NEEDS MORE RUNS when any arm loads in fewer than two-thirds of measured runs.
+- Claude adoption detection counts only successful Skill/read/command evidence; Codex, AGY, and OpenCode count distinct successful target-skill load events.
+
+### Fixed
+
+- A/B reports and diagnoses now report both skill arms instead of only the treatment revision, and failed runs no longer count as adoption misses.
+
 ## [0.22.0] - 2026-10-15
 
 ### Added

@@ -68,8 +68,9 @@ def _load_runs_for_report(
     if "runs" in results and isinstance(results["runs"], dict):
         c = results["runs"].get("control", [])
         t = results["runs"].get("treatment", [])
-        if c or t:
-            loaded = {"control": list(c), "treatment": list(t)}
+        b = results["runs"].get("baseline", [])
+        if c or t or b:
+            loaded = {"control": list(c), "treatment": list(t), "baseline": list(b)}
             return _apply_codex_cache_write_fallback(loaded, results)
 
     search_dirs: list[Path] = []
@@ -83,6 +84,7 @@ def _load_runs_for_report(
     for sdir in search_dirs:
         c_runs: list[dict[str, Any]] = []
         t_runs: list[dict[str, Any]] = []
+        b_runs: list[dict[str, Any]] = []
         for run_file in sorted(sdir.rglob("run.json")):
             try:
                 d = json.loads(run_file.read_text(encoding="utf-8"))
@@ -93,12 +95,14 @@ def _load_runs_for_report(
                 c_runs.append(d)
             elif d.get("arm") in {"treatment", "skill"}:
                 t_runs.append(d)
-        if c_runs or t_runs:
+            elif d.get("arm") == "baseline":
+                b_runs.append(d)
+        if c_runs or t_runs or b_runs:
             return _apply_codex_cache_write_fallback(
-                {"control": c_runs, "treatment": t_runs}, results
+                {"control": c_runs, "treatment": t_runs, "baseline": b_runs}, results
             )
 
-    return {"control": [], "treatment": []}
+    return {"control": [], "treatment": [], "baseline": []}
 
 
 def _run_status(run: dict[str, Any]) -> Cell:

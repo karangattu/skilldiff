@@ -15,6 +15,7 @@ from skilldiff.config import (
 )
 from skilldiff.experiment import ExperimentRunner
 from skilldiff.runner import AgentRunner, ExecResult
+from skilldiff.telemetry import parse_codex, parse_opencode
 from skilldiff.workspace import Workspace
 
 
@@ -334,6 +335,49 @@ def test_codex_detects_skill_file_read_as_adoption(tmp_path: Path):
 
     assert res.skill_available is None
     assert res.skill_invoked is True
+    assert res.skill_invocations == 1
+
+
+def test_codex_counts_each_successful_skill_load():
+    stream = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "command_execution",
+                        "command": "cat .agents/skills/sample-skill/SKILL.md",
+                        "exit_code": 0,
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "file_read",
+                        "path": ".agents/skills/sample-skill/references/notes.md",
+                        "status": "completed",
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "command_execution",
+                        "command": "cat .agents/skills/sample-skill/SKILL.md",
+                        "exit_code": 1,
+                    },
+                }
+            ),
+            json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10,
+                                                             "output_tokens": 2}}),
+        ]
+    )
+    parsed = parse_codex(stream, ["sample-skill"])
+    assert parsed["skill_invoked"] is True
+    assert parsed["skill_invocations"] == 2
 
 
 def test_agent_runner_dispatches_opencode(tmp_path: Path):
@@ -690,6 +734,59 @@ def test_opencode_structured_skill_adoption(tmp_path: Path):
         )
 
         assert res.skill_invoked is True
+        assert res.skill_invocations == 1
+
+
+def test_opencode_counts_distinct_skill_loads():
+    stdout = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "id": "call-1",
+                        "type": "tool",
+                        "tool": "skill",
+                        "state": {
+                            "status": "completed",
+                            "input": {"id": "my-skill"},
+                        },
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "id": "call-1",
+                        "type": "tool",
+                        "tool": "skill",
+                        "state": {
+                            "status": "completed",
+                            "input": {"id": "my-skill"},
+                        },
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "id": "call-2",
+                        "type": "tool",
+                        "tool": "read",
+                        "state": {
+                            "status": "completed",
+                            "input": {"filePath": ".opencode/skills/my-skill/SKILL.md"},
+                        },
+                    },
+                }
+            ),
+        ]
+    )
+    parsed = parse_opencode(stdout, ["my-skill"])
+    assert parsed["skill_invoked"] is True
+    assert parsed["skill_invocations"] == 2
 
 
 def test_load_experiment_opencode_isolate_default_and_override(mock_exp_dir: Path):

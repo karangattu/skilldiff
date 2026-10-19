@@ -266,6 +266,7 @@ def build_arm_record(
         "num_turns": res.num_turns,
         "tool_calls": res.tool_calls,
         "skill_invoked": res.skill_invoked,
+        "skill_invocations": res.skill_invocations,
         "skill_available": res.skill_available,
         "permission_denials": res.permission_denials,
         "files_changed": files,

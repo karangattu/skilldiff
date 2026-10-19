@@ -381,7 +381,9 @@ def test_report_verdict_uses_confidence_interval():
     assert "(n=6)" in md
     assert "With the skill, runs cost 50% less, summed over the compared pairs." in md
     assert "| Skill used | unknown | 6/6 |" in md
-    assert "**Adoption.** The agent used the skill in 6 of 6 skill runs" in md
+    assert "**Adoption.** Skill 6/6, 100%." in md
+    assert "## Skill adoption and next steps" in md
+    assert md.index("## Skill adoption and next steps") < md.index("## Closing decision")
 
 
 def test_report_flags_unclear_effect_and_warnings(tmp_path):
@@ -452,6 +454,41 @@ def test_closing_decision_needs_more_runs_when_ci_includes_zero():
     md = reporter.build_markdown_report(_results(control, treatment, tasks_count=3))
     assert "> **Recommendation: NEEDS MORE RUNS**" in md
     assert "The interval includes zero" in md
+
+
+def test_report_ab_shows_usage_for_both_skill_arms():
+    control = _runs("control", [0.5, 1.0, 1.0], 0.5, skill_invoked=True)
+    treatment = _runs("treatment", [1.0, 1.0, 0.0], 0.5, skill_invoked=False)
+    treatment[2]["skill_invoked"] = True
+    results = _results(
+        control,
+        treatment,
+        preset="revision",
+        skill_comparison={"skill_a": "skills/a", "skill_b": "skills/b"},
+        arm_labels={"control": "Skill A", "treatment": "Skill B"},
+        tasks_count=3,
+    )
+    md = reporter.build_markdown_report(results)
+    assert "| Skill A used | Skill B used |" in md
+    assert "| Skill A |" in md and "| Skill B |" in md
+    assert "## Skill adoption and next steps" in md
+
+
+def test_low_adoption_downgrades_ship():
+    control = _runs("control", [0.0, 0.0, 0.5, 0.5, 1.0, 1.0], 0.5)
+    treatment = _runs("treatment", [1.0] * 6, 0.25, skill_invoked=True)
+    for runs in (control, treatment):
+        for index, run in enumerate(runs):
+            run["task_id"] = ("a", "b", "c")[index % 3]
+    treatment[1]["skill_invoked"] = False
+    treatment[2]["skill_invoked"] = False
+    treatment[3]["skill_invoked"] = False
+    treatment[4]["skill_invoked"] = False
+    treatment[5]["skill_invoked"] = False
+    md = reporter.build_markdown_report(_results(control, treatment, tasks_count=4))
+    assert "> **Recommendation: NEEDS MORE RUNS**" in md
+    assert "Adoption is below two-thirds" in md
+    assert "## Skill adoption and next steps" in md
 
 
 def test_closing_decision_rejects_established_regression():

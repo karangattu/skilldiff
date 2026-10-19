@@ -1531,9 +1531,29 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     print(f"  Blast violations: {len(blast)} run(s)")
     print(f"  Token bloat:      {len(bloat)} run(s)")
 
+    usage = report.get("skill_usage") or {}
+    if usage:
+        print("\nSkill adoption:")
+        for data in usage.values():
+            known = int(data.get("known") or 0)
+            hits = int(data.get("hits") or 0)
+            rate = f"{data['hit_rate'] * 100:.0f}%" if data.get("hit_rate") is not None else "N/A"
+            loads = data.get("loads")
+            loads_txt = f", {loads} load event(s)" if loads is not None else ""
+            print(
+                f"  {data.get('label', 'Skill')}: {hits}/{known} runs ({rate}); "
+                f"{data.get('unknown', 0)} unknown{loads_txt}"
+            )
+
     print("\nActionable Recommendations:")
     for rec in report.get("recommendations", []):
         print(f"  • {rec}")
+
+    actions = report.get("next_actions") or []
+    if actions:
+        print("\nNext actions:")
+        for action in actions:
+            print(f"  → {action.get('advice')}")
 
     if getattr(args, "ci", False) and (
         report.get("adoption_failed")
@@ -1692,6 +1712,55 @@ def _format_results(results: dict) -> str:
     warnings = results.get("warnings") or []
     if warnings:
         sections.append("Warnings:\n" + "\n".join(f"  - {w}" for w in warnings))
+    from skilldiff.adoption import (
+        adoption_actions,
+        adoption_summary,
+        no_effect_findings,
+    )
+
+    raw_runs = results.get("runs") or {}
+    adoption = adoption_summary(
+        results,
+        {
+            "control": raw_runs.get("control") or [],
+            "treatment": raw_runs.get("treatment") or [],
+            "baseline": raw_runs.get("baseline") or [],
+        },
+    )
+    if adoption.get("arms"):
+        lines = []
+        for data in adoption["arms"].values():
+            known = int(data.get("known") or 0)
+            hits = int(data.get("hits") or 0)
+            rate = (
+                f"{data['hit_rate'] * 100:.0f}%"
+                if data.get("hit_rate") is not None
+                else "N/A"
+            )
+            loads = data.get("loads")
+            loads_txt = f", {loads} load event(s)" if loads is not None else ""
+            lines.append(
+                f"  - {data.get('label', 'Skill')}: {hits}/{known} runs ({rate}); "
+                f"{data.get('unknown', 0)} unknown{loads_txt}"
+            )
+        sections.append("Skill adoption:\n" + "\n".join(lines))
+        actions = adoption_actions(
+            results,
+            adoption,
+            no_effect_findings(
+                results,
+                {
+                    "control": raw_runs.get("control") or [],
+                    "treatment": raw_runs.get("treatment") or [],
+                    "baseline": raw_runs.get("baseline") or [],
+                },
+            ),
+        )
+        if actions:
+            sections.append(
+                "Next actions:\n"
+                + "\n".join(f"  - {action['advice']}" for action in actions)
+            )
     evaluation_table = render_evaluation_table(results)
     if evaluation_table:
         sections.append(evaluation_table)

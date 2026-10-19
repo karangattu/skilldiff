@@ -50,6 +50,8 @@ class RunResult:
     # True/False when the harness output says whether the agent loaded the skill;
     # None when it cannot be determined.
     skill_invoked: Optional[bool] = None
+    # Number of distinct successful load/read events for the target skill.
+    skill_invocations: Optional[int] = None
     # Whether initialization or a workspace discovery probe established availability.
     skill_available: Optional[bool] = None
     # "ok", "error", or "timeout".
@@ -617,9 +619,16 @@ def detect_opencode_skill_load(transcript: str, skill_names: list[str]) -> bool:
     those must not be mistaken for adoption of the skill under test (or,
     in the control arm, for contamination).
     """
+    return detect_opencode_skill_loads(transcript, skill_names) > 0
+
+
+def detect_opencode_skill_loads(transcript: str, skill_names: list[str]) -> int:
+    """Count distinct completed target-skill loads in OpenCode's JSON stream."""
     if not skill_names:
-        return False
-    for line in transcript.splitlines():
+        return 0
+    seen: set[str] = set()
+    count = 0
+    for index, line in enumerate(transcript.splitlines()):
         line = line.strip()
         if not line:
             continue
@@ -638,18 +647,30 @@ def detect_opencode_skill_load(transcript: str, skill_names: list[str]) -> bool:
             tool_input = candidate.get("input")
             if not isinstance(tool_input, dict):
                 # OpenCode v2 nests tool inputs under the part's ``state``.
-                state = candidate.get("state")
                 if isinstance(state, dict):
                     tool_input = state.get("input")
-            if isinstance(tool_input, dict):
-                skill_id = tool_input.get("id") or tool_input.get("skill")
-                if candidate.get("tool") == "skill" and _skill_matches(skill_id, skill_names):
-                    return True
-                if candidate.get("tool") in {"read", "read_file"} and detect_skill_reference(
-                    str(tool_input.get("filePath") or tool_input.get("path") or ""), skill_names
-                ):
-                    return True
-    return False
+            if not isinstance(tool_input, dict):
+                continue
+            matched = False
+            skill_id = tool_input.get("id") or tool_input.get("skill")
+            if candidate.get("tool") == "skill" and _skill_matches(skill_id, skill_names):
+                matched = True
+            elif candidate.get("tool") in {"read", "read_file"} and detect_skill_reference(
+                str(tool_input.get("filePath") or tool_input.get("path") or ""), skill_names
+            ):
+                matched = True
+            if not matched:
+                continue
+            key = str(
+                candidate.get("id")
+                or candidate.get("callID")
+                or candidate.get("callId")
+                or f"{index}:{candidate.get('tool')}"
+            )
+            if key not in seen:
+                seen.add(key)
+                count += 1
+    return count
 
 
 def opencode_approval_flag(
@@ -1207,6 +1228,8 @@ class AgentRunner:
         unknown = set()
         session_id = "ses_" + uuid.uuid4().hex
         skill_invoked = False
+        skill_invocations = 0
+        skill_invocations_known = True
         skill_available = None
         denials: Optional[list[str]] = None
         transcripts: list[str] = []
@@ -1240,6 +1263,11 @@ class AgentRunner:
                     unknown.add(metric)
             if res.skill_invoked:
                 skill_invoked = True
+            if res.skill_invocations is None:
+                if skill_names and res.status in (None, "ok"):
+                    skill_invocations_known = False
+            else:
+                skill_invocations += res.skill_invocations
             if res.skill_available is not None:
                 skill_available = res.skill_available
             if res.permission_denials is not None:
@@ -1273,6 +1301,11 @@ class AgentRunner:
             cache_creation_tokens=totals["cache_creation_tokens"],
             num_turns=totals["num_turns"],
             skill_invoked=skill_invoked,
+            skill_invocations=(
+                skill_invocations
+                if skill_names and skill_invocations_known
+                else None
+            ),
             skill_available=skill_available,
             session_id=last_res.session_id,
             reported_total_tokens=totals["reported_total_tokens"],
@@ -1677,6 +1710,7 @@ class AgentRunner:
             cache_creation_tokens=parsed["cache_creation_tokens"],
             num_turns=parsed["num_turns"],
             skill_invoked=parsed["skill_invoked"] if skill_names else None,
+            skill_invocations=parsed["skill_invocations"] if skill_names else None,
             skill_available=parsed["skill_available"] if skill_names else None,
             permission_denials=parsed["permission_denials"],
             session_id=parsed["session_id"],
@@ -1859,6 +1893,11 @@ class AgentRunner:
                         if export_parsed.get("skill_invoked") is not None:
                             invoked = export_parsed["skill_invoked"]
                             parsed["skill_invoked"] = parsed["skill_invoked"] or invoked
+                        if export_parsed.get("skill_invocations") is not None:
+                            parsed["skill_invocations"] = max(
+                                parsed.get("skill_invocations") or 0,
+                                export_parsed["skill_invocations"],
+                            )
             except Exception:
                 pass
         result = RunResult(
@@ -1969,6 +2008,7 @@ class AgentRunner:
             exit_code=0,
             num_turns=1,
             skill_invoked=has_skill,
+            skill_invocations=1 if has_skill else 0,
             skill_available=has_skill,
         )
 
@@ -1997,6 +2037,33 @@ def _codex_skill_names(workspace: Path) -> list[str]:
     return names
 
 
+def _claude_skill_evidence(block: dict[str, Any], skill_names: list[str]) -> Optional[str]:
+    """Return the evidence kind when a Claude tool call used the target skill."""
+    name = block.get("name")
+    tool_input = block.get("input")
+    if not isinstance(tool_input, dict):
+        return None
+    if name == "Skill" and _skill_matches(
+        tool_input.get("skill") or tool_input.get("command"), skill_names
+    ):
+        return "skill"
+    if name in {"Read", "read_file", "ReadFile"} and detect_skill_reference(
+        str(
+            tool_input.get("file_path")
+            or tool_input.get("filePath")
+            or tool_input.get("path")
+            or ""
+        ),
+        skill_names,
+    ):
+        return "read"
+    if name in {"Bash", "bash", "shell"} and detect_skill_reference(
+        str(tool_input.get("command") or ""), skill_names
+    ):
+        return "command"
+    return None
+
+
 def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     """Parse `claude -p --output-format stream-json` (or plain `json`) output."""
     parsed: dict[str, Any] = {
@@ -2011,6 +2078,7 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
         "is_error": False,
         "error": None,
         "skill_invoked": False,
+        "skill_invocations": None,
         "skill_available": None,
         "permission_denials": None,
         "session_id": None,
@@ -2020,6 +2088,8 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     saw_result = False
     usage_snapshots = []
     turn_counts = []
+    pending_hits: dict[str, str] = {}
+    uncorrelated_hits = 0
 
     from skilldiff.telemetry import count, money
     from skilldiff.telemetry import events as read_events
@@ -2056,12 +2126,22 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                         parsed["is_error"] = True
                         parsed["error"] = "Malformed Claude tool input"
                         continue
-                    if block.get("name") == "Skill" and _skill_matches(
-                        tool_input.get("skill") or tool_input.get("command"), skill_names
-                    ):
-                        parsed["skill_invoked"] = True
-                    elif detect_skill_reference(json.dumps(tool_input), skill_names):
-                        parsed["skill_invoked"] = True
+                    evidence = _claude_skill_evidence(block, skill_names)
+                    if evidence:
+                        tool_id = str(block.get("id") or "")
+                        if tool_id:
+                            pending_hits[tool_id] = evidence
+                        else:
+                            uncorrelated_hits += 1
+        elif event_type == "user":
+            content = (event.get("message") or {}).get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                if block.get("is_error"):
+                    pending_hits.pop(str(block.get("tool_use_id") or ""), None)
         elif event_type == "result":
             saw_result = True
             parsed["session_id"] = event.get("session_id") or parsed["session_id"]
@@ -2103,6 +2183,10 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
         parsed["response"] = last_text
         parsed["is_error"] = True
         parsed["error"] = "Claude exited without a result event"
+    parsed["skill_invocations"] = (
+        uncorrelated_hits + len(pending_hits) if skill_names else None
+    )
+    parsed["skill_invoked"] = bool(parsed["skill_invocations"])
     for target, source in (
         ("input_tokens", "input_tokens"), ("output_tokens", "output_tokens"),
         ("cache_read_tokens", "cache_read_input_tokens"),

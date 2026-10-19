@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from skilldiff import __version__
+from skilldiff.adoption import adoption_eligible, adoption_summary
 from skilldiff.config import ExperimentConfig, TaskConfig
 from skilldiff.persistence import read_json
 from skilldiff.profiler import compute_context_tax, measure_skill_footprint
@@ -194,12 +195,17 @@ def _run_warnings(
             ("skill A", control_runs),
             ("skill B", treatment_runs),
         ):
-            known = [r for r in runs if r.get("skill_invoked") is not None]
+            known = [
+                r
+                for r in runs
+                if adoption_eligible(r) and r.get("skill_invoked") is not None
+            ]
             unused = [r for r in known if not r.get("skill_invoked")]
             if known and unused:
                 warnings.append(
-                    f"The agent did not use {arm_name} in {len(unused)} of {len(known)} runs. "
-                    "Those runs measure install cost, not following the revision."
+                    f"The agent did not use {arm_name} in {len(unused)} of {len(known)} "
+                    "eligible runs. Those runs measure install cost, not following the "
+                    "revision."
                 )
     elif not is_pr:
         contaminated = [
@@ -217,13 +223,18 @@ def _run_warnings(
                 f"The harness did not list the skill in {len(unavailable)} skill run(s). Check the "
                 "SKILL.md frontmatter."
             )
-        known = [r for r in treatment_runs if r.get("skill_invoked") is not None]
+        known = [
+            r
+            for r in treatment_runs
+            if adoption_eligible(r) and r.get("skill_invoked") is not None
+        ]
         unused = [r for r in known if not r.get("skill_invoked")]
         if known and unused:
             warnings.append(
-                f"The agent did not use the skill in {len(unused)} of {len(known)} skill runs. "
-                "Those runs measure the cost of having the skill installed, not of following it. "
-                "Consider sharpening the skill's `description` so it triggers."
+                f"The agent did not use the skill in {len(unused)} of {len(known)} "
+                "eligible skill runs. Those runs measure the cost of having the skill "
+                "installed, not of following it. Consider sharpening the skill's "
+                "`description` so it triggers."
             )
     removed = [r for r in control_runs if r.get("removed_from_fixture")]
     if removed:
@@ -477,6 +488,8 @@ def aggregate_results(
             "category": getattr(t, "category", "general"),
             "split": getattr(t, "split", "dev"),
             "repo": t.repo,
+            "prompt": t.prompt or (t.prompts[0] if t.prompts else None),
+            "prompts": list(t.prompts or []),
             "grader": t.grader.command if t.grader else None,
         }
         for t in tasks
@@ -514,15 +527,24 @@ def aggregate_results(
         if t_scores and all(s >= 1.0 for s in t_scores):
             non_discriminating_tasks.append(t.id)
 
-    known_adoption = [
-        r for r in raw_treatment_runs if r.get("skill_invoked") is not None
-    ]
-    used_adoption = sum(1 for r in known_adoption if r.get("skill_invoked"))
-    adoption_failed = bool(
-        not comparison
-        and known_adoption
-        and (used_adoption / len(known_adoption)) < (2.0 / 3.0)
+    adoption = adoption_summary(
+        {
+            "preset": getattr(config, "preset", None) or "skill",
+            "skill": str(config.skill) if config.skill else None,
+            "skill_a": str(config.skill_a) if config.skill_a else None,
+            "skill_b": str(config.skill_b) if config.skill_b else None,
+            "skill_comparison": skill_comparison_info,
+            "comparison": comparison,
+            "arm_labels": _arm_labels(config, comparison),
+            "task_details": task_details,
+        },
+        {
+            "control": raw_control_runs,
+            "treatment": raw_treatment_runs,
+            "baseline": raw_baseline_runs,
+        },
     )
+    adoption_failed = bool(adoption["adoption_failed"])
 
     return {
         "name": config.name,
@@ -548,6 +570,8 @@ def aggregate_results(
         "failure_policy": dict(getattr(config, "failure_policy", {}) or {}),
         "valid": valid,
         "adoption_failed": adoption_failed,
+        "adoption_failed_arms": adoption["adoption_failed_arms"],
+        "skill_usage": adoption["arms"],
         "non_discriminating_tasks": non_discriminating_tasks,
         "interrupted": interrupted,
         "incomplete_runs": incomplete_runs,

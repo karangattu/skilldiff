@@ -32,8 +32,10 @@ Each treatment skill is copied once into the native workspace directory above.
 Confirmed discovery or successful loading of the target skill in a no-skill
 control is an error. Filesystem exposure scans remain advisory. Codex uses the
 native `skills/list` probe; Claude initialization can report available skills.
-OpenCode adoption requires a successful target skill load or successful skill-file
-read, rather than an arbitrary matching tool input.
+Adoption counts distinct successful loads or reads of the target skill only:
+denied calls and references to other installed skills do not count. OpenCode
+adoption requires a successful target skill load or successful skill-file read,
+rather than an arbitrary matching tool input.
 
 AGY's global skills live in `~/.gemini/antigravity-cli/skills`; plugins can provide
 skills under `~/.gemini/antigravity-cli/plugins/*/skills`. Install the SkillDiff

@@ -256,12 +256,18 @@ against the report before you write your summary. Report these results:
    Use the count of tasks contributing usable paired scores, not the planned
    task count. Terminal and saved reports share the same decision; held-out
    evidence controls it when present, and contaminated controls cannot ship.
-2. **Adoption.** Say how many skill runs actually used the skill. Low adoption usually
-   means that the skill's `description` doesn't match how users ask for the task.
-   When fewer than two-thirds of treatment runs invoke the skill, `results.json` and
+2. **Adoption.** Say how many skill runs actually loaded the skill, per skill arm
+   (including both A and B in revision/compression mode), and separately note
+   unknown runs and load-event counts. Low adoption usually means that the
+   skill's `description` doesn't match how users ask for the task. When fewer
+   than two-thirds of measured runs load a skill arm, `results.json` and
    `skilldiff diagnose` set `adoption_failed: true`, **Evaluation completeness**
-   counts adoption failures, and the report suggests tuning the description on dev
-   tasks first (`skilldiff run --split dev --runs 1`).
+   counts adoption failures, and the closing decision cannot be SHIP. Read the
+   report's **Skill adoption and next steps** section and give the user its
+   concrete action items: which task phrasing to add to the description, which
+   irrelevant tasks need a scope boundary, or whether the skill loaded but did
+   not change the outcome. Tune the description on dev tasks first
+   (`skilldiff run --split dev --runs 1`).
 3. **Efficiency.** Give the cost, time, and token changes, and say which ones are
    inside the noise. On subscription auth the real spend is $0 at the margin, so
    the API-equivalent cost is the comparison that matters. The report ends with

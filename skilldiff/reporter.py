@@ -127,6 +127,7 @@ from skilldiff.reporting.verdict import (
     adoption_reading,
     build_decision_context,
     category_reading,
+    dual_adoption_reading,
     row_reading,
 )
 from skilldiff.scope import is_blast_violation
@@ -237,6 +238,7 @@ __all__ = [
     "create_quarto_report",
     "create_reports",
     "decision_cost_runs",
+    "dual_adoption_reading",
     "extract_checks",
     "extract_notes",
     "format_cost_diff",
