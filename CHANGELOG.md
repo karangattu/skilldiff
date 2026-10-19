@@ -6,6 +6,8 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-19
+
 ### Added
 
 - Per-arm skill adoption reporting: hits, eligible and unknown runs, hit rate, distinct load/read events, and by-task/category/split rollups for treatment and both A/B revisions.

@@ -309,6 +309,6 @@ uv run --frozen --extra dev ruff check .
 These commands select the project environment without relying on shell activation.
 Lint the whole repository, including benchmark packs, to match CI and release checks.
 
-See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.22.0.
+See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.23.0.
 
 </details>
