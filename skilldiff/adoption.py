@@ -359,6 +359,7 @@ def merge_gate(summary: dict[str, Any], gate: dict[str, Any]) -> dict[str, Any]:
         "adoption_unmeasured_arms": gate.get("adoption_unmeasured_arms") or [],
         "adoption_thin_arms": gate.get("adoption_thin_arms") or [],
         "basis": gate.get("basis") or summary.get("basis"),
+        "gate_arms": gate.get("arms") or {},
     }
 
 
@@ -645,17 +646,28 @@ def adoption_actions(
                     "prompt_examples": [],
                 }
             )
-        if data.get("thin"):
+        gate_data = (summary.get("gate_arms") or {}).get(arm) or data
+        if data.get("thin") or arm in (summary.get("adoption_thin_arms") or []):
+            thin_known = (
+                gate_data["known"]
+                if not data.get("thin") and "known" in gate_data
+                else data["known"]
+            )
+            basis_label = (
+                "held-out run(s)"
+                if not data.get("thin") and summary.get("basis") == "held-out"
+                else "run(s)"
+            )
             actions.append(
                 {
                     "kind": "thin",
                     "arm": arm,
                     "tasks": [],
                     "advice": (
-                        f"{label} adoption was measured on only {data['known']} "
-                        f"run(s). A hit rate needs {summary.get('min_measured', 3)} "
-                        "measured runs before it can judge the trigger; add runs "
-                        "before trusting it."
+                        f"{label} adoption was measured on only {thin_known} "
+                        f"{basis_label}. A hit rate needs "
+                        f"{summary.get('min_measured', 3)} measured runs before "
+                        "it can judge the trigger; add runs before trusting it."
                     ),
                     "prompt_examples": [],
                 }

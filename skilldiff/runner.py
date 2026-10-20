@@ -2075,7 +2075,15 @@ def _claude_skill_evidence(block: dict[str, Any], skill_names: list[str]) -> Opt
 
 
 # Claude tool names whose denials mean the call never ran.
-_CLAUDE_DENIED_TOOLS = {"Skill": "skill"}
+_CLAUDE_DENIED_TOOLS = {
+    "Skill": "skill",
+    "Read": "read",
+    "read_file": "read",
+    "ReadFile": "read",
+    "Bash": "command",
+    "bash": "command",
+    "shell": "command",
+}
 
 
 def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
@@ -2106,8 +2114,8 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     # matching tool_result is unconfirmed, not a hit.
     pending_hits: dict[str, str] = {}
     confirmed_hits: dict[str, str] = {}
-    unconfirmed_hits = 0
-    denied_tools: set[str] = set()
+    unidentified_hits = 0
+    denied_tools: list[str] = []
 
     from skilldiff.telemetry import count, money
     from skilldiff.telemetry import events as read_events
@@ -2152,8 +2160,8 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                         else:
                             # No id to tie the call to its result: the call
                             # itself is the evidence.
-                            confirmed_hits[f"__unidentified_{unconfirmed_hits}"] = evidence
-                            unconfirmed_hits += 1
+                            confirmed_hits[f"__unidentified_{unidentified_hits}"] = evidence
+                            unidentified_hits += 1
         elif event_type == "user":
             content = (event.get("message") or {}).get("content")
             if not isinstance(content, list):
@@ -2197,7 +2205,20 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                             parsed["permission_denials"].append(f"{tool} ({reason})")
                         else:
                             parsed["permission_denials"].append(tool)
-                        denied_tools.add(tool)
+                        denied_id = str(d.get("tool_use_id") or d.get("id") or "")
+                        denied_input = d.get("tool_input") or d.get("input")
+                        if denied_id and (
+                            denied_id in confirmed_hits or denied_id in pending_hits
+                        ):
+                            confirmed_hits.pop(denied_id, None)
+                            pending_hits.pop(denied_id, None)
+                        elif isinstance(denied_input, dict):
+                            if _claude_skill_evidence(
+                                {"name": tool, "input": denied_input}, skill_names
+                            ):
+                                denied_tools.append(tool)
+                        else:
+                            denied_tools.append(tool)
                     else:
                         parsed["permission_denials"].append(str(d))
             subtype = str(event.get("subtype") or "")

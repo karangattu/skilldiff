@@ -4,6 +4,7 @@ from skilldiff.adoption import (
     adoption_actions,
     adoption_summary,
     decision_runs,
+    merge_gate,
     no_effect_findings,
 )
 from skilldiff.diagnose import diagnose_run
@@ -369,3 +370,34 @@ def test_diagnose_exposes_skill_usage_and_next_actions(tmp_path):
         for action in report["next_actions"]
     )
     assert any("failed to trigger" in rec for rec in report["recommendations"])
+
+
+def test_merge_gate_surfaces_thin_held_out_adoption_when_all_runs_exceed_floor():
+    results = {
+        "preset": "skill",
+        "arm_labels": {"treatment": "Scale"},
+        "task_details": [
+            {"id": "dev1", "category": "intended", "split": "dev"},
+            {"id": "ho1", "category": "intended", "split": "held-out"},
+        ],
+    }
+    runs = {
+        "treatment": [
+            _run("treatment", rep=1, invoked=True, task="dev1", split="dev"),
+            _run("treatment", rep=2, invoked=True, task="dev1", split="dev"),
+            _run("treatment", rep=3, invoked=True, task="dev1", split="dev"),
+            _run("treatment", rep=1, invoked=True, task="ho1", split="held-out"),
+            _run("treatment", rep=2, invoked=False, task="ho1", split="held-out"),
+        ]
+    }
+    all_summary = adoption_summary(results, runs, basis="all")
+    assert all_summary["arms"]["treatment"]["thin"] is False
+    decision_arm_runs, basis = decision_runs(results, runs)
+    gate = adoption_summary(results, decision_arm_runs, basis=basis)
+    assert gate["adoption_thin_arms"] == ["treatment"]
+
+    actions = adoption_actions(results, merge_gate(all_summary, gate))
+    thin_actions = [a for a in actions if a["kind"] == "thin"]
+    assert len(thin_actions) == 1
+    assert "only 2 held-out run(s)" in thin_actions[0]["advice"]
+

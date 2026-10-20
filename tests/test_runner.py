@@ -340,6 +340,106 @@ def test_parse_claude_ignores_a_skill_call_denied_in_the_result() -> None:
     assert parsed["permission_denials"] == ["Skill (user denied)"]
 
 
+def test_parse_claude_voids_denied_skill_read_and_preserves_unrelated_bash_denials() -> None:
+    denied_read_stream = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "read-1",
+                                "name": "Read",
+                                "input": {"file_path": ".claude/skills/my-skill/SKILL.md"},
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "read-1",
+                                "content": "The user doesn't want to take this action",
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "result": "ok",
+                    "subtype": "success",
+                    "permission_denials": [
+                        {"tool_name": "Read", "reason": "user denied"}
+                    ],
+                }
+            ),
+        ]
+    )
+    parsed = parse_claude_output(denied_read_stream, ["my-skill"])
+    assert parsed["skill_invoked"] is False
+    assert parsed["skill_invocations"] == 0
+
+    unrelated_bash_denial_stream = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "bash-1",
+                                "name": "Bash",
+                                "input": {"command": "cat .claude/skills/my-skill/SKILL.md"},
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "bash-1",
+                                "content": "skill body",
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "result": "ok",
+                    "subtype": "success",
+                    "permission_denials": [
+                        {
+                            "tool_name": "Bash",
+                            "tool_input": {"command": "rm -rf /"},
+                            "reason": "denied",
+                        }
+                    ],
+                }
+            ),
+        ]
+    )
+    parsed = parse_claude_output(unrelated_bash_denial_stream, ["my-skill"])
+    assert parsed["skill_invoked"] is True
+    assert parsed["skill_invocations"] == 1
+
+
 def test_parse_claude_marks_error_results() -> None:
     stream = json.dumps(
         {"type": "result", "subtype": "error_max_turns", "is_error": True, "num_turns": 30}
