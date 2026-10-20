@@ -6,6 +6,8 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-19
+
 ### Added
 
 - Derived container images for PR evaluations and custom packages: `pr.install: true` builds per-arm images with control and PR revisions installed cleanly into container environments; `container_install` supports installing custom packages or local checkouts into derived images across arms.
