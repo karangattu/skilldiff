@@ -14,6 +14,10 @@ This project uses semantic versioning.
 - `skilldiff init --skill-invocation implicit|explicit` scaffolds a config with the chosen mode.
 - PR runs, and A/B runs whose two revisions have different skill names, reject `skill_invocation: explicit` with an explanation: naming the skill would either compare revisions instead of skill use, or give the two arms different instructions.
 
+### Changed
+
+- The Python Shiny benchmark pack moved from `eval/py-shiny-troubleshooting/` to `examples/py-shiny-troubleshooting/`, beside the CSV totals example. The `eval/` directory is gone: it sat next to `evaluations/`, which holds experiment outputs rather than experiment inputs, and the two are easy to confuse.
+
 ## [0.25.0] - 2026-10-20
 
 ### Fixed

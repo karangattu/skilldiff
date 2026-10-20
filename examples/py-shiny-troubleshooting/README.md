@@ -23,8 +23,8 @@ Each task ships with:
 ## Usage
 
 ```bash
-skilldiff check -c eval/py-shiny-troubleshooting/skilldiff.yaml --no-probe --fail-on-ceiling
-skilldiff run -c eval/py-shiny-troubleshooting/skilldiff.yaml --split dev --runs 1 --terminate-on-ceiling
+skilldiff check -c examples/py-shiny-troubleshooting/skilldiff.yaml --no-probe --fail-on-ceiling
+skilldiff run -c examples/py-shiny-troubleshooting/skilldiff.yaml --split dev --runs 1 --terminate-on-ceiling
 ```
 
 The module task also includes a valid solution with single-quoted namespace IDs

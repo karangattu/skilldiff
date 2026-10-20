@@ -210,6 +210,9 @@ while improving the skill.
 
 [`examples/csv-totals`](examples/csv-totals) is a complete small experiment you can
 copy. It has a skill, dev and held-out tasks, fixtures, a grader, and a sample report.
+[`examples/py-shiny-troubleshooting`](examples/py-shiny-troubleshooting) is a
+larger 6-task benchmark pack for Python Shiny diagnostic skills, with known-good
+and known-broken solutions per task.
 
 | Command | What it does |
 |---|---|

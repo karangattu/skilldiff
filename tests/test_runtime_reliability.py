@@ -294,7 +294,7 @@ def test_runtime_launcher_alias_does_not_grant_read_access_to_undeclared_targets
 def test_example_module_grader_accepts_equivalent_names_and_ignores_comments(
     tmp_path, replacement, comment, expected
 ):
-    pack = Path(__file__).resolve().parents[1] / "eval/py-shiny-troubleshooting"
+    pack = Path(__file__).resolve().parents[1] / "examples/py-shiny-troubleshooting"
     source = (pack / "solutions/module-namespace-collision/good-1/app.py").read_text()
     source = comment + source.replace('"alpha"', replacement[0]).replace('"beta"', replacement[1])
     (tmp_path / "app.py").write_text(source)

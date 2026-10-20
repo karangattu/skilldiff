@@ -80,7 +80,7 @@ for OpenCode, `.agents/skills` for Antigravity).
 
 Use [examples/csv-totals](https://github.com/karangattu/skilldiff/tree/main/examples/csv-totals)
 for dev and held-out tasks, fixtures, a grader, and a sample report, or
-[eval/py-shiny-troubleshooting](https://github.com/karangattu/skilldiff/tree/main/eval/py-shiny-troubleshooting)
+[examples/py-shiny-troubleshooting](https://github.com/karangattu/skilldiff/tree/main/examples/py-shiny-troubleshooting)
 for a reusable 6-task Python Shiny diagnostic benchmark pack.
 
 ## 3. Design tasks (the important part)

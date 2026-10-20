@@ -96,7 +96,7 @@ def test_skill_documents_workflow_improvements():
         "adoption_basis",
         "non_discriminating_tasks",
         "files_changed_normalized",
-        "eval/py-shiny-troubleshooting",
+        "examples/py-shiny-troubleshooting",
         "skilldiff-sandbox",
     ):
         assert token in ALL_DOCS, f"expected skill docs to cover {token!r}"

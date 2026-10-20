@@ -271,7 +271,10 @@ def test_py_shiny_troubleshooting_pack_validates(
 ) -> None:
     monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
     monkeypatch.setenv("CLAUDE_BIN", conversation_cli)
-    pack_cfg = Path("eval/py-shiny-troubleshooting/skilldiff.yaml")
+    pack_cfg = (
+        Path(__file__).resolve().parents[1]
+        / "examples/py-shiny-troubleshooting/skilldiff.yaml"
+    )
     exp_cfg, tasks = load_experiment(pack_cfg)
     assert len(tasks) == 6
     parser = build_parser()
