@@ -73,6 +73,8 @@ def _settings_summary(config: ExperimentConfig) -> dict[str, Any]:
         "skill_invocation": getattr(config, "skill_invocation", "implicit"),
         **{k: v for k, v in harness_cfg.items() if v not in (None, [], "")},
     }
+    if getattr(config, "skill_invocation_prompt", None) is not None:
+        out["skill_invocation_prompt"] = config.skill_invocation_prompt
     thresholds = dict(getattr(config, "thresholds", {}) or {})
     if thresholds:
         out["thresholds"] = thresholds
@@ -592,6 +594,11 @@ def aggregate_results(
         "adoption_basis": adoption_basis,
         "skill_usage": adoption["arms"],
         "skill_invocation": getattr(config, "skill_invocation", "implicit"),
+        **(
+            {"skill_invocation_prompt": config.skill_invocation_prompt}
+            if getattr(config, "skill_invocation_prompt", None) is not None
+            else {}
+        ),
         "non_discriminating_tasks": non_discriminating_tasks,
         "interrupted": interrupted,
         "incomplete_runs": incomplete_runs,

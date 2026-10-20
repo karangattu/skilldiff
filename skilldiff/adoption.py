@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from skilldiff.invocation import EXPLICIT, IMPLICIT
+from skilldiff.invocation import EXPLICIT, IMPLICIT, resolve_mode
 from skilldiff.stats import METRICS, analysis_run, pair_runs
 
 _SKILL_PRESETS = {"revision", "compression"}
@@ -84,6 +84,25 @@ def task_invocation_overrides(results: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def task_invocation_mode(
+    results: dict[str, Any], task: str, overrides: dict[str, str] | None = None
+) -> str:
+    """The effective invocation mode for one task."""
+    if overrides is None:
+        overrides = task_invocation_overrides(results)
+    return resolve_mode(invocation_mode(results), overrides.get(task))
+
+
+def all_tasks_explicit(results: dict[str, Any], tasks: list[str]) -> bool:
+    """True when every task in the group ran in explicit mode."""
+    if not tasks:
+        return False
+    overrides = task_invocation_overrides(results)
+    return all(
+        task_invocation_mode(results, t, overrides) == EXPLICIT for t in tasks
+    )
+
+
 def decision_runs(
     results: dict[str, Any], runs_by_arm: dict[str, list[dict[str, Any]]]
 ) -> tuple[dict[str, list[dict[str, Any]]], str]:
@@ -114,6 +133,7 @@ def _task_details(results: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "category": str(item.get("category") or "general"),
             "split": str(item.get("split") or "dev"),
             "prompt": str(prompt) if prompt else "",
+            "skill_invocation": item.get("skill_invocation"),
         }
     return details
 
@@ -529,6 +549,7 @@ def adoption_actions(
             )
         if data.get("untriggered_tasks"):
             tasks = list(data["untriggered_tasks"])
+            is_explicit = all_tasks_explicit(results, tasks)
             examples = [
                 {"task": task, "prompt": _task_prompt(results, task)}
                 for task in tasks
@@ -555,7 +576,7 @@ def adoption_actions(
                             f"(`skilldiff check`), then read a transcript to see whether "
                             "the agent ignored the instruction or never found the skill."
                         )
-                        if explicit
+                        if is_explicit
                         else (
                             f"No intended run loaded {label} on {_format_tasks(tasks)}."
                             f"{prompt_text} Add those intents and nouns to the SKILL.md "
@@ -570,6 +591,7 @@ def adoption_actions(
             )
         if data.get("partial_intended_tasks"):
             tasks = list(data["partial_intended_tasks"])
+            is_explicit = all_tasks_explicit(results, tasks)
             counts = "; ".join(
                 f"`{task}` {data['by_task'][task]['hits']}/{data['by_task'][task]['known']}"
                 for task in tasks
@@ -599,7 +621,7 @@ def adoption_actions(
                             "transcript to see whether the agent read the skill and "
                             "chose not to follow it, or never saw it."
                         )
-                        if explicit
+                        if is_explicit
                         else (
                             f"{label} loaded inconsistently on intended task(s): "
                             f"{counts}.{prompt_text} Partial triggering usually means the "
@@ -613,6 +635,7 @@ def adoption_actions(
             )
         if data.get("over_triggered_tasks"):
             tasks = list(data["over_triggered_tasks"])
+            is_explicit = all_tasks_explicit(results, tasks)
             actions.append(
                 {
                     "kind": "scope",
@@ -626,7 +649,7 @@ def adoption_actions(
                             "in an implicit run, where the skill has to trigger on "
                             "its own."
                         )
-                        if explicit
+                        if is_explicit
                         else (
                             f"Over-triggering: {label} loaded on irrelevant task(s) "
                             f"{_format_tasks(tasks)}. Narrow the description and name what "

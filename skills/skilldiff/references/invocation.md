@@ -15,7 +15,8 @@ The default instruction is "Use the `shiny-doctor` skill for this task." for one
 skill, and "Use the skills `a`, `b` for this task." for a skill pack. A custom
 `skill_invocation_prompt` replaces it; `{skill}` becomes the arm's skill name(s).
 Only arms that actually carry the skill get the instruction, so a control arm
-without the skill is never told to use one.
+without the skill is never told to use one. In multi-turn tasks, the instruction is
+prepended to turn 1 only.
 
 A task file can override the experiment setting, which lets you test one wording
 on one task:
@@ -72,4 +73,4 @@ discovery.
   because the arms would get different instructions. Give both revisions the
   same name, or set `skill_invocation_prompt` to an instruction that does not
   name the skill ("Use the available skill for this task.").
-- A task file that sets `skill_invocation: explicit` triggers the same A/B rule.
+- A task file that sets `skill_invocation: explicit` triggers the same PR and A/B rules.

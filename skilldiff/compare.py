@@ -13,7 +13,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from skilldiff.adoption import invocation_mode
+from skilldiff.adoption import invocation_mode, task_invocation_overrides
 from skilldiff.reporter import _apply_codex_cache_write_fallback
 from skilldiff.stats import METRICS, analysis_run, pair_runs, usable_agent_run
 
@@ -327,7 +327,12 @@ def compare_results(a: dict[str, Any], b: dict[str, Any], strict: bool = False) 
         "b_name": b.get("name"),
         "score": {"a": score_a, "b": score_b, "delta_pp": score_delta, **score_counts},
         "adoption": {"a": adoption_a, "b": adoption_b},
-        "invocation": {"a": invocation_mode(a), "b": invocation_mode(b)},
+        "invocation": {
+            "a": invocation_mode(a),
+            "b": invocation_mode(b),
+            "a_overrides": task_invocation_overrides(a),
+            "b_overrides": task_invocation_overrides(b),
+        },
         "efficiency": eff,
         "matched_tasks": matched_tasks,
         "effect": {"a_pp": eff_a, "b_pp": eff_b, "delta_pp": effect_delta},
@@ -358,10 +363,12 @@ def format_comparison(comp: dict[str, Any]) -> str:
             f"Skill invocation: {invocation.get('a', 'implicit')} → "
             f"{invocation.get('b', 'implicit')}"
         )
-        if invocation.get("a") != invocation.get("b"):
+        if invocation.get("a") != invocation.get("b") or (
+            invocation.get("a_overrides") != invocation.get("b_overrides")
+        ):
             lines.append(
-                "  The prompt named the skill in one run only, so the adoption "
-                "difference mixes obedience with discovery."
+                "  The prompt named the skill in different tasks across the two runs, "
+                "so the adoption difference mixes obedience with discovery."
             )
     matched = comp.get("matched_tasks") or []
     matched_note = (

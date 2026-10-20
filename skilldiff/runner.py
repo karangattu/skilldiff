@@ -2171,10 +2171,14 @@ class AgentRunner:
         if script:
             subprocess.run(script, shell=True, cwd=cwd, check=False)
 
-        has_skill = any(
-            (cwd / base / "skills").is_dir() and any((cwd / base / "skills").iterdir())
-            for base in (".claude", ".codex", ".agents")
-        )
+        mock_invoked = os.environ.get("SKILLDIFF_MOCK_SKILL_INVOKED")
+        if mock_invoked is not None:
+            has_skill = mock_invoked.strip().lower() in ("1", "true", "yes")
+        else:
+            has_skill = any(
+                (cwd / base / "skills").is_dir() and any((cwd / base / "skills").iterdir())
+                for base in (".claude", ".codex", ".agents")
+            )
         return RunResult(
             prompt=prompt,
             response=mock_response,

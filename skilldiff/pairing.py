@@ -579,9 +579,14 @@ def run_pair(
                         )
                     if instruction:
                         if isinstance(task_prompt_val, list):
-                            task_prompt_val = [
-                                instruction + "\n\n" + prompt for prompt in task_prompt_val
-                            ]
+                            task_prompt_val = (
+                                [
+                                    instruction + "\n\n" + task_prompt_val[0],
+                                    *task_prompt_val[1:],
+                                ]
+                                if task_prompt_val
+                                else [instruction]
+                            )
                         else:
                             task_prompt_val = instruction + "\n\n" + task_prompt_val
                     runner.progress(f"Agent starting: {model} · {task.id} · {arm}")

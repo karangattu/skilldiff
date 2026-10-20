@@ -1161,11 +1161,6 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         raise ValueError("preset skill requires 'skill' (no pr, no skill_a/skill_b)")
     if preset == "pr" and pr is None:
         raise ValueError("preset pr requires a 'pr' block")
-    if preset == "pr" and skill_invocation == EXPLICIT:
-        raise ValueError(
-            "skill_invocation 'explicit' does not apply to PR runs: they compare "
-            "revisions, not skill use. Leave the prompt untouched."
-        )
     if preset == "revision" and not (skill_a_path and skill_b_path):
         raise ValueError("preset revision requires 'skill_a' and 'skill_b'")
     if preset == "compression":
@@ -1225,6 +1220,11 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     explicit_everywhere = skill_invocation == EXPLICIT or any(
         task.skill_invocation == EXPLICIT for task in loaded_tasks
     )
+    if explicit_everywhere and (preset == "pr" or pr is not None):
+        raise ValueError(
+            "skill_invocation 'explicit' does not apply to PR runs: they compare "
+            "revisions, not skill use. Leave the prompt untouched."
+        )
     if explicit_everywhere and preset == "revision" and template_names_skill(
         skill_invocation_prompt
     ):

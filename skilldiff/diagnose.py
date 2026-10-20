@@ -7,6 +7,7 @@ from typing import Any
 from skilldiff.adoption import (
     adoption_actions,
     adoption_summary,
+    all_tasks_explicit,
     decision_runs,
     invocation_mode,
     merge_gate,
@@ -137,7 +138,6 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
     recommendations = []
     unknown_adoption_runs = 0
     is_pr = bool(data.get("comparison")) or data.get("preset") == "pr"
-    explicit = invocation_mode(data) == "explicit"
     skill_arms = set(skill_arm_names(data, arms))
     adoption = adoption_summary(data, arms, basis="all")
     decision_arm_runs, adoption_basis = decision_runs(data, arms)
@@ -349,7 +349,8 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         )
 
     if under_triggered:
-        tasks_list = sorted({item["task_id"] for item in under_triggered})
+        tasks_list = sorted({item.get("task_id") or item.get("task") for item in under_triggered})
+        is_explicit = all_tasks_explicit(data, tasks_list)
         arm_counts = ", ".join(
             f"{arm}: {sum(1 for item in under_triggered if item['arm'] == arm)}"
             for arm in sorted({item["arm"] for item in under_triggered})
@@ -361,7 +362,7 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
                 "named the skill, so check that the harness exposes it and read a "
                 "transcript to see whether the agent ignored the instruction."
             )
-            if explicit
+            if is_explicit
             else (
                 f"Adoption: the skill failed to trigger on {len(under_triggered)} intended "
                 f"task run(s) ({arm_counts}; tasks: {', '.join(tasks_list)}). Refine the "
@@ -370,7 +371,8 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         )
 
     if over_triggered:
-        tasks_list = sorted({item["task_id"] for item in over_triggered})
+        tasks_list = sorted({item.get("task_id") or item.get("task") for item in over_triggered})
+        is_explicit = all_tasks_explicit(data, tasks_list)
         arm_counts = ", ".join(
             f"{arm}: {sum(1 for item in over_triggered if item['arm'] == arm)}"
             for arm in sorted({item["arm"] for item in over_triggered})
@@ -382,7 +384,7 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
                 "named the skill, so this arm cannot measure over-triggering; measure "
                 "it in an implicit run."
             )
-            if explicit
+            if is_explicit
             else (
                 f"Over-triggering: the skill triggered on {len(over_triggered)} irrelevant "
                 f"task run(s) ({arm_counts}; tasks: {', '.join(tasks_list)}). Add scoping "

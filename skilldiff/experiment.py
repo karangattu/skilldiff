@@ -1301,7 +1301,7 @@ class ExperimentRunner:
             "timestamp", "run_dir", "models", "tasks", "task_categories", "task_details",
             "tasks_count", "runs_per_arm", "seed", "failure_policy", "settings",
             "thresholds", "pricing", "cost_basis", "provenance", "context_tax", "retries",
-            "skill_invocation",
+            "skill_invocation", "skill_invocation_prompt",
         ):
             if key in old_results:
                 results[key] = old_results[key]
