@@ -3,6 +3,7 @@ import json
 import os
 import queue
 import re
+import shlex
 import shutil
 import signal
 import sqlite3
@@ -539,6 +540,134 @@ def resolve_container_image(runtime: str, image: Optional[str], timeout: float =
         "Container image must be available locally and inspectable: "
         + (last_err or image or DEFAULT_CONTAINER_IMAGE)
     )
+
+
+def build_derived_container_image(
+    runtime: str,
+    base_image: str,
+    install_targets: list[str] | None = None,
+    repo_src: Path | None = None,
+    install_spec: bool | str | list[str] | None = None,
+    tag: str | None = None,
+    timeout: float = 600,
+) -> str:
+    binary = cached_which(runtime)
+    if not binary:
+        raise ValueError(f"Container runtime '{runtime}' not found on PATH")
+    with tempfile.TemporaryDirectory(prefix="skilldiff-build-") as tmp:
+        build_dir = Path(tmp)
+        dockerfile_lines = [f"FROM {base_image}"]
+
+        if repo_src and repo_src.is_dir() and install_spec is not False:
+            dest = build_dir / "repo_src"
+            shutil.copytree(repo_src, dest, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+            target = "/tmp/skilldiff-repo"
+            if isinstance(install_spec, str):
+                tokens = shlex.split(install_spec)
+                new_tokens = []
+                has_target = False
+                for tok in tokens:
+                    if tok in {"-e", "--editable"}:
+                        continue
+                    if tok == ".":
+                        new_tokens.append("/tmp/skilldiff-repo")
+                        has_target = True
+                    elif tok.startswith(".["):
+                        new_tokens.append(f"/tmp/skilldiff-repo{tok[1:]}")
+                        has_target = True
+                    elif not tok.startswith("-") and (repo_src / tok).exists():
+                        new_tokens.append(f"/tmp/skilldiff-repo/{tok}")
+                        has_target = True
+                    else:
+                        new_tokens.append(tok)
+                if not has_target:
+                    new_tokens.append("/tmp/skilldiff-repo")
+                target = " ".join(new_tokens)
+            elif isinstance(install_spec, list):
+                new_tokens = []
+                has_target = False
+                for tok in install_spec:
+                    if tok in {"-e", "--editable"}:
+                        continue
+                    if tok == ".":
+                        new_tokens.append("/tmp/skilldiff-repo")
+                        has_target = True
+                    elif tok.startswith(".["):
+                        new_tokens.append(f"/tmp/skilldiff-repo{tok[1:]}")
+                        has_target = True
+                    else:
+                        new_tokens.append(tok)
+                if not has_target:
+                    new_tokens.append("/tmp/skilldiff-repo")
+                target = " ".join(new_tokens)
+            dockerfile_lines.append("COPY repo_src /tmp/skilldiff-repo")
+            cmd = (
+                "if command -v uv >/dev/null 2>&1 && [ -d /opt/venv ]; then "
+                f"uv pip install --reinstall --python /opt/venv/bin/python {target}; "
+                "elif [ -f /opt/venv/bin/python ]; then "
+                f"/opt/venv/bin/python -m pip install --upgrade --force-reinstall {target}; "
+                "else "
+                f"pip install --upgrade --force-reinstall {target}; "
+                "fi && rm -rf /tmp/skilldiff-repo"
+            )
+            dockerfile_lines.append(f"RUN {cmd}")
+
+        if install_targets:
+            for idx, item in enumerate(install_targets):
+                local_p = Path(item)
+                if local_p.is_dir():
+                    extra_dest = build_dir / f"extra_{idx}"
+                    shutil.copytree(
+                        local_p, extra_dest, symlinks=True, ignore=shutil.ignore_patterns(".git")
+                    )
+                    dockerfile_lines.append(f"COPY extra_{idx} /tmp/extra_{idx}")
+                    p = f"/tmp/extra_{idx}"
+                    cmd = (
+                        "if command -v uv >/dev/null 2>&1 && [ -d /opt/venv ]; then "
+                        f"uv pip install --reinstall --python /opt/venv/bin/python {p}; "
+                        "elif [ -f /opt/venv/bin/python ]; then "
+                        f"/opt/venv/bin/python -m pip install --upgrade --force-reinstall {p}; "
+                        "else "
+                        f"pip install --upgrade --force-reinstall {p}; "
+                        f"fi && rm -rf {p}"
+                    )
+                    dockerfile_lines.append(f"RUN {cmd}")
+                else:
+                    q = shlex.quote(item)
+                    cmd = (
+                        "if command -v uv >/dev/null 2>&1 && [ -d /opt/venv ]; then "
+                        f"uv pip install --reinstall --python /opt/venv/bin/python {q}; "
+                        "elif [ -f /opt/venv/bin/python ]; then "
+                        f"/opt/venv/bin/python -m pip install --upgrade --force-reinstall {q}; "
+                        "else "
+                        f"pip install --upgrade --force-reinstall {q}; "
+                        "fi"
+                    )
+                    dockerfile_lines.append(f"RUN {cmd}")
+
+        if len(dockerfile_lines) == 1:
+            return base_image
+
+        (build_dir / "Dockerfile").write_text("\n".join(dockerfile_lines) + "\n", encoding="utf-8")
+        build_cmd = [binary, "build", "-q"]
+        if tag:
+            build_cmd.extend(["-t", tag])
+        build_cmd.append(".")
+        proc = subprocess.run(
+            build_cmd,
+            cwd=build_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        if proc.returncode != 0:
+            err = proc.stderr.strip() or proc.stdout.strip()
+            raise ValueError(f"Container image build failed: {err}")
+        out_id = proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
+        if out_id.startswith("sha256:"):
+            return out_id
+        return resolve_container_image(runtime, tag or out_id, timeout=20)
 
 
 def validate_container_auth(config: ExperimentConfig) -> None:

@@ -146,6 +146,7 @@ def resolve_comparison(
                 merge_base=merge_base,
                 base_tip=base_tip,
                 head_commit=head,
+                install=getattr(pr, "install", False),
             )
     else:
         res = dict(
@@ -160,6 +161,7 @@ def resolve_comparison(
             merge_base=merge_base,
             base_tip=base_tip,
             head_commit=head,
+            install=getattr(pr, "install", False),
         )
     try:
         touched = find_pr_touched_skills(pr.repo, res["control_commit"], res["treatment_commit"])

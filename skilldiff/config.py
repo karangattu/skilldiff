@@ -40,6 +40,7 @@ EXPERIMENT_KEYS = frozenset(
         "cost_basis",
         "isolation",
         "container_image",
+        "container_install",
         "env",
         "max_turns",
         "max_tool_budget",
@@ -87,7 +88,7 @@ OPENCODE_KEYS = frozenset(
     }
 )
 ANTIGRAVITY_KEYS = frozenset({"dangerously_skip_permissions", "bin_path", "extra_args"})
-PR_KEYS = frozenset({"repo", "base", "head", "mode", "pair"})
+PR_KEYS = frozenset({"repo", "base", "head", "mode", "pair", "install"})
 THRESHOLD_KEYS = frozenset(
     {
         "acceptable_score_regression_pp",
@@ -270,6 +271,18 @@ def validate_experiment_values(data: dict[str, Any]) -> None:
                          ("pair", {"merge-base", "base-merge"})):
         if key in pr:
             validate_enum(pr[key], f"pr.{key}", choices)
+    if "install" in pr and pr["install"] is not None:
+        val = pr["install"]
+        if not isinstance(val, (bool, str, list)) or (
+            isinstance(val, list) and not all(isinstance(x, str) for x in val)
+        ):
+            raise ValueError("pr.install must be a boolean, string, or list of strings")
+    if "container_install" in data and data["container_install"] is not None:
+        val = data["container_install"]
+        if not isinstance(val, (bool, str, list)) or (
+            isinstance(val, list) and not all(isinstance(x, str) for x in val)
+        ):
+            raise ValueError("container_install must be a boolean, string, or list of strings")
     for key, value in (data.get("thresholds") or {}).items():
         if value is not None:
             validate_number(value, f"thresholds.{key}")
@@ -418,6 +431,7 @@ class PRConfig:
     #   merge-base: merge-base(base, head) vs head (did the branch change behaviour?).
     #   base-merge: base tip vs synthetic merge of head into base (does it integrate?).
     pair: str = "merge-base"
+    install: bool | str | list[str] = False
 
 
 @dataclass
@@ -471,6 +485,7 @@ class ExperimentConfig:
     pricing: dict[str, Any] = field(default_factory=dict)
     isolation: str = "local"
     container_image: Optional[str] = None
+    container_install: bool | str | list[str] | None = None
     cost_basis: str = "harness"
     env: dict[str, str] = field(default_factory=dict)
     max_turns: Optional[int] = None
@@ -875,6 +890,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
             pr_data["head"],
             mode=mode,
             pair=pair,
+            install=pr_data.get("install", False),
         )
         if not pr.repo.is_dir():
             raise FileNotFoundError(f"PR repo not found: {pr.repo}")
@@ -1049,6 +1065,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     if isolation == "macos" and harness not in {"codex", "claude"}:
         raise ValueError("isolation: macos supports the Codex and Claude harnesses only")
     container_image = data.get("container_image")
+    container_install = data.get("container_install")
     exp_env = validate_env_mapping(data.get("env"), "env")
     max_turns = data.get("max_turns")
     if max_turns is not None:
@@ -1084,6 +1101,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         cost_basis=cost_basis,
         isolation=isolation,
         container_image=container_image,
+        container_install=container_install,
         env=exp_env,
         max_turns=int(max_turns) if max_turns is not None else None,
         max_tool_budget=int(max_tool_budget) if max_tool_budget is not None else None,

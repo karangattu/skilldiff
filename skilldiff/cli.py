@@ -356,6 +356,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     if getattr(args, "repo", None) or getattr(args, "base", None):
         print("--repo and --base require --pr.", file=sys.stderr)
         return 1
+    if getattr(args, "pr_install", False):
+        print("--pr-install requires --pr and --repo.", file=sys.stderr)
+        return 1
 
     if (skill_a_arg or skill_b_arg) and skill_arg:
         print("Use either --skill or --skill-a/--skill-b, not both.", file=sys.stderr)
@@ -409,6 +412,10 @@ def cmd_init(args: argparse.Namespace) -> int:
         model=DEFAULT_MODELS[harness],
         harness_block=HARNESS_BLOCKS[harness],
     )
+    if getattr(args, "container_install", None):
+        ci = args.container_install
+        val = ci[0] if len(ci) == 1 else ci
+        config_text += f"\n{yaml.safe_dump({'container_install': val})}\n"
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text(config_text, encoding="utf-8")
     created.append(config_file)
@@ -493,6 +500,10 @@ def _init_skill_ab(
         model=DEFAULT_MODELS[harness],
         harness_block=HARNESS_BLOCKS[harness],
     )
+    if getattr(args, "container_install", None):
+        ci = args.container_install
+        val = ci[0] if len(ci) == 1 else ci
+        text += f"\n{yaml.safe_dump({'container_install': val})}\n"
     (root / "skilldiff.yaml").parent.mkdir(parents=True, exist_ok=True)
     (root / "skilldiff.yaml").write_text(text, encoding="utf-8")
     _write(root / "tasks" / "my-first-task.yaml", CUSTOM_TASK_YAML, force)
@@ -539,6 +550,11 @@ def _init_pr(args: argparse.Namespace, root: Path, force: bool, harness: str) ->
         "timeout_seconds": 1800,
         "parallel": 1,
     }
+    if getattr(args, "pr_install", False):
+        config["pr"]["install"] = True
+    if getattr(args, "container_install", None):
+        ci = args.container_install
+        config["container_install"] = ci[0] if len(ci) == 1 else ci
     text = yaml.safe_dump(config, sort_keys=False) + "\n" + HARNESS_BLOCKS[harness]
     _write(root / "skilldiff.yaml", text, force)
     task_template = """id: my-first-task
@@ -717,6 +733,23 @@ def cmd_check(args: argparse.Namespace) -> int:
                 f"PR touches skill(s): {', '.join(comparison['touched_skills'])}; "
                 "installed into agent workspaces"
             )
+        if getattr(cfg.pr, "install", False):
+            if cfg.isolation in {"docker", "podman"}:
+                ok(
+                    "PR container install: per-arm derived images will be built "
+                    f"from PR checkouts (spec: {cfg.pr.install})"
+                )
+            else:
+                warn("pr.install is configured but isolation is not docker or podman")
+
+    if cfg.container_install:
+        if cfg.isolation in {"docker", "podman"}:
+            ok(
+                f"container install: packages {cfg.container_install} "
+                "will be installed into container image"
+            )
+        else:
+            warn("container_install is configured but isolation is not docker or podman")
 
     if getattr(cfg, "preset", None):
         ok(f"preset: {cfg.preset}")
@@ -1816,6 +1849,16 @@ def build_parser() -> argparse.ArgumentParser:
             "PR revisions: merge-base vs head, or base tip vs synthetic merge "
             "(default: merge-base)"
         ),
+    )
+    init_parser.add_argument(
+        "--pr-install",
+        action="store_true",
+        help="Install the respective PR checkout into the container environment for each arm",
+    )
+    init_parser.add_argument(
+        "--container-install",
+        nargs="+",
+        help="Package specs or local directories to install into the container image",
     )
     init_parser.add_argument(
         "--harness", choices=sorted(HARNESS_BLOCKS), default="claude", help="Agent CLI to use"

@@ -37,9 +37,10 @@ from skilldiff.pairing import (
 )
 from skilldiff.persistence import atomic_json, read_json, run_lock
 from skilldiff.reporter import create_reports
-from skilldiff.revisions import resolve_comparison
+from skilldiff.revisions import export_revision, resolve_comparison
 from skilldiff.runner import (
     AgentRunner,
+    build_derived_container_image,
     cached_which,
     resolve_container_image,
     validate_container_auth,
@@ -324,6 +325,7 @@ class ExperimentRunner:
         self._timestamp = ""
         self._stopped = threading.Event()
         self._container_image_id: str | None = None
+        self._arm_container_images: dict[str, str] = {}
 
     # ------------------------------------------------------------------ setup
 
@@ -373,6 +375,13 @@ class ExperimentRunner:
                     )
             except Exception:
                 pass
+        if (
+            self.config.container_install
+            or (self.config.pr and getattr(self.config.pr, "install", False))
+        ) and self.config.isolation not in {"docker", "podman"}:
+            warnings.append(
+                "container_install / pr.install is configured but isolation is not docker or podman"
+            )
         return warnings
 
     def _skill_comparison_info(self) -> dict[str, Any] | None:
@@ -434,6 +443,8 @@ class ExperimentRunner:
             "isolation": self.config.isolation,
             "container_image": self.config.container_image,
             "container_image_id": self._container_image_id,
+            "container_image_ids": self._arm_container_images or None,
+            "container_install": self.config.container_install,
             "models": self.config.models,
             "runs": self.config.runs,
             "timeout_seconds": self.config.timeout_seconds,
@@ -515,7 +526,7 @@ class ExperimentRunner:
         elif prev_comp and cur_comp:
             for key in (
                 "control_commit", "treatment_commit", "base_tip", "head_commit",
-                "merge_base", "mode", "pair", "repo",
+                "merge_base", "mode", "pair", "repo", "install",
             ):
                 if prev_comp.get(key) != cur_comp.get(key):
                     reasons.append(
@@ -556,7 +567,7 @@ class ExperimentRunner:
                 f"{getattr(self.config, 'preset', None)})"
             )
         for key in ("timeout_seconds", "parallel", "thresholds", "failure_policy",
-                    "container_image", "pricing"):
+                    "container_image", "container_install", "pricing"):
             if prev_exp.get(key) != getattr(self.config, key):
                 reasons.append(f"{key} changed")
         if prev_exp.get("cost_basis", "harness") != self.config.cost_basis:
@@ -565,6 +576,12 @@ class ExperimentRunner:
             reasons.append("isolation changed")
         if prev_exp.get("container_image_id") != self._container_image_id:
             reasons.append("container image identity changed")
+        if self.config.isolation in {"docker", "podman"} and prev_exp.get("container_image_ids"):
+            for arm, img_id in prev_exp["container_image_ids"].items():
+                try:
+                    resolve_container_image(self.config.isolation, img_id)
+                except Exception:
+                    reasons.append(f"container image for {arm} ({img_id}) not found")
         harness = self.config.harness
         current_harness = asdict(getattr(self.config, harness))
         previous_harness = prev_exp.get(harness) or {}
@@ -749,6 +766,65 @@ class ExperimentRunner:
             resolve_comparison(self.config.pr, previous=(previous or {}).get("comparison"))
             if self.config.pr else None
         )
+        pr_install = getattr(self.config.pr, "install", False) if self.config.pr else False
+        if not pr_install and self.config.pr and self.config.container_install is True:
+            pr_install = True
+        extra_targets = None
+        if isinstance(self.config.container_install, str):
+            extra_targets = [self.config.container_install]
+        elif isinstance(self.config.container_install, list):
+            extra_targets = list(self.config.container_install)
+
+        if resuming:
+            self._arm_container_images = dict(previous.get("container_image_ids") or {})
+            if previous.get("container_image_id"):
+                self._container_image_id = previous["container_image_id"]
+        elif self.config.isolation in {"docker", "podman"}:
+            if pr_install and self.comparison:
+                c_commit = self.comparison["control_commit"][:8]
+                self.progress(f"Building container image for PR control arm ({c_commit})...")
+                with tempfile.TemporaryDirectory(prefix="skilldiff-export-ctrl-") as tmp_ctrl:
+                    export_revision(
+                        self.config.pr.repo, self.comparison["control_commit"], Path(tmp_ctrl)
+                    )
+                    ctrl_img = build_derived_container_image(
+                        runtime=self.config.isolation,
+                        base_image=self._container_image_id,
+                        install_targets=extra_targets,
+                        repo_src=Path(tmp_ctrl),
+                        install_spec=pr_install,
+                        tag=f"skilldiff-pr-control:{self.comparison['control_commit'][:12]}",
+                    )
+                t_commit = self.comparison["treatment_commit"][:8]
+                self.progress(f"Building container image for PR treatment arm ({t_commit})...")
+                with tempfile.TemporaryDirectory(prefix="skilldiff-export-treat-") as tmp_treat:
+                    export_revision(
+                        self.config.pr.repo, self.comparison["treatment_commit"], Path(tmp_treat)
+                    )
+                    treat_img = build_derived_container_image(
+                        runtime=self.config.isolation,
+                        base_image=self._container_image_id,
+                        install_targets=extra_targets,
+                        repo_src=Path(tmp_treat),
+                        install_spec=pr_install,
+                        tag=f"skilldiff-pr-treatment:{self.comparison['treatment_commit'][:12]}",
+                    )
+                self._arm_container_images = {"control": ctrl_img, "treatment": treat_img}
+                if self.config.include_baseline:
+                    self._arm_container_images["baseline"] = ctrl_img
+            elif extra_targets:
+                self.progress("Building derived container image with custom packages...")
+                derived_img = build_derived_container_image(
+                    runtime=self.config.isolation,
+                    base_image=self._container_image_id,
+                    install_targets=extra_targets,
+                    tag="skilldiff-custom:latest",
+                )
+                self._container_image_id = derived_img
+                self._arm_container_images = {"control": derived_img, "treatment": derived_img}
+                if self.config.include_baseline:
+                    self._arm_container_images["baseline"] = derived_img
+
         sources = input_sources(self.config, self.tasks)
         if any(run_root.is_relative_to(source) for source in sources):
             raise ValueError("Run directory must be outside skill and fixture input directories")
@@ -983,6 +1059,10 @@ class ExperimentRunner:
                 )
             fixtures[task.id] = paths[source]
         self._execution_config = deepcopy(self.config)
+        exp_meta = checkpoint.get("experiment") or {}
+        if exp_meta.get("container_image_id"):
+            self._execution_config.container_image = exp_meta["container_image_id"]
+        arm_image_map = exp_meta.get("container_image_ids") or {}
         self._baseline_runs = []
         self.comparison = None
         self._seed = int(old_results.get("seed") or 0)
@@ -1025,6 +1105,11 @@ class ExperimentRunner:
                             except ValueError as exc:
                                 failure = f"{arm}: {exc}"
                                 break
+                            cand_img = (
+                                records[arm].get("container_image")
+                                or arm_image_map.get(arm)
+                                or self._execution_config.container_image
+                            )
                             candidates.append(
                                 Candidate(
                                     "", arm, workspace,
@@ -1032,6 +1117,7 @@ class ExperimentRunner:
                                     diff_text,
                                     (dirs[arm] / "transcript.txt").read_text(encoding="utf-8"),
                                     list(records[arm].get("files_changed") or []),
+                                    container_image=cand_img,
                                 )
                             )
                         if failure:

@@ -378,3 +378,50 @@ def test_check_rejects_unsupported_container_auth_before_runtime(
     assert cmd_check(Namespace(config=str(config), no_grade=True)) == 1
     assert "api_key" in capsys.readouterr().out
     assert not log.exists()
+
+
+@pytest.mark.parametrize("value", [True, False, "pytest", ["pytest", "requests"]])
+def test_container_install_valid(tmp_path, value):
+    config = experiment_file(tmp_path, {"container_install": value})
+    cfg, _ = load_experiment(config)
+    assert cfg.container_install == value
+
+
+@pytest.mark.parametrize("value", [123, {"a": 1}, [123]])
+def test_container_install_invalid(tmp_path, value):
+    config = experiment_file(tmp_path, {"container_install": value})
+    with pytest.raises(ValueError, match="container_install"):
+        load_experiment(config)
+
+
+@pytest.mark.parametrize("value", [True, ".[test]", ["pytest"]])
+def test_pr_install_valid(tmp_path, value):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    config = experiment_file(
+        tmp_path,
+        {
+            "skill": None,
+            "pr": {"repo": str(repo), "base": "main", "head": "feat", "install": value},
+        },
+    )
+    cfg, _ = load_experiment(config)
+    assert cfg.pr.install == value
+
+
+@pytest.mark.parametrize("value", [123, {"a": 1}, [123]])
+def test_pr_install_invalid(tmp_path, value):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    config = experiment_file(
+        tmp_path,
+        {
+            "skill": None,
+            "pr": {"repo": str(repo), "base": "main", "head": "feat", "install": value},
+        },
+    )
+    with pytest.raises(ValueError, match="pr.install"):
+        load_experiment(config)
+

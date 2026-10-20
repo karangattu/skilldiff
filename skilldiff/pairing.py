@@ -193,6 +193,7 @@ def probe_arm_preflights(
     model: str,
     arm_dirs: dict[str, Path],
     progress: Callable[[str], None],
+    arm_container_images: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     preflight_reports: dict[str, Any] = {}
     for arm, ws in workspaces.items():
@@ -203,9 +204,12 @@ def probe_arm_preflights(
         )
         directory = arm_dirs[arm]
         progress(f"Preflight: {model} · {task.id} · {arm}")
+        arm_execution = deepcopy(execution)
+        if arm_container_images and arm in arm_container_images:
+            arm_execution.container_image = arm_container_images[arm]
         try:
             probe = agent_runner.preflight(
-                ws.root, execution, expected, runtime_probe=task.runtime_probe
+                ws.root, arm_execution, expected, runtime_probe=task.runtime_probe
             )
             preflight_reports[arm] = probe
             atomic_json(directory / "preflight.json", {"status": "ok", **probe})
@@ -236,6 +240,7 @@ def build_arm_record(
     is_ab: bool,
     config: ExperimentConfig,
     pr_mode: str,
+    container_image: str | None = None,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
         "complete": True,
@@ -282,6 +287,8 @@ def build_arm_record(
         "artifacts": str(arm_dir.relative_to(run_root)),
         "isolation_issues": workspace.isolation_issues or [],
     }
+    if container_image:
+        record["container_image"] = container_image
     if is_blast_violation(grade.feedback):
         record["grade_error_kind"] = "blast_radius"
     if comparison:
@@ -389,6 +396,7 @@ def run_pair(
             "treatment": treat_dir,
             "baseline": baseline_dir,
         }
+        arm_images = getattr(runner, "_arm_container_images", None) or {}
         if not is_correctness and not os.environ.get("SKILLDIFF_MOCK_RUNNER"):
             preflight_reports = probe_arm_preflights(
                 workspaces=workspaces,
@@ -398,6 +406,7 @@ def run_pair(
                 model=model,
                 arm_dirs=arm_dirs_map,
                 progress=runner.progress,
+                arm_container_images=arm_images,
             )
 
         has_baseline = "baseline" in workspaces and not is_correctness
@@ -466,6 +475,9 @@ def run_pair(
                         if workspaces[arm].skill_dirs
                         else None
                     )
+                    arm_execution = deepcopy(execution)
+                    if arm_images.get(arm):
+                        arm_execution.container_image = arm_images[arm]
                     try:
                         run_sig = inspect.signature(runner.agent_runner.run)
                         if "skill_names" in run_sig.parameters or any(
@@ -476,7 +488,7 @@ def run_pair(
                                 task_prompt_val,
                                 workspaces[arm].root,
                                 model,
-                                execution,
+                                arm_execution,
                                 skill_names=arm_skills,
                             )
                         else:
@@ -484,7 +496,7 @@ def run_pair(
                                 task_prompt_val,
                                 workspaces[arm].root,
                                 model,
-                                execution,
+                                arm_execution,
                             )
                     except KeyboardInterrupt:
                         diff_text, changed = workspaces[arm].get_diff()
@@ -627,6 +639,7 @@ def run_pair(
                 diffs[arm][0],
                 results[arm].transcript,
                 diffs[arm][1],
+                container_image=arm_images.get(arm, execution.container_image),
             )
             for arm in workspaces
             if arm in results
@@ -666,6 +679,7 @@ def run_pair(
                 is_ab=is_ab,
                 config=runner.config,
                 pr_mode=pr_mode,
+                container_image=arm_images.get(arm, execution.container_image),
             )
             runner._postprocess_grade(records[arm])
             runner._save_run_artifacts(arm_dir, records[arm], res.transcript, diff_text)

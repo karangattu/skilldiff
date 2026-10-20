@@ -11,7 +11,7 @@ import pytest
 from skilldiff.config import ExperimentConfig, GraderConfig
 from skilldiff.experiment import ExperimentRunner, collect_provenance
 from skilldiff.grader import Grader
-from skilldiff.runner import AgentRunner
+from skilldiff.runner import AgentRunner, build_derived_container_image
 
 
 def test_unknown_isolation_never_falls_back_to_host(tmp_path):
@@ -413,3 +413,93 @@ def test_real_container_paths_env_grader_and_cleanup(tmp_path, monkeypatch, runt
     assert not (workspace / "late.txt").exists()
     names = subprocess.check_output([runtime_name, "ps", "-a", "--format", "{{.Names}}"], text=True)
     assert not any(name.startswith("skilldiff-") for name in names.splitlines())
+
+
+def test_build_derived_container_image_noop(tmp_path, monkeypatch):
+    runtime = tmp_path / "docker"
+    runtime.write_text("#!/bin/sh\nexit 1\n")
+    runtime.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    img = build_derived_container_image("docker", "base:latest")
+    assert img == "base:latest"
+
+
+def test_build_derived_container_image_with_targets(tmp_path, monkeypatch):
+    runtime = tmp_path / "docker"
+    captured_dockerfile = tmp_path / "dockerfile.txt"
+    runtime.write_text(
+        "#!/usr/bin/env python3\nimport sys, pathlib\n"
+        "args = sys.argv[1:]\n"
+        "if args[0] == 'build':\n"
+        f"    pathlib.Path({repr(str(captured_dockerfile))}).write_text("
+        "pathlib.Path('Dockerfile').read_text())\n"
+        "    print('sha256:derived-image-123')\n"
+        "elif args[:2] == ['image', 'inspect']:\n"
+        "    print('sha256:derived-image-123')\n"
+    )
+    runtime.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    res = build_derived_container_image(
+        "docker", "base:latest", install_targets=["pytest>=8.0", "shiny[all]"], tag="test:tag"
+    )
+    assert res == "sha256:derived-image-123"
+    content = captured_dockerfile.read_text()
+    assert "FROM base:latest" in content
+    assert "pytest>=8.0" in content
+    assert "shiny[all]" in content
+
+
+def test_build_derived_container_image_with_repo_src(tmp_path, monkeypatch):
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text("[project]\nname = 'pkg'\n")
+    runtime = tmp_path / "docker"
+    captured_dockerfile = tmp_path / "dockerfile_repo.txt"
+    runtime.write_text(
+        "#!/usr/bin/env python3\nimport sys, pathlib\n"
+        "args = sys.argv[1:]\n"
+        "if args[0] == 'build':\n"
+        f"    pathlib.Path({repr(str(captured_dockerfile))}).write_text("
+        "pathlib.Path('Dockerfile').read_text())\n"
+        "    print('sha256:repo-image-456')\n"
+        "elif args[:2] == ['image', 'inspect']:\n"
+        "    print('sha256:repo-image-456')\n"
+    )
+    runtime.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    res = build_derived_container_image(
+        "docker", "base:latest", repo_src=repo, install_spec=".[dev]"
+    )
+    assert res == "sha256:repo-image-456"
+    content = captured_dockerfile.read_text()
+    assert "COPY repo_src /tmp/skilldiff-repo" in content
+    assert "/tmp/skilldiff-repo[dev]" in content
+
+
+def test_resume_rejects_changed_container_install(tmp_path):
+    config = ExperimentConfig(
+        name="t", skill=None, models=["m"], tasks_patterns=[], container_install="pkg-a"
+    )
+    runner = ExperimentRunner(config, [])
+    metadata = runner._metadata("test")
+    runner.config.container_install = "pkg-b"
+    assert any("container_install" in reason for reason in runner._resume_mismatches(metadata))
+
+
+def test_resume_checks_derived_container_image_presence(tmp_path, monkeypatch):
+    runtime = tmp_path / "docker"
+    runtime.write_text("#!/bin/sh\nexit 1\n")
+    runtime.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    config = ExperimentConfig(
+        name="t", skill=None, models=["m"], tasks_patterns=[], isolation="docker"
+    )
+    runner = ExperimentRunner(config, [])
+    runner._provenance_snapshot = {"agent_cli": "fake"}
+    runner._container_image_id = "sha256:base"
+    metadata = runner._metadata("test")
+    metadata["container_image_id"] = "sha256:base"
+    metadata["container_image_ids"] = {"control": "sha256:missing_ctrl"}
+    reasons = runner._resume_mismatches(metadata)
+    assert any("missing_ctrl" in reason for reason in reasons)
+

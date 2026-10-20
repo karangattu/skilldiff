@@ -8,6 +8,8 @@ This project uses semantic versioning.
 
 ### Added
 
+- Derived container images for PR evaluations and custom packages: `pr.install: true` builds per-arm images with control and PR revisions installed cleanly into container environments; `container_install` supports installing custom packages or local checkouts into derived images across arms.
+- CLI flags `--pr-install` and `--container-install` in `skilldiff init`.
 - `adoption_basis` in `results.json` and `skilldiff diagnose --json`, naming the runs the shipping gate judges: the held-out runs when the experiment declares a held-out split, every run otherwise.
 - `adoption_unmeasured_arms` in the same payloads, for arms whose adoption the harness could not confirm.
 - Task prompt text is saved in `results.json` (`task_details[].prompt`) so the report can quote the wording that missed the trigger. Prompts are stored verbatim.

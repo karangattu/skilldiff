@@ -65,6 +65,7 @@ class Candidate:
     diff: str
     transcript: str
     changed_files: list[str] = field(default_factory=list)
+    container_image: Optional[str] = None
 
 
 @dataclass
@@ -358,13 +359,14 @@ class Grader:
                 shell_command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", command]
             if self.extra_env:
                 env.update(self.extra_env)
+            target_image = getattr(cand, "container_image", None) or self.container_image
             proc = AgentRunner()._exec(
                 shell_command,
                 cand.workspace_dir,
                 env,
                 self.timeout,
                 isolation=self.isolation,
-                container_image=self.container_image,
+                container_image=target_image,
                 readonly_mounts=mounts,
                 forward_env=[
                     key for key in env if key.startswith("SKILLDIFF_") or key in self.extra_env

@@ -314,3 +314,39 @@ def test_run_reflink_flag(tmp_path, monkeypatch):
     results = json.loads(result_files[0].read_text())
     assert results["settings"].get("reflink") is True
 
+
+def test_cli_init_with_container_install(tmp_path):
+    from skilldiff.cli import build_parser
+
+    parser = build_parser()
+    exp = tmp_path / "exp"
+    args = parser.parse_args(["init", "--dir", str(exp), "--container-install", "pkg-a", "pkg-b"])
+    assert cmd_init(args) == 0
+    cfg = yaml.safe_load((exp / "skilldiff.yaml").read_text())
+    assert cfg["container_install"] == ["pkg-a", "pkg-b"]
+
+
+def test_cli_init_pr_with_pr_install(tmp_path):
+    from skilldiff.cli import build_parser
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    parser = build_parser()
+    exp = tmp_path / "exp"
+    args = parser.parse_args(
+        ["init", "--dir", str(exp), "--pr", "12", "--repo", str(repo), "--pr-install"]
+    )
+    assert cmd_init(args) == 0
+    cfg = yaml.safe_load((exp / "skilldiff.yaml").read_text())
+    assert cfg["pr"]["install"] is True
+
+
+def test_cli_init_pr_install_requires_pr(tmp_path, capsys):
+    from skilldiff.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["init", "--pr-install"])
+    assert cmd_init(args) == 1
+    assert "--pr-install requires --pr" in capsys.readouterr().err
+
+

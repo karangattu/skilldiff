@@ -502,6 +502,9 @@ runs stage only the required subscription login tokens into the session temporar
 directory (or forward configured API keys). Run `skilldiff check` to verify the
 image, executable, authentication configuration, and graders before starting an
 evaluation.
+
+To install dependencies or packages into the container environment without modifying the base image or polluting workspaces, specify `container_install` (a package spec, local directory, or list of specs/paths). In PR evaluations (`preset: pr` or `pr:` block), set `pr.install: true` (or an install spec like `".[dev]"`) to build derived images per arm: the control arm container receives the base revision installed, and the treatment arm receives the PR revision installed. Immutable image digests are recorded for reproducible runs and resume.
+
 For Codex skill experiments, `check` queries `app-server skills/list` in fresh workspaces to verify skill discovery prior to paid sessions. Codex and Claude also support opt-in macOS native isolation (`isolation: macos`) via `sandbox-exec` with private session directories; Claude takes its runtime root from `claude.read_paths`, as Codex does from `codex.read_paths`. Tasks can declare a `runtime_probe` command. See [preflight reference](../skills/skilldiff/references/preflight.md) for details.
 
 Running these from inside an agent needs a few things too:
