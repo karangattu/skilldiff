@@ -6,6 +6,8 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-20
+
 ### Added
 
 - `skill_invocation: explicit` names the skill in the task prompt, so an experiment can measure whether the agent uses a skill it was told to use instead of only whether it discovers one. The default `implicit` mode keeps the current behavior: the prompt never names the skill, and adoption measures discovery. A task file can override the mode for one task.
@@ -13,6 +15,14 @@ This project uses semantic versioning.
 - The report, `results.json`, `skilldiff diagnose`, and `skilldiff compare` name the invocation mode. In explicit mode the arm is labelled "Skill (named)" and the advice stops blaming the SKILL.md description, because the description was never the trigger.
 - `skilldiff init --skill-invocation implicit|explicit` scaffolds a config with the chosen mode.
 - PR runs, and A/B runs whose two revisions have different skill names, reject `skill_invocation: explicit` with an explanation: naming the skill would either compare revisions instead of skill use, or give the two arms different instructions.
+- `skilldiff compare` warns when task-level invocation overrides differ across runs.
+
+### Fixed
+
+- In multi-turn tasks with explicit invocation, the instruction is prepended to turn 1 only rather than every turn.
+- PR runs enforce rejection of task-level `skill_invocation: explicit` overrides.
+- Adoption actions and `skilldiff diagnose` resolve invocation mode task-by-task so task-level explicit overrides produce accurate obedience advice.
+- Custom `skill_invocation_prompt` templates are preserved across experiment regrades.
 
 ### Changed
 
