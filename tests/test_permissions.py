@@ -53,14 +53,27 @@ def test_claude_result_records_permission_denials():
         "permission_denials"] is None
 
 
-def test_claude_runs_bash_in_its_own_sandbox_by_default():
+def test_claude_runs_bash_in_its_own_sandbox_by_default(tmp_path):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
     cmd = AgentRunner(claude_bin="claude").claude_command(
-        "hi", "sonnet", ClaudeConfig(), protected_paths=["/graders", "/skill"]
+        "hi",
+        "sonnet",
+        ClaudeConfig(),
+        protected_paths=["/graders", "/skill"],
+        temp_dir=scratch,
     )
-    sandbox = _settings(cmd)["sandbox"]
+    settings = _settings(cmd)
+    sandbox = settings["sandbox"]
     assert sandbox["enabled"] and sandbox["autoAllowBashIfSandboxed"]
     assert sandbox["failIfUnavailable"] and sandbox["allowUnsandboxedCommands"] is False
     assert sandbox["filesystem"]["denyRead"] == ["/graders", "/skill"]
+    assert sandbox["filesystem"]["denyWrite"] == ["/graders", "/skill"]
+    assert str(scratch.resolve()) in sandbox["filesystem"]["allowWrite"]
+    assert "/tmp" in sandbox["filesystem"]["allowWrite"]
+    if Path("/private/tmp").exists():
+        assert "/private/tmp" in sandbox["filesystem"]["allowWrite"]
+    assert settings["permissions"]["additionalDirectories"] == sandbox["filesystem"]["allowWrite"]
     assert "network" not in sandbox
     assert cmd[cmd.index("--permission-mode") + 1] == "acceptEdits"
 

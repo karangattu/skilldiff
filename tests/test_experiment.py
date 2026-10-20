@@ -304,8 +304,6 @@ def test_tooling_and_cli_memoization(monkeypatch):
 
 
 def test_preflight_cache_and_parallel_grading_across_repetitions(tmp_path: Path, monkeypatch):
-    import time
-
     from skilldiff.config import GraderConfig
     from skilldiff.grader import Candidate, Grader
     from skilldiff.pairing import probe_arm_preflights
@@ -359,18 +357,25 @@ def test_preflight_cache_and_parallel_grading_across_repetitions(tmp_path: Path,
     )
     assert preflight_calls == 2
 
-    cmd = "python3 -c 'import time; time.sleep(0.25); print(\"{\\\"score\\\": 1.0}\")'"
+    import threading
+
+    from skilldiff.grader import GradeResult
+
+    barrier = threading.Barrier(2, timeout=2.0)
     grader = Grader(
-        GraderConfig(command=cmd),
+        GraderConfig(command="true"),
         ["s"],
         "m",
     )
-    t0 = time.perf_counter()
+
+    def concurrent_grade(cand) -> GradeResult:
+        barrier.wait()
+        return GradeResult(1.0, True, "ok")
+
+    monkeypatch.setattr(grader, "_evaluate_candidate", concurrent_grade)
     grades = grader.grade_candidates([
         Candidate("", "control", ws_ctrl.root, "", "", "", []),
         Candidate("", "treatment", ws_treat.root, "", "", "", []),
     ])
-    elapsed = time.perf_counter() - t0
     assert grades["control"].score == 1.0
     assert grades["treatment"].score == 1.0
-    assert elapsed < 0.48

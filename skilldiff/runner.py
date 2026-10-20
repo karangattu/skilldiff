@@ -818,30 +818,55 @@ EXTERNAL_ISOLATION = frozenset({"macos", "docker", "podman"})
 PROMPTING_MODES = frozenset({None, "acceptEdits", "default", "manual"})
 
 
+def claude_scratch_dirs(temp_dir: Optional[Path] = None) -> list[str]:
+    dirs: list[str] = []
+    if temp_dir is not None:
+        resolved = str(temp_dir.resolve())
+        raw = str(temp_dir)
+        dirs.append(resolved)
+        if raw != resolved:
+            dirs.append(raw)
+    if Path("/private/tmp").exists():
+        dirs.append("/private/tmp")
+    dirs.append("/tmp")
+    return list(dict.fromkeys(dirs))
+
+
 def claude_sandbox_settings(
-    claude_cfg: ClaudeConfig, isolation: str = "local", protected_paths: Optional[list[str]] = None
+    claude_cfg: ClaudeConfig,
+    isolation: str = "local",
+    protected_paths: Optional[list[str]] = None,
+    temp_dir: Optional[Path] = None,
 ) -> Optional[dict[str, Any]]:
     """``--settings`` for Claude Code's own Bash sandbox, or None when it does not apply.
 
-    Sandboxed Bash runs without approval, writes only to the workspace and Claude's
-    temp directory, and reaches only ``allowed_domains``. Grader, solution, and skill
-    sources are unreadable to commands. The sandbox cannot start inside another one,
-    so external isolation replaces it.
+    Sandboxed Bash runs without approval, writes only to the workspace and session
+    scratch directories, and reaches only ``allowed_domains``. Grader, solution, and
+    skill sources are unreadable and unwritable to commands. The sandbox cannot start
+    inside another one, so external isolation replaces it.
     """
     if not claude_cfg.sandbox or isolation in EXTERNAL_ISOLATION:
         return None
+    scratch_dirs = claude_scratch_dirs(temp_dir)
+    filesystem: dict[str, Any] = {"allowWrite": scratch_dirs}
+    if protected_paths:
+        denied = sorted(set(protected_paths))
+        filesystem["denyRead"] = denied
+        filesystem["denyWrite"] = denied
     sandbox: dict[str, Any] = {
         "enabled": True,
         # Exit instead of silently running commands unsandboxed.
         "failIfUnavailable": True,
         "autoAllowBashIfSandboxed": True,
         "allowUnsandboxedCommands": False,
+        "filesystem": filesystem,
     }
-    if protected_paths:
-        sandbox["filesystem"] = {"denyRead": sorted(set(protected_paths))}
     if claude_cfg.allowed_domains:
         sandbox["network"] = {"allowedDomains": list(claude_cfg.allowed_domains)}
-    return {"sandbox": sandbox}
+    return {
+        "permissions": {"additionalDirectories": scratch_dirs},
+        "sandbox": sandbox,
+    }
 
 
 def codex_sandbox_args(codex_cfg: CodexConfig, isolation: str = "local") -> list[str]:
@@ -1752,6 +1777,7 @@ class AgentRunner:
         claude_cfg: ClaudeConfig,
         isolation: str = "local",
         protected_paths: Optional[list[str]] = None,
+        temp_dir: Optional[Path] = None,
     ) -> list[str]:
         cmd = [
             claude_cfg.bin_path or self.claude_bin,
@@ -1766,7 +1792,9 @@ class AgentRunner:
         ]
         if claude_cfg.isolate:
             cmd.extend(["--setting-sources", "project,local"])
-        settings = claude_sandbox_settings(claude_cfg, isolation, protected_paths or [])
+        settings = claude_sandbox_settings(
+            claude_cfg, isolation, protected_paths or [], temp_dir=temp_dir
+        )
         if settings:
             cmd.extend(["--settings", json.dumps(settings)])
         permission_mode = claude_cfg.permission_mode
@@ -1806,7 +1834,9 @@ class AgentRunner:
         extra_env: Optional[dict[str, str]] = None,
     ) -> RunResult:
         prompts = prompt if isinstance(prompt, list) else [prompt]
-        cmd = self.claude_command(prompts[0], model, claude_cfg, isolation, protected_paths)
+        cmd = self.claude_command(
+            prompts[0], model, claude_cfg, isolation, protected_paths, temp_dir=temp_dir
+        )
         conversation = None
         if isinstance(prompt, list):
             del cmd[cmd.index("-p") + 1]
