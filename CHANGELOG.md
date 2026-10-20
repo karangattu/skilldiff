@@ -6,8 +6,11 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-20
+
 ### Fixed
 
+- Claude's own Bash sandbox allows writes to the session scratch directory and `/tmp`, and protected paths are denied for writes as well as reads.
 - Temporary workspace repositories disable automatic Git maintenance so background lock-file removal cannot race with template copying.
 - Native macOS evaluations handle shell-launched uv Python aliases, private zsh heredocs, Git without host configuration or launcher-cache writes, and temporary pytest collection/cache files. Package metadata can stat bundled skill files while their contents remain denied.
 - Native Codex sessions forward configured environment values and managed runtime paths through a private shell configuration, keeping values out of process arguments and host settings.
