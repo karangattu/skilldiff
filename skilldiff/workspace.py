@@ -315,7 +315,9 @@ class Workspace:
             subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
             git_config = self.root / ".git" / "config"
             with git_config.open("a", encoding="utf-8") as f:
-                f.write("[user]\n\tname = skilldiff\n\temail = skilldiff@local\n")
+                # Templates are copied immediately; no background writer may mutate .git.
+                f.write("[user]\n\tname = skilldiff\n\temail = skilldiff@local\n"
+                        "[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n")
 
         if self.pr_touched_skills:
             for rel in self.pr_touched_skills:

@@ -137,3 +137,19 @@ def test_workspace_clone_from_template_and_fast_diff(tmp_path: Path):
     assert cloned.get_diff() == ("", [])
 
 
+def test_workspace_setup_does_not_launch_background_git_maintenance(tmp_path, monkeypatch):
+    """A template must stay stable while repetitions copy its Git object files."""
+    global_config = tmp_path / 'global-git-config'
+    global_config.write_text('[maintenance]\n\tauto = true\n[gc]\n\tauto = 1\n')
+    trace = tmp_path / 'git-trace'
+    monkeypatch.setenv('GIT_CONFIG_GLOBAL', str(global_config))
+    monkeypatch.setenv('GIT_CONFIG_NOSYSTEM', '1')
+    monkeypatch.setenv('GIT_TRACE', str(trace))
+    template = Workspace(tmp_path / 'template', is_treatment=False, skill_dir=None)
+    template.setup()
+    activity = trace.read_text()
+    assert 'maintenance run' not in activity and 'gc --auto' not in activity
+    clone = Workspace(tmp_path / 'clone', is_treatment=False, skill_dir=None)
+    clone.clone_from(template)
+    assert clone.initial_commit == template.initial_commit
+    assert clone.get_diff() == ('', [])

@@ -282,6 +282,9 @@ failed probes show both output streams. Codex records filesystem errors from
 failed commands even when its overall session succeeds. See the
 [runtime setup guide](skills/skilldiff/references/preflight.md) for a probe example.
 
+Temporary workspace repositories disable automatic Git maintenance so their
+files stay stable while repeated attempts copy the prepared template.
+
 Set `parallel: 1` and `arm_parallel: false` for serial runs. Explicit concurrency
 settings are honored; omitted settings can use automatic parallelism.
 

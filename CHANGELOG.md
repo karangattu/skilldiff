@@ -8,6 +8,7 @@ This project uses semantic versioning.
 
 ### Fixed
 
+- Temporary workspace repositories disable automatic Git maintenance so background lock-file removal cannot race with template copying.
 - Native macOS evaluations handle shell-launched uv Python aliases, private zsh heredocs, Git without host configuration or launcher-cache writes, and temporary pytest collection/cache files. Package metadata can stat bundled skill files while their contents remain denied.
 - Native Codex sessions forward configured environment values and managed runtime paths through a private shell configuration, keeping values out of process arguments and host settings.
 - Codex records filesystem denials inside failed command results, and keeps redacted service-error details instead of only a generic failure. Runtime probes preserve both output streams and reject permission errors even with exit zero.

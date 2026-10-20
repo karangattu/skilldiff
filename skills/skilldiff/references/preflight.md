@@ -39,6 +39,9 @@ the probe even when its command exits zero. Probe the workflow you will use, not
 only imports: run pytest on a temporary test and launch a browser if the task
 depends on one.
 
+Prepared workspace repositories disable automatic Git maintenance. This prevents
+background lock-file removal during template copying, including on macOS.
+
 Native macOS sessions set private `TMPPREFIX` as well as `TMPDIR`/`TMP`/`TEMP`,
 so zsh heredocs can create their temporary files. Git uses no global/system
 configuration or host ignore file by default, and uses the command-line-tools

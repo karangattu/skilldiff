@@ -512,6 +512,9 @@ To install dependencies or packages into the container environment without modif
 
 For Codex skill experiments, `check` queries `app-server skills/list` in fresh workspaces to verify skill discovery prior to paid sessions. Codex and Claude also support opt-in macOS native isolation (`isolation: macos`) via `sandbox-exec` with private session directories; Claude takes its runtime root from `claude.read_paths`, as Codex does from `codex.read_paths`. Tasks can declare a `runtime_probe` command. See [preflight reference](../skills/skilldiff/references/preflight.md) for details.
 
+Temporary workspace Git repositories disable automatic maintenance. This keeps
+templates stable while repetitions copy their Git object files.
+
 Native macOS sessions support declared uv runtime aliases and package metadata
 checks without exposing bundled skill contents. Pytest can list the common
 session directory but cannot read its sibling files; its default cache stays
