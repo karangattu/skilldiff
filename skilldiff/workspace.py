@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from skilldiff.config import find_skill_dirs
+from skilldiff.config import find_skill_dirs, read_skill_name
 from skilldiff.revisions import export_revision
 from skilldiff.snapshots import copy_file_cow, supports_reflink
 
@@ -270,6 +270,26 @@ class Workspace:
         if self.harness in {"antigravity", "agy"}:
             return [self.root / ".agents" / "skills" / skill_name]
         return [self.root / ".claude" / "skills" / skill_name]
+
+    def installed_skill_names(self) -> list[str]:
+        """The arm's own skills that are actually on disk for the harness.
+
+        A control arm is configured with a skill but the skill is stripped
+        from the workspace, so it has none. Callers that need to know what
+        the agent can see must ask the workspace, not the config.
+        """
+        expected: list[str] = []
+        for skill_dir in self.skill_dirs:
+            name = read_skill_name(skill_dir) or skill_dir.name
+            if name and name not in expected:
+                expected.append(name)
+        installed: list[str] = []
+        for root in (".agents/skills", ".claude/skills", ".opencode/skills"):
+            for path in (self.root / root).glob("*/SKILL.md"):
+                name = read_skill_name(path.parent) or path.parent.name
+                if name in expected and name not in installed:
+                    installed.append(name)
+        return installed
 
     def clone_from(self, template: "Workspace") -> None:
         if self.root.exists():

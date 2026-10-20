@@ -8,6 +8,7 @@ from typing import Any
 from skilldiff import __version__
 from skilldiff.adoption import adoption_eligible, adoption_summary, decision_runs
 from skilldiff.config import ExperimentConfig, TaskConfig
+from skilldiff.invocation import EXPLICIT
 from skilldiff.persistence import read_json
 from skilldiff.profiler import compute_context_tax, measure_skill_footprint
 from skilldiff.reporting.evaluation import _apply_codex_cache_write_fallback
@@ -28,7 +29,12 @@ def _arm_labels(config: ExperimentConfig, comparison: dict[str, Any] | None) -> 
         return {"control": "Original", "treatment": "Minified"}
     if preset == "revision":
         return {"control": "Skill A", "treatment": "Skill B"}
-    return {"control": "Control", "treatment": "Skill"}
+    label = "Skill"
+    if getattr(config, "skill_invocation", "implicit") == EXPLICIT:
+        # The prompt named the skill, so this arm measures obedience, not
+        # discovery. Say so wherever the arm is named.
+        label = "Skill (named)"
+    return {"control": "Control", "treatment": label}
 
 
 def _run_summary(run: dict[str, Any]) -> str:
@@ -64,6 +70,7 @@ def _settings_summary(config: ExperimentConfig) -> dict[str, Any]:
         "preset": getattr(config, "preset", None),
         "timeout_seconds": config.timeout_seconds,
         "parallel": config.parallel,
+        "skill_invocation": getattr(config, "skill_invocation", "implicit"),
         **{k: v for k, v in harness_cfg.items() if v not in (None, [], "")},
     }
     thresholds = dict(getattr(config, "thresholds", {}) or {})
@@ -494,6 +501,7 @@ def aggregate_results(
             "prompt": t.prompt or (t.prompts[0] if t.prompts else None),
             "prompts": list(t.prompts or []),
             "grader": t.grader.command if t.grader else None,
+            "skill_invocation": getattr(t, "skill_invocation", None),
         }
         for t in tasks
     ]
@@ -538,6 +546,7 @@ def aggregate_results(
         "skill_comparison": skill_comparison_info,
         "comparison": comparison,
         "arm_labels": _arm_labels(config, comparison),
+        "skill_invocation": getattr(config, "skill_invocation", "implicit"),
         "task_details": task_details,
     }
     runs_by_arm = {
@@ -582,6 +591,7 @@ def aggregate_results(
         "adoption_unmeasured_arms": decision_adoption["adoption_unmeasured_arms"],
         "adoption_basis": adoption_basis,
         "skill_usage": adoption["arms"],
+        "skill_invocation": getattr(config, "skill_invocation", "implicit"),
         "non_discriminating_tasks": non_discriminating_tasks,
         "interrupted": interrupted,
         "incomplete_runs": incomplete_runs,

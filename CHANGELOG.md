@@ -6,6 +6,14 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- `skill_invocation: explicit` names the skill in the task prompt, so an experiment can measure whether the agent uses a skill it was told to use instead of only whether it discovers one. The default `implicit` mode keeps the current behavior: the prompt never names the skill, and adoption measures discovery. A task file can override the mode for one task.
+- `skill_invocation_prompt` replaces the instruction, with `{skill}` standing in for the arm's skill name(s). A template that omits `{skill}` says the same thing to every arm, which keeps A/B revision runs fair.
+- The report, `results.json`, `skilldiff diagnose`, and `skilldiff compare` name the invocation mode. In explicit mode the arm is labelled "Skill (named)" and the advice stops blaming the SKILL.md description, because the description was never the trigger.
+- `skilldiff init --skill-invocation implicit|explicit` scaffolds a config with the chosen mode.
+- PR runs, and A/B runs whose two revisions have different skill names, reject `skill_invocation: explicit` with an explanation: naming the skill would either compare revisions instead of skill use, or give the two arms different instructions.
+
 ## [0.25.0] - 2026-10-20
 
 ### Fixed

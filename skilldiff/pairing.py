@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from skilldiff.config import ExperimentConfig, TaskConfig, read_skill_name
 from skilldiff.grader import Candidate
+from skilldiff.invocation import instruction_for_arm
 from skilldiff.persistence import atomic_json, atomic_write
 from skilldiff.runner import (
     AgentRunner,
@@ -552,6 +553,10 @@ def run_pair(
                 last_res: RunResult | None = None
                 for attempt in range(1, max_retries + 2):
                     runner._ensure_running()
+                    # What the agent is told to use must be what it can see.
+                    # The control arm is configured with the skill but has it
+                    # stripped, so it has none to be named.
+                    visible_skills = workspaces[arm].installed_skill_names() or None
                     task_prompt_val = (
                         task.prompts if getattr(task, "prompts", None) else task.prompt
                     )
@@ -562,7 +567,26 @@ def run_pair(
                         task_prompt_val = [prompt + constraints for prompt in task_prompt_val]
                     else:
                         task_prompt_val += constraints
+                    # Only an arm that carries the skill is told to use it.
+                    # PR runs compare revisions, so their prompt stays untouched.
+                    instruction = ""
+                    if runner.config.pr is None:
+                        instruction = instruction_for_arm(
+                            getattr(execution, "skill_invocation", "implicit"),
+                            getattr(task, "skill_invocation", None),
+                            visible_skills,
+                            getattr(execution, "skill_invocation_prompt", None),
+                        )
+                    if instruction:
+                        if isinstance(task_prompt_val, list):
+                            task_prompt_val = [
+                                instruction + "\n\n" + prompt for prompt in task_prompt_val
+                            ]
+                        else:
+                            task_prompt_val = instruction + "\n\n" + task_prompt_val
                     runner.progress(f"Agent starting: {model} · {task.id} · {arm}")
+                    # Detection needs the configured skill, even in an arm that
+                    # does not have it: that is how contamination is caught.
                     arm_skills = (
                         [
                             read_skill_name(path) or path.name

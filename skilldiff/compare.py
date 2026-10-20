@@ -13,6 +13,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from skilldiff.adoption import invocation_mode
 from skilldiff.reporter import _apply_codex_cache_write_fallback
 from skilldiff.stats import METRICS, analysis_run, pair_runs, usable_agent_run
 
@@ -326,6 +327,7 @@ def compare_results(a: dict[str, Any], b: dict[str, Any], strict: bool = False) 
         "b_name": b.get("name"),
         "score": {"a": score_a, "b": score_b, "delta_pp": score_delta, **score_counts},
         "adoption": {"a": adoption_a, "b": adoption_b},
+        "invocation": {"a": invocation_mode(a), "b": invocation_mode(b)},
         "efficiency": eff,
         "matched_tasks": matched_tasks,
         "effect": {"a_pp": eff_a, "b_pp": eff_b, "delta_pp": effect_delta},
@@ -350,6 +352,17 @@ def format_comparison(comp: dict[str, Any]) -> str:
     )
     lines.append(f"Skill score: {sa} → {sb} ({sd}){score_note}")
     lines.append(f"Skill adoption: {comp['adoption']['a']} → {comp['adoption']['b']}")
+    invocation = comp.get("invocation") or {}
+    if invocation.get("a") or invocation.get("b"):
+        lines.append(
+            f"Skill invocation: {invocation.get('a', 'implicit')} → "
+            f"{invocation.get('b', 'implicit')}"
+        )
+        if invocation.get("a") != invocation.get("b"):
+            lines.append(
+                "  The prompt named the skill in one run only, so the adoption "
+                "difference mixes obedience with discovery."
+            )
     matched = comp.get("matched_tasks") or []
     matched_note = (
         f" (matched {len(matched)} task(s): {', '.join(matched[:5])})"

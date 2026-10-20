@@ -8,9 +8,11 @@ from skilldiff.adoption import (
     adoption_actions,
     adoption_summary,
     decision_runs,
+    invocation_mode,
     merge_gate,
     no_effect_findings,
     skill_arm_names,
+    task_invocation_overrides,
 )
 from skilldiff.scope import is_blast_violation
 from skilldiff.stats import METRICS, analysis_run, pair_runs, usable_agent_run
@@ -135,6 +137,7 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
     recommendations = []
     unknown_adoption_runs = 0
     is_pr = bool(data.get("comparison")) or data.get("preset") == "pr"
+    explicit = invocation_mode(data) == "explicit"
     skill_arms = set(skill_arm_names(data, arms))
     adoption = adoption_summary(data, arms, basis="all")
     decision_arm_runs, adoption_basis = decision_runs(data, arms)
@@ -352,9 +355,18 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
             for arm in sorted({item["arm"] for item in under_triggered})
         )
         recommendations.append(
-            f"Adoption: the skill failed to trigger on {len(under_triggered)} intended "
-            f"task run(s) ({arm_counts}; tasks: {', '.join(tasks_list)}). Refine the "
-            "SKILL.md description with explicit trigger terms and retest on dev."
+            (
+                f"Adoption: the skill was not used on {len(under_triggered)} intended "
+                f"task run(s) ({arm_counts}; tasks: {', '.join(tasks_list)}). The prompt "
+                "named the skill, so check that the harness exposes it and read a "
+                "transcript to see whether the agent ignored the instruction."
+            )
+            if explicit
+            else (
+                f"Adoption: the skill failed to trigger on {len(under_triggered)} intended "
+                f"task run(s) ({arm_counts}; tasks: {', '.join(tasks_list)}). Refine the "
+                "SKILL.md description with explicit trigger terms and retest on dev."
+            )
         )
 
     if over_triggered:
@@ -364,9 +376,18 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
             for arm in sorted({item["arm"] for item in over_triggered})
         )
         recommendations.append(
-            f"Over-triggering: the skill triggered on {len(over_triggered)} irrelevant "
-            f"task run(s) ({arm_counts}; tasks: {', '.join(tasks_list)}). Add scoping "
-            "boundaries to the SKILL.md description."
+            (
+                f"Over-triggering: the skill loaded on {len(over_triggered)} irrelevant "
+                f"task run(s) ({arm_counts}; tasks: {', '.join(tasks_list)}). The prompt "
+                "named the skill, so this arm cannot measure over-triggering; measure "
+                "it in an implicit run."
+            )
+            if explicit
+            else (
+                f"Over-triggering: the skill triggered on {len(over_triggered)} irrelevant "
+                f"task run(s) ({arm_counts}; tasks: {', '.join(tasks_list)}). Add scoping "
+                "boundaries to the SKILL.md description."
+            )
         )
 
     if no_effect:
@@ -421,6 +442,8 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         "adoption_failed_arms": decision_adoption["adoption_failed_arms"],
         "adoption_unmeasured_arms": decision_adoption["adoption_unmeasured_arms"],
         "adoption_basis": adoption_basis,
+        "skill_invocation": invocation_mode(data),
+        "task_skill_invocation": task_invocation_overrides(data),
         "skill_usage": adoption["arms"],
         "next_actions": next_actions,
         "under_triggered": under_triggered,

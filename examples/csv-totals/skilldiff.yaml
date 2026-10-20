@@ -16,6 +16,11 @@ runs: 2                     # sample budget; use 5+ as a starting point for real
 timeout_seconds: 600
 parallel: 1
 
+# The prompt never names the skill, so adoption measures discovery. Set
+# skill_invocation: explicit to name it and measure obedience instead; the gap
+# between the two runs is what this skill's description is worth.
+# skill_invocation: implicit
+
 # Reproducible API-equivalent costs: look the rates up on the provider's own
 # pricing page BEFORE the run and record them here with source and date. The
 # saved run then reproduces the estimate and the report shows the API-equivalent

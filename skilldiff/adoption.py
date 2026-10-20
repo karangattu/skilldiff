@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from skilldiff.invocation import EXPLICIT, IMPLICIT
 from skilldiff.stats import METRICS, analysis_run, pair_runs
 
 _SKILL_PRESETS = {"revision", "compression"}
@@ -58,6 +59,29 @@ def has_held_out_split(results: dict[str, Any], splits: dict[str, str] | None = 
     """Whether the experiment declares a held-out split."""
     splits = task_splits(results) if splits is None else splits
     return any(split.strip().lower() in HELD_OUT_ALIASES for split in splits.values())
+
+
+def invocation_mode(results: dict[str, Any]) -> str:
+    """How the agent was told to use the skill: ``implicit`` or ``explicit``.
+
+    In implicit mode the prompt never names the skill, so adoption measures
+    discovery. In explicit mode the prompt names it, so adoption measures
+    whether the agent uses a skill it was told to use.
+    """
+    mode = results.get("skill_invocation")
+    if not mode:
+        mode = (results.get("settings") or {}).get("skill_invocation")
+    mode = str(mode or IMPLICIT).strip().lower()
+    return mode if mode in (IMPLICIT, EXPLICIT) else IMPLICIT
+
+
+def task_invocation_overrides(results: dict[str, Any]) -> dict[str, str]:
+    """Tasks that set their own invocation mode, and which one they set."""
+    return {
+        task: str(detail.get("skill_invocation"))
+        for task, detail in _task_details(results).items()
+        if detail.get("skill_invocation")
+    }
 
 
 def decision_runs(
@@ -340,6 +364,7 @@ def adoption_summary(
     return {
         "arms": arms,
         "basis": basis,
+        "invocation": invocation_mode(results),
         "adoption_failed": bool(failed_arms or unmeasured_arms),
         "adoption_failed_arms": failed_arms,
         "adoption_unmeasured_arms": unmeasured_arms,
@@ -482,6 +507,7 @@ def adoption_actions(
 ) -> list[dict[str, Any]]:
     """Concrete next steps for improving the hit rate, grouped by arm."""
     actions: list[dict[str, Any]] = []
+    explicit = invocation_mode(results) == EXPLICIT
     for arm, data in summary.get("arms", {}).items():
         label = data.get("label") or arm
         skill = _skill_path(results, arm)
@@ -521,12 +547,23 @@ def adoption_actions(
                     "arm": arm,
                     "tasks": tasks,
                     "advice": (
-                        f"No intended run loaded {label} on {_format_tasks(tasks)}."
-                        f"{prompt_text} Add those intents and nouns to the SKILL.md "
-                        "description, or lead with an explicit \"Use when the user "
-                        "asks to ...\" sentence if they are already there. Retest on "
-                        f"dev with `skilldiff lint {skill}` and "
-                        "`skilldiff run --split dev --runs 1`."
+                        (
+                            f"The prompt named {label}, but no intended run loaded it on "
+                            f"{_format_tasks(tasks)}. This is not a description problem: "
+                            "the agent was told to use the skill. Check that the "
+                            "harness exposes it and that the agent can call it "
+                            f"(`skilldiff check`), then read a transcript to see whether "
+                            "the agent ignored the instruction or never found the skill."
+                        )
+                        if explicit
+                        else (
+                            f"No intended run loaded {label} on {_format_tasks(tasks)}."
+                            f"{prompt_text} Add those intents and nouns to the SKILL.md "
+                            "description, or lead with an explicit \"Use when the user "
+                            "asks to ...\" sentence if they are already there. Retest on "
+                            f"dev with `skilldiff lint {skill}` and "
+                            "`skilldiff run --split dev --runs 1`."
+                        )
                     ),
                     "prompt_examples": examples,
                 }
@@ -555,11 +592,21 @@ def adoption_actions(
                     "arm": arm,
                     "tasks": tasks,
                     "advice": (
-                        f"{label} loaded inconsistently on intended task(s): "
-                        f"{counts}.{prompt_text} Partial triggering usually means the "
-                        "description matches the topic but not how users phrase the "
-                        "request. Add explicit \"Use when the user asks to ...\" phrases "
-                        "for the missed wording, then retest on dev."
+                        (
+                            f"{label} loaded on some intended runs but not others on "
+                            f"{_format_tasks(tasks)}: {counts}. The prompt named the "
+                            "skill, so the description is not the trigger. Read a "
+                            "transcript to see whether the agent read the skill and "
+                            "chose not to follow it, or never saw it."
+                        )
+                        if explicit
+                        else (
+                            f"{label} loaded inconsistently on intended task(s): "
+                            f"{counts}.{prompt_text} Partial triggering usually means the "
+                            "description matches the topic but not how users phrase the "
+                            "request. Add explicit \"Use when the user asks to ...\" phrases "
+                            "for the missed wording, then retest on dev."
+                        )
                     ),
                     "prompt_examples": examples,
                 }
@@ -572,9 +619,19 @@ def adoption_actions(
                     "arm": arm,
                     "tasks": tasks,
                     "advice": (
-                        f"Over-triggering: {label} loaded on irrelevant task(s) "
-                        f"{_format_tasks(tasks)}. Narrow the description and name what "
-                        "the skill should not handle so it stays out of the way."
+                        (
+                            f"{label} loaded on irrelevant task(s) "
+                            f"{_format_tasks(tasks)}, but the prompt named the skill, "
+                            "so this arm cannot measure over-triggering. Measure that "
+                            "in an implicit run, where the skill has to trigger on "
+                            "its own."
+                        )
+                        if explicit
+                        else (
+                            f"Over-triggering: {label} loaded on irrelevant task(s) "
+                            f"{_format_tasks(tasks)}. Narrow the description and name what "
+                            "the skill should not handle so it stays out of the way."
+                        )
                     ),
                     "prompt_examples": [
                         {"task": task, "prompt": _task_prompt(results, task)}
@@ -691,8 +748,13 @@ def adoption_actions(
                             f"{label} {rate * 100:.0f}%"
                             for label, rate in sorted(rates.items())
                         )
-                        + "). Alignment problems confound the body comparison; fix "
-                        "the weaker description first, then rerun."
+                        + "). Alignment problems confound the body comparison; "
+                        + (
+                            "the prompt named the skill, so check which arm could "
+                            "load it before comparing the bodies. "
+                            if explicit
+                            else "fix the weaker description first, then rerun. "
+                        )
                     ),
                     "prompt_examples": [],
                 }

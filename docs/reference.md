@@ -98,14 +98,60 @@ How to read the table:
 - Cover four kinds: intended tasks, normal representative tasks, irrelevant tasks, and ambiguous plus regression tasks.
 - Split `tasks/dev/` (iterate) from `tasks/heldout/` (freeze before the full run). The report keeps them separate in By split and decides on held-out only.
 - Write tasks that need what only the skill gives. Good tasks use obscure APIs, recent changes, or house rules.
-- Do not name the skill in prompts. Adoption is part of the test.
+- Do not name the skill in prompts. Adoption is part of the test. (To measure what happens when you *do* name it, see [Explicit versus implicit skill use](#explicit-versus-implicit-skill-use).)
 - If control scores 100%, the task is too easy. The report calls this a ceiling effect.
 - Read warnings about agent errors, grader errors, and skill runs that ignored the skill.
 - Many repetitions of two tasks still describe only those two tasks. Add tasks before you generalize.
 
+<a id="explicit-versus-implicit-skill-use"></a>
+
+## Explicit versus implicit skill use
+
+By default the task prompt never names the skill. The agent has to notice the
+skill on its own, so the adoption rate measures **discovery**: whether the
+SKILL.md description triggers on the task wording.
+
+Set `skill_invocation: explicit` to name the skill in the prompt instead:
+
+```yaml
+skill_invocation: explicit          # implicit (default) | explicit
+skill_invocation_prompt: "Use the {skill} skill for this task."   # optional
+```
+
+The default instruction is "Use the `shiny-doctor` skill for this task." for one
+skill, and "Use the skills `a`, `b` for this task." for a skill pack. A custom
+`skill_invocation_prompt` replaces it; `{skill}` becomes the arm's skill name(s).
+Only arms that actually carry the skill get the instruction, so a control arm
+without the skill is never told to use one.
+
+In explicit mode the adoption rate measures **obedience**: whether the agent uses
+a skill it was told to use. The report says so, names the arm "Skill (named)",
+and stops blaming the description. Run the same experiment both ways to see the
+discovery gap: the difference between the two adoption rates is what the
+description is worth.
+
+A task file can override the experiment setting, which lets you test one
+wording on one task:
+
+```yaml
+skill_invocation: explicit          # in a task file
+```
+
+Rules the config enforces:
+
+- PR runs reject `explicit`; they compare revisions, not skill use.
+- A/B runs reject `explicit` when the two revisions have different skill names,
+  because the arms would get different instructions. Give both revisions the same
+  name, or set `skill_invocation_prompt` to an instruction that does not name the
+  skill ("Use the available skill for this task.").
+
+`skilldiff compare RUN_A RUN_B` prints the invocation mode of each run and warns
+when the modes differ, because the adoption difference then mixes obedience with
+discovery.
+
 ## Experiment files
 
-**What each folder holds:** `skilldiff.yaml` holds name, skill path, harness, models, tasks, run count, seed, thresholds, failure policy, and optional `pricing:` rates (source, date, per-1M-token prices) for reproducible API-equivalent costs. `tasks/` holds one YAML file per task with an id, a prompt (or `prompts:` for a multi-turn script), a category, an optional `split: dev|held-out`, optional path assertions (`allowed_paths`, `forbidden_paths`), and optional `validation: {good, broken}`. `fixtures/` holds the small test projects, copied fresh for each run without `.git` history and with escaping symlinks rejected. `graders/` holds the scripts that score the work.
+**What each folder holds:** `skilldiff.yaml` holds name, skill path, harness, models, tasks, run count, seed, thresholds, failure policy, skill invocation mode, and optional `pricing:` rates (source, date, per-1M-token prices) for reproducible API-equivalent costs. `tasks/` holds one YAML file per task with an id, a prompt (or `prompts:` for a multi-turn script), a category, an optional `split: dev|held-out`, an optional `skill_invocation:` override, optional path assertions (`allowed_paths`, `forbidden_paths`), and optional `validation: {good, broken}`. `fixtures/` holds the small test projects, copied fresh for each run without `.git` history and with escaping symlinks rejected. `graders/` holds the scripts that score the work.
 
 Every key listed there is checked when the config loads: an unknown or misspelled key (in the experiment file, a nested block such as `claude:` or `thresholds:`, a task file, or a `grader:`) fails `skilldiff check` and `skilldiff run` immediately, naming the closest matching key, instead of being ignored while the run uses defaults you never chose.
 

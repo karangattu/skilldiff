@@ -76,6 +76,13 @@ improving a skill's description, plus JSON for agent analysis, Markdown for
 summaries, and HTML for optional viewing. See
 [reports and outputs](docs/reference.md#reports-and-outputs) for the full format.
 
+The prompt never names the skill by default, so adoption measures **discovery**:
+whether the description makes the agent reach for the skill on its own. Set
+`skill_invocation: explicit` to name the skill in the prompt and measure
+**obedience** instead. Run the same experiment both ways and the gap between the
+two adoption rates is what your description is worth. See
+[explicit versus implicit skill use](docs/reference.md#explicit-versus-implicit-skill-use).
+
 ## Agent instructions
 
 Start with [skills/skilldiff/SKILL.md](skills/skilldiff/SKILL.md).

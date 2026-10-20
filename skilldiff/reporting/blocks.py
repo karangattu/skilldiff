@@ -5,8 +5,10 @@ from skilldiff.adoption import (
     adoption_actions,
     adoption_failure_detail,
     adoption_summary,
+    invocation_mode,
     merge_gate,
     no_effect_findings,
+    task_invocation_overrides,
 )
 from skilldiff.reporting.checks import (
     _check_table_rows,
@@ -480,17 +482,31 @@ def _key_takeaways(
                 f"{data.get('label', 'Skill')} {hits}/{known}{rate}{loads_txt}"
             )
         text = "**Adoption.** " + "; ".join(parts) + "."
+        explicit = invocation_mode(results) == "explicit"
+        if explicit:
+            text += (
+                " The prompt named the skill, so this measures whether the agent used "
+                "a skill it was told to use, not whether it discovered one."
+            )
         if any(data.get("unknown") for data in adoption["arms"].values()):
             unknown = sum(int(data.get("unknown") or 0) for data in adoption["arms"].values())
             text += f" Skill use is unknown for {unknown} eligible run(s)."
         if any(data.get("hits", 0) < data.get("known", 0) for data in adoption["arms"].values()):
             text += (
-                " Runs where the skill was ignored dilute any effect. A sharper "
-                "`description` usually fixes this."
+                " Runs where the skill was ignored dilute any effect. "
+                + (
+                    "The prompt named the skill, so look at the harness and the "
+                    "agent's choice, not the description."
+                    if explicit
+                    else "A sharper `description` usually fixes this."
+                )
             )
         if adoption.get("adoption_failed"):
             text += (
-                " Tune the `description` on dev tasks first "
+                " Check that the harness exposes the skill (`skilldiff check`) and "
+                "read a transcript before rerunning."
+                if explicit
+                else " Tune the `description` on dev tasks first "
                 "(`skilldiff run --split dev --runs 1`)."
             )
         if len(adoption["arms"]) > 1:
@@ -1650,6 +1666,23 @@ def build_report_blocks(
             "counts its own events, so compare arms within one harness. Unknown "
             "runs have no measurement and are not counted as misses."
         )
+        if invocation_mode(results) == "explicit":
+            adoption_note += (
+                " The prompt named the skill, so these numbers measure obedience to "
+                "an explicit instruction, not discovery. Run the same experiment "
+                "with `skill_invocation: implicit` to measure discovery; the gap "
+                "between the two runs is what the skill's description is worth."
+            )
+        overrides = task_invocation_overrides(results)
+        if overrides:
+            listed = ", ".join(
+                f"`{task}` ({mode})" for task, mode in sorted(overrides.items())[:5]
+            )
+            more = f" and {len(overrides) - 5} more" if len(overrides) > 5 else ""
+            adoption_note += (
+                f" Some tasks set their own mode: {listed}{more}. Those runs measure "
+                "a different thing from the rest."
+            )
         gate = decision.get("decision_adoption") or {}
         gate_bits = []
         for data in (gate.get("arms") or {}).values():

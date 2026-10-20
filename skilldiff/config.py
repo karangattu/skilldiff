@@ -7,6 +7,8 @@ from typing import Any, Optional
 
 import yaml
 
+from skilldiff.invocation import EXPLICIT, INVOCATION_MODES, template_names_skill
+
 # Keys skilldiff actually reads from each block. Anything else is a typo or a
 # key borrowed from another tool; reject it at load time instead of silently
 # running with defaults the author never chose.
@@ -45,6 +47,8 @@ EXPERIMENT_KEYS = frozenset(
         "max_turns",
         "max_tool_budget",
         "terminate_on_ceiling",
+        "skill_invocation",
+        "skill_invocation_prompt",
     }
 )
 CLAUDE_KEYS = frozenset(
@@ -115,6 +119,7 @@ TASK_KEYS = frozenset(
         "fixtures",
         "env",
         "runtime_probe",
+        "skill_invocation",
     }
 )
 
@@ -416,6 +421,10 @@ class TaskConfig:
     env: dict[str, str] = field(default_factory=dict)
     prompts: list[str] = field(default_factory=list)
     runtime_probe: Optional[str] = None
+    # How this task tells the agent to use the skill: "implicit" leaves the
+    # prompt alone, "explicit" names the skill. None means use the
+    # experiment's setting.
+    skill_invocation: Optional[str] = None
 
 
 @dataclass
@@ -491,6 +500,17 @@ class ExperimentConfig:
     max_turns: Optional[int] = None
     max_tool_budget: Optional[int] = None
     terminate_on_ceiling: bool = False
+    # How the agent is told to use the skill:
+    #   implicit: the prompt never names it, so adoption measures whether the
+    #     SKILL.md description triggers on its own.
+    #   explicit: the prompt names the skill, so adoption measures whether the
+    #     agent uses a skill it is told to use.
+    # A task file can override this per task.
+    skill_invocation: str = "implicit"
+    # Optional template for the explicit instruction. "{skill}" becomes the
+    # arm's skill name(s). A template without "{skill}" says the same thing to
+    # every arm, which keeps A/B revision runs fair.
+    skill_invocation_prompt: Optional[str] = None
 
     @property
     def is_skill_comparison(self) -> bool:
@@ -585,6 +605,12 @@ def read_skill_frontmatter(skill_dir: Path) -> dict[str, Any]:
 def read_skill_name(skill_dir: Path) -> Optional[str]:
     name = read_skill_frontmatter(skill_dir).get("name")
     return str(name).strip() if name else None
+
+
+def skill_trigger_name(skill_dir: Path) -> str:
+    """The name the agent sees for a skill: frontmatter name, else directory name."""
+    meta = read_skill_frontmatter(skill_dir)
+    return str(meta.get("name", skill_dir.name) or skill_dir.name).strip()
 
 
 def parse_grader_config(
@@ -806,6 +832,14 @@ def load_task(task_path: Path) -> TaskConfig:
     if "runtime_probe" in data:
         validate_string(data["runtime_probe"], f"{context}.runtime_probe")
 
+    task_invocation = data.get("skill_invocation")
+    if task_invocation is not None:
+        task_invocation = str(task_invocation).strip().lower()
+        if task_invocation not in INVOCATION_MODES:
+            raise ValueError(
+                f"Task {task_id}: skill_invocation must be 'implicit' or 'explicit'"
+            )
+
     return TaskConfig(
         id=str(task_id),
         prompt=prompt,
@@ -822,6 +856,7 @@ def load_task(task_path: Path) -> TaskConfig:
         env=task_env,
         prompts=prompts,
         runtime_probe=data.get("runtime_probe"),
+        skill_invocation=task_invocation,
     )
 
 
@@ -1073,6 +1108,14 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     max_tool_budget = data.get("max_tool_budget")
     terminate_on_ceiling = bool(data.get("terminate_on_ceiling", False))
 
+    skill_invocation = str(data.get("skill_invocation") or "implicit").strip().lower()
+    if skill_invocation not in INVOCATION_MODES:
+        raise ValueError("skill_invocation must be 'implicit' or 'explicit'")
+    skill_invocation_prompt = data.get("skill_invocation_prompt")
+    if skill_invocation_prompt is not None:
+        validate_string(skill_invocation_prompt, "skill_invocation_prompt")
+        skill_invocation_prompt = skill_invocation_prompt.strip()
+
     exp_config = ExperimentConfig(
         name=name,
         skill=skill_path,
@@ -1106,6 +1149,8 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         max_turns=int(max_turns) if max_turns is not None else None,
         max_tool_budget=int(max_tool_budget) if max_tool_budget is not None else None,
         terminate_on_ceiling=terminate_on_ceiling,
+        skill_invocation=skill_invocation,
+        skill_invocation_prompt=skill_invocation_prompt,
     )
     exp_config._arm_parallel_explicit = "arm_parallel" in data
     exp_config._parallel_explicit = "parallel" in data
@@ -1116,6 +1161,11 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         raise ValueError("preset skill requires 'skill' (no pr, no skill_a/skill_b)")
     if preset == "pr" and pr is None:
         raise ValueError("preset pr requires a 'pr' block")
+    if preset == "pr" and skill_invocation == EXPLICIT:
+        raise ValueError(
+            "skill_invocation 'explicit' does not apply to PR runs: they compare "
+            "revisions, not skill use. Leave the prompt untouched."
+        )
     if preset == "revision" and not (skill_a_path and skill_b_path):
         raise ValueError("preset revision requires 'skill_a' and 'skill_b'")
     if preset == "compression":
@@ -1168,5 +1218,26 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
 
     if not loaded_tasks:
         raise ValueError(f"No task files matched patterns {task_patterns} from {base_dir}")
+
+    # Naming the skill in the prompt tells the arms apart, which would
+    # confound an A/B run whose two revisions are called differently. Fail
+    # before spending money instead of reporting a broken comparison.
+    explicit_everywhere = skill_invocation == EXPLICIT or any(
+        task.skill_invocation == EXPLICIT for task in loaded_tasks
+    )
+    if explicit_everywhere and preset == "revision" and template_names_skill(
+        skill_invocation_prompt
+    ):
+        names_a = sorted(skill_trigger_name(d) for d in exp_config.skill_a_dirs)
+        names_b = sorted(skill_trigger_name(d) for d in exp_config.skill_b_dirs)
+        if names_a != names_b:
+            raise ValueError(
+                "skill_invocation 'explicit' names the skill in the prompt, but the "
+                f"A and B revisions are called differently ({names_a} vs {names_b}), "
+                "so the two arms would get different instructions. Use the same "
+                "skill name in both revisions, or set skill_invocation_prompt to an "
+                'instruction that does not name the skill (for example "Use the '
+                'available skill for this task.").'
+            )
 
     return exp_config, loaded_tasks

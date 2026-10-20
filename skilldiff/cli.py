@@ -108,6 +108,7 @@ runs: 3                     # repetitions per arm; use 5+ as a starting point, n
 timeout_seconds: 1800       # one deadline for the whole conversation
 parallel: 1                 # pairs to run at once
 
+{skill_invocation_block}
 # Reproducibility: fixed seed for balanced arm order (recorded per run).
 # seed: 1234
 
@@ -169,6 +170,7 @@ runs: 3
 timeout_seconds: 1800
 parallel: 1
 
+{skill_invocation_block}
 # Decision criteria, fixed before running (illustrative compression targets):
 # thresholds:
 #   acceptable_score_regression_pp: 2   # minified may lose at most 2pp
@@ -189,6 +191,31 @@ parallel: 1
 #       cache_write: 3.75
 
 {harness_block}"""
+
+# How the agent is told to use the skill, written into a generated config.
+# These are substituted values, not template text, so "{skill}" stays literal.
+SKILL_INVOCATION_BLOCKS = {
+    "implicit": (
+        "# How the agent is told to use the skill:\n"
+        "#   implicit: the prompt never names it, so adoption measures whether the\n"
+        "#     SKILL.md description triggers on the task wording. This is the default.\n"
+        "#   explicit: the prompt names the skill, so adoption measures whether the\n"
+        "#     agent uses a skill it was told to use. Run the same experiment both\n"
+        "#     ways to see how much discovery your description is worth.\n"
+        "# skill_invocation: implicit\n"
+        '# skill_invocation_prompt: "Use the {skill} skill for this task."\n'
+    ),
+    "explicit": (
+        "# How the agent is told to use the skill:\n"
+        "#   implicit: the prompt never names it, so adoption measures whether the\n"
+        "#     SKILL.md description triggers on the task wording.\n"
+        "#   explicit: the prompt names the skill, so adoption measures whether the\n"
+        "#     agent uses a skill it was told to use. Run the same experiment both\n"
+        "#     ways to see how much discovery your description is worth.\n"
+        "skill_invocation: explicit\n"
+        '# skill_invocation_prompt: "Use the {skill} skill for this task."\n'
+    ),
+}
 
 DEMO_SKILL_MD = (
     (
@@ -411,6 +438,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         harness=harness,
         model=DEFAULT_MODELS[harness],
         harness_block=HARNESS_BLOCKS[harness],
+        skill_invocation_block=SKILL_INVOCATION_BLOCKS[
+            getattr(args, "skill_invocation", None) or "implicit"
+        ],
     )
     if getattr(args, "container_install", None):
         ci = args.container_install
@@ -499,6 +529,9 @@ def _init_skill_ab(
         harness=harness,
         model=DEFAULT_MODELS[harness],
         harness_block=HARNESS_BLOCKS[harness],
+        skill_invocation_block=SKILL_INVOCATION_BLOCKS[
+            getattr(args, "skill_invocation", None) or "implicit"
+        ],
     )
     if getattr(args, "container_install", None):
         ci = args.container_install
@@ -753,6 +786,33 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     if getattr(cfg, "preset", None):
         ok(f"preset: {cfg.preset}")
+
+    invocation = getattr(cfg, "skill_invocation", "implicit")
+    if invocation == "explicit":
+        ok(
+            "skill_invocation: explicit - the prompt names the skill, so adoption "
+            "measures obedience, not discovery"
+        )
+        template = getattr(cfg, "skill_invocation_prompt", None)
+        ok(
+            f"skill_invocation_prompt: {template}"
+            if template
+            else "skill_invocation_prompt: default (names the skill)"
+        )
+    else:
+        ok("skill_invocation: implicit - the prompt never names the skill")
+
+    overrides = [
+        f"{t.id} ({t.skill_invocation})"
+        for t in tasks
+        if getattr(t, "skill_invocation", None)
+    ]
+    if overrides:
+        ok(
+            "task skill_invocation overrides: "
+            + ", ".join(overrides)
+            + " - those tasks measure a different thing from the rest"
+        )
 
     if cfg.is_skill_comparison:
         ok(f"skill A/B: {cfg.skill_a} vs {cfg.skill_b}")
@@ -1834,6 +1894,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--preset",
         choices=["skill", "pr", "revision", "compression"],
         help="Named preset configuring arms and decision criteria",
+    )
+    init_parser.add_argument(
+        "--skill-invocation",
+        choices=["implicit", "explicit"],
+        help=(
+            "How the agent is told to use the skill: implicit (the prompt never "
+            "names it, so adoption measures discovery) or explicit (the prompt "
+            "names it, so adoption measures obedience). Default: implicit."
+        ),
     )
     init_parser.add_argument("--pr", type=int, help="Scaffold an evaluation of a GitHub PR number")
     init_parser.add_argument("--repo", help="Local repository containing the PR revisions")

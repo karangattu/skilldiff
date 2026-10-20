@@ -7,6 +7,7 @@ from skilldiff.adoption import (
     adoption_summary,
     decision_runs,
     has_held_out_split,
+    invocation_mode,
     run_split,
     task_splits,
 )
@@ -915,6 +916,7 @@ def build_decision_context(
         adoption = {
             "arms": results["skill_usage"],
             "basis": "all",
+            "invocation": invocation_mode(results),
             "adoption_failed": bool(results.get("adoption_failed")),
             "adoption_failed_arms": results.get("adoption_failed_arms") or [],
             "adoption_unmeasured_arms": results.get("adoption_unmeasured_arms") or [],
@@ -1007,6 +1009,12 @@ def _recommendation(
                 fix = (
                     "Both arms share the trigger, so improve the shared description "
                     "on dev tasks and rerun before choosing a body version."
+                )
+            elif (adoption or {}).get("invocation") == "explicit":
+                fix = (
+                    f"The prompt named the {named} skill, so check that the harness "
+                    "exposes it and read a transcript before rerunning (see Skill "
+                    "adoption and next steps)."
                 )
             else:
                 fix = (

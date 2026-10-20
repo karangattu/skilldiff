@@ -437,6 +437,10 @@ class ExperimentRunner:
             "skill_a": str(self.config.skill_a) if self.config.skill_a else None,
             "skill_b": str(self.config.skill_b) if self.config.skill_b else None,
             "include_baseline": bool(self.config.include_baseline),
+            "skill_invocation": getattr(self.config, "skill_invocation", "implicit"),
+            "skill_invocation_prompt": getattr(
+                self.config, "skill_invocation_prompt", None
+            ),
             "skill_comparison": skill_comparison,
             "comparison": self.comparison,
             "skill_names": self._execution_config.skill_names,
@@ -468,6 +472,7 @@ class ExperimentRunner:
                     "grader": t.grader.command if t.grader else None,
                     "category": getattr(t, "category", "general"),
                     "split": getattr(t, "split", "dev"),
+                    "skill_invocation": getattr(t, "skill_invocation", None),
                 }
                 for t in self.tasks
             ],
@@ -573,6 +578,31 @@ class ExperimentRunner:
                     "container_image", "container_install", "pricing"):
             if prev_exp.get(key) != getattr(self.config, key):
                 reasons.append(f"{key} changed")
+        # The instruction the agent gets changes what a run measures.
+        prev_invocation = prev_exp.get("skill_invocation", "implicit")
+        if prev_invocation != getattr(self.config, "skill_invocation", "implicit"):
+            reasons.append(
+                f"skill_invocation changed ({prev_invocation} -> "
+                f"{getattr(self.config, 'skill_invocation', 'implicit')})"
+            )
+        if (prev_exp.get("skill_invocation_prompt") or None) != (
+            getattr(self.config, "skill_invocation_prompt", None) or None
+        ):
+            reasons.append("skill_invocation_prompt changed")
+        # Older metadata recorded tasks as plain id strings, so only compare
+        # when the previous run kept the per-task settings.
+        prev_task_dicts = [
+            t for t in (prev_exp.get("tasks") or []) if isinstance(t, dict)
+        ]
+        if prev_task_dicts:
+            prev_task_invocation = [
+                (t.get("id"), t.get("skill_invocation")) for t in prev_task_dicts
+            ]
+            cur_task_invocation = [
+                (t.id, getattr(t, "skill_invocation", None)) for t in self.tasks
+            ]
+            if prev_task_invocation != cur_task_invocation:
+                reasons.append("task skill_invocation settings changed")
         if prev_exp.get("cost_basis", "harness") != self.config.cost_basis:
             reasons.append("cost_basis changed")
         if prev_exp.get("isolation", "local") != self.config.isolation:
@@ -1271,6 +1301,7 @@ class ExperimentRunner:
             "timestamp", "run_dir", "models", "tasks", "task_categories", "task_details",
             "tasks_count", "runs_per_arm", "seed", "failure_policy", "settings",
             "thresholds", "pricing", "cost_basis", "provenance", "context_tax", "retries",
+            "skill_invocation",
         ):
             if key in old_results:
                 results[key] = old_results[key]

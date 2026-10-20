@@ -169,8 +169,7 @@ skilldiff check -c skill-eval/skilldiff.yaml --fail-on-ceiling
 Codex discovery is checked before paid sessions. For native macOS isolation,
 custom wrappers, and task `runtime_probe:` checks, read
 [preflight safeguards](references/preflight.md). Availability is separate from adoption.
-Probe the actual test workflow, including temporary tests and browsers. Native
-setup details are in the linked preflight guide.
+Probe the actual test workflow, including temporary tests and browsers.
 
 Fix every `FAIL` and assess every `warn` before running one pair per task. Local
 checks warn about live skill sources and matching copies in `runs/`, including
@@ -315,6 +314,11 @@ work. If the grader was wrong, fix it, run `skilldiff regrade <run> --dry-run`, 
 headline, keeps the previous grades under `regrade_history`, and adds a
 visible warning to the report. Report the regrade openly and do not hand-compute
 replacement scores. Say which grader change you made and why.
+
+## Measure discovery versus obedience
+
+`skill_invocation: explicit` names the skill in the prompt. See
+[references/invocation.md](references/invocation.md).
 
 ## 6. Compare skill revisions (A/B)
 
