@@ -1,3 +1,4 @@
+import concurrent.futures
 import json
 import math
 import os
@@ -154,14 +155,36 @@ class Grader:
         candidates = list(candidates)
         random.shuffle(candidates)
         clues = [*self.skill_names, self.model_name, "control", "treatment", "baseline"]
-        results = {}
-        for index, cand in enumerate(candidates):
-            anonymous = Candidate(
-                f"candidate-{chr(ord('A') + index)}", cand.arm, cand.workspace_dir,
-                sanitize_text(cand.response, clues), sanitize_text(cand.diff, clues),
-                sanitize_text(cand.transcript, clues), cand.changed_files,
+        anonymous_list = [
+            Candidate(
+                f"candidate-{chr(ord('A') + index)}",
+                cand.arm,
+                cand.workspace_dir,
+                sanitize_text(cand.response, clues),
+                sanitize_text(cand.diff, clues),
+                sanitize_text(cand.transcript, clues),
+                cand.changed_files,
+                container_image=cand.container_image,
             )
-            results[cand.arm] = self._evaluate_candidate(anonymous)
+            for index, cand in enumerate(candidates)
+        ]
+        results = {}
+        distinct_dirs = (
+            len({c.workspace_dir.resolve() for c in anonymous_list}) == len(anonymous_list)
+        )
+        if len(anonymous_list) > 1 and distinct_dirs:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=len(anonymous_list)
+            ) as executor:
+                future_map = {
+                    executor.submit(self._evaluate_candidate, anon): anon.arm
+                    for anon in anonymous_list
+                }
+                for fut, arm in future_map.items():
+                    results[arm] = fut.result()
+        else:
+            for anon in anonymous_list:
+                results[anon.arm] = self._evaluate_candidate(anon)
         return results
 
     def grade_workspace(self, workspace_dir: Path) -> GradeResult:

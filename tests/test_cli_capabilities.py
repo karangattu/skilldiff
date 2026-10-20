@@ -34,3 +34,32 @@ def test_missing_required_capabilities_fail_before_model_calls(tmp_path, output)
                            harness="opencode")
     with pytest.raises(RuntimeError, match="capabilit"):
         Runner().capabilities(tmp_path, cfg, tmp_path)
+
+
+def test_capability_probe_memoizes_and_clear_resets(tmp_path):
+    from skilldiff.capabilities import clear_capabilities_cache
+
+    clear_capabilities_cache()
+    calls = 0
+
+    class CountingRunner(AgentRunner):
+        def _exec(self, cmd, cwd, env, timeout, **kwargs):
+            nonlocal calls
+            calls += 1
+            if cmd[-1] == "--version":
+                return ExecResult("agy 1.3.3\n", "", 0, 0)
+            return ExecResult("--input-format stream-json --output-format --add-dir", "", 0, 0)
+
+    cfg = ExperimentConfig(
+        name="test", skill=None, models=["m"], tasks_patterns=[], harness="antigravity"
+    )
+    runner = CountingRunner(antigravity_bin="/fake/agy")
+    caps1 = runner.capabilities(tmp_path, cfg, tmp_path)
+    caps2 = runner.capabilities(tmp_path, cfg, tmp_path)
+    assert caps1 == caps2
+    assert calls == 2
+    assert ("/fake/agy",) in runner._cli_flags
+
+    clear_capabilities_cache()
+    runner.capabilities(tmp_path, cfg, tmp_path)
+    assert calls == 4

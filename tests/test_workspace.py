@@ -98,3 +98,42 @@ def test_workspace_cleanup(tmp_path: Path):
     assert not ws_dir.exists()
 
 
+def test_workspace_clone_from_template_and_fast_diff(tmp_path: Path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("x = 1\n")
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Skill")
+
+    tmpl = Workspace(
+        root=tmp_path / "template",
+        is_treatment=True,
+        skill_dir=skill_dir,
+        fixture_repo=fixture,
+        harness="antigravity",
+    )
+    tmpl.setup()
+    assert tmpl._initial_index is not None
+
+    cloned = Workspace(
+        root=tmp_path / "cloned",
+        is_treatment=True,
+        skill_dir=skill_dir,
+        fixture_repo=fixture,
+        harness="antigravity",
+    )
+    cloned.clone_from(tmpl)
+    assert cloned.initial_commit == tmpl.initial_commit
+    assert cloned.get_diff() == ("", [])
+    assert (cloned.root / ".agents" / "skills" / "my-skill" / "SKILL.md").is_file()
+
+    (cloned.root / "app.py").write_text("x = 2\n")
+    diff_text, changed = cloned.get_diff()
+    assert changed == ["app.py"]
+    assert "+x = 2" in diff_text
+
+    cloned.setup()
+    assert cloned.get_diff() == ("", [])
+
+

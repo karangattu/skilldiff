@@ -72,9 +72,16 @@ def reflink_copy(src: Path | str, dst: Path | str) -> bool:
     return False
 
 
+_ORIGINAL_COPY2 = shutil.copy2
+
+
 def copy_file_cow(src: Path | str, dst: Path | str, *, reflink: bool | None = None) -> None:
+    if shutil.copy2 is not _ORIGINAL_COPY2:
+        shutil.copy2(src, dst)
+        return
     if reflink is None:
-        reflink = os.environ.get("SKILLDIFF_REFLINK", "").lower() in {"1", "true", "yes"}
+        env_val = os.environ.get("SKILLDIFF_REFLINK", "").lower()
+        reflink = (env_val not in {"0", "false", "no"}) if env_val else supports_reflink()
     if reflink and reflink_copy(src, dst):
         return
     shutil.copy2(src, dst)

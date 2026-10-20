@@ -6,7 +6,7 @@ from pathlib import Path
 
 from skilldiff.config import find_skill_dirs
 from skilldiff.revisions import export_revision
-from skilldiff.snapshots import copy_file_cow
+from skilldiff.snapshots import copy_file_cow, supports_reflink
 
 SKILL_ROOTS = (".claude", ".codex", ".opencode", ".agents", ".agent", ".gemini")
 
@@ -90,6 +90,12 @@ def find_escaping_symlinks(root: Path) -> list[str]:
 
 
 def copy_fixture_clean(src_dir: Path, dst_root: Path, reflink: bool | None = None) -> None:
+    use_reflink = supports_reflink() if reflink is None else reflink
+    copy_fn = (
+        (lambda s, d: copy_file_cow(s, d, reflink=True))
+        if use_reflink
+        else shutil.copy2
+    )
     for item in os.listdir(src_dir):
         if item in IGNORED_FIXTURE_NAMES:
             continue
@@ -113,11 +119,6 @@ def copy_fixture_clean(src_dir: Path, dst_root: Path, reflink: bool | None = Non
                 dst.symlink_to(os.readlink(src))
             continue
         if src.is_dir():
-            copy_fn = (
-                (lambda s, d: copy_file_cow(s, d, reflink=reflink))
-                if reflink
-                else shutil.copy2
-            )
             shutil.copytree(
                 src,
                 dst,
@@ -126,7 +127,7 @@ def copy_fixture_clean(src_dir: Path, dst_root: Path, reflink: bool | None = Non
                 copy_function=copy_fn,
             )
         else:
-            copy_file_cow(src, dst, reflink=reflink)
+            copy_file_cow(src, dst, reflink=use_reflink)
     escaping = find_escaping_symlinks(dst_root)
     if escaping:
         raise ValueError("Fixture contains symlinks escaping the workspace: " + ", ".join(escaping))
@@ -233,7 +234,7 @@ class Workspace:
         mounted_fixtures: list[Path] | None = None,
     ):
         self.root = root.resolve()
-        self.reflink = reflink
+        self.reflink = supports_reflink() if reflink is None else reflink
         self.is_treatment = is_treatment
         self.skill_dir = skill_dir.resolve() if skill_dir else None
         self.source_commit = source_commit
@@ -251,6 +252,8 @@ class Workspace:
         self.removed_from_control: list[str] = []
         self.isolation_issues: list[str] = []
         self.initial_commit: str | None = None
+        self._initial_index: bytes | None = None
+        self._template: Workspace | None = None
 
     def _copy_fn(self):
         return (
@@ -268,7 +271,32 @@ class Workspace:
             return [self.root / ".agents" / "skills" / skill_name]
         return [self.root / ".claude" / "skills" / skill_name]
 
+    def clone_from(self, template: "Workspace") -> None:
+        if self.root.exists():
+            shutil.rmtree(self.root)
+        shutil.copytree(
+            template.root,
+            self.root,
+            symlinks=True,
+            copy_function=self._copy_fn(),
+        )
+        self.is_treatment = template.is_treatment
+        self.skill_dirs = [
+            (self.root / p.relative_to(template.root))
+            if p.is_relative_to(template.root)
+            else p
+            for p in template.skill_dirs
+        ]
+        self.removed_from_control = list(template.removed_from_control)
+        self.isolation_issues = list(template.isolation_issues)
+        self.initial_commit = template.initial_commit
+        self._initial_index = template._initial_index
+        self._template = template
+
     def setup(self) -> None:
+        if self._template is not None and self._template.root.exists():
+            self.clone_from(self._template)
+            return
         if self.root.exists():
             shutil.rmtree(self.root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -285,12 +313,9 @@ class Workspace:
 
         if not (self.root / ".git").exists():
             subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
-            subprocess.run(["git", "config", "user.name", "skilldiff"], cwd=self.root, check=True)
-            subprocess.run(
-                ["git", "config", "user.email", "skilldiff@local"],
-                cwd=self.root,
-                check=True,
-            )
+            git_config = self.root / ".git" / "config"
+            with git_config.open("a", encoding="utf-8") as f:
+                f.write("[user]\n\tname = skilldiff\n\temail = skilldiff@local\n")
 
         if self.pr_touched_skills:
             for rel in self.pr_touched_skills:
@@ -373,36 +398,63 @@ class Workspace:
             cwd=self.root,
             check=True,
         )
-        self.initial_commit = subprocess.check_output(
+        head_sha = None
+        head_file = self.root / ".git" / "HEAD"
+        if head_file.is_file():
+            head_val = head_file.read_text(encoding="utf-8").strip()
+            if head_val.startswith("ref: "):
+                ref_file = self.root / ".git" / head_val[5:]
+                if ref_file.is_file():
+                    head_sha = ref_file.read_text(encoding="utf-8").strip()
+            elif len(head_val) == 40:
+                head_sha = head_val
+        self.initial_commit = head_sha or subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=self.root, text=True
         ).strip()
+        index_file = self.root / ".git" / "index"
+        self._initial_index = index_file.read_bytes() if index_file.is_file() else None
 
     def get_diff(self) -> tuple[str, list[str]]:
         """Compare final content to setup, independently of the agent's Git index/HEAD."""
         if not self.initial_commit:
             raise ValueError("Workspace has no immutable initial commit")
-        subprocess.run(
-            ["git", "cat-file", "-e", f"{self.initial_commit}^{{commit}}"],
-            cwd=self.root,
-            check=True,
-            capture_output=True,
-        )
         # A separate index includes untracked files without changing the agent's index.
         with tempfile.TemporaryDirectory(prefix="skilldiff-index-") as tmp:
+            index_path = Path(tmp) / "index"
             env = os.environ.copy()
-            env["GIT_INDEX_FILE"] = str(Path(tmp) / "index")
-            for command in (
-                ["git", "read-tree", self.initial_commit],
+            env["GIT_INDEX_FILE"] = str(index_path)
+            if self._initial_index is not None:
+                index_path.write_bytes(self._initial_index)
+            else:
+                subprocess.run(
+                    ["git", "read-tree", self.initial_commit],
+                    cwd=self.root,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                )
+            subprocess.run(
                 ["git", "add", "--all", "--force", "."],
-            ):
-                subprocess.run(command, cwd=self.root, env=env, check=True, capture_output=True)
+                cwd=self.root,
+                env=env,
+                check=True,
+                capture_output=True,
+            )
             base = ["git", "diff", "--cached", "--no-renames", "--binary", self.initial_commit]
             paths = ["--", *(GENERATED_DIFF_EXCLUDES if self.source_commit else GIT_DIFF_EXCLUDES)]
-            patch = subprocess.check_output(base + paths, cwd=self.root, env=env, text=True)
             names = subprocess.check_output(
-                base + ["--name-only", "-z"] + paths, cwd=self.root, env=env
+                base + ["--name-only", "-z"] + paths,
+                cwd=self.root,
+                env=env,
+                stderr=subprocess.DEVNULL,
             )
-            return patch, [os.fsdecode(name) for name in names.split(b"\0") if name]
+            changed = [os.fsdecode(name) for name in names.split(b"\0") if name]
+            if not changed:
+                return "", []
+            patch = subprocess.check_output(
+                base + paths, cwd=self.root, env=env, text=True, stderr=subprocess.DEVNULL
+            )
+            return patch, changed
 
     def cleanup(self) -> None:
         if self.root.exists():

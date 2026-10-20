@@ -16,6 +16,7 @@ This project uses semantic versioning.
 
 ### Changed
 
+- Paired arms (`control`, `treatment`, `baseline`), repetitions, and candidate grading now run concurrently by default on real agent runs; CLI capability probes, workspace preflights, and initialized template workspaces (with automatic copy-on-write reflinks on APFS/FICLONE) are cached and reused across repetitions and models.
 - Adoption is now judged on one **decision basis** everywhere. `results.json`, `skilldiff diagnose`, and the report's closing decision read the same runs, so `--ci` can no longer exit 4 while the report says the result is sound. The report names the basis it used.
 - A hit rate needs three measured runs before it can judge an arm. Below that floor the arm is reported as thin evidence instead of failing. An arm that never loaded the skill in any measured run still fails at any sample size.
 - Claude adoption counts only confirmed loads. A skill call whose result never arrives is recorded as unmeasured (`skill_invoked: null`) and stays out of the hit rate instead of counting as a hit or a miss; a call denied in the result event no longer counts as a load.

@@ -986,6 +986,7 @@ class AgentRunner:
         # Cache of `<cli> <subcommand> --help` flags, so capability detection
         # happens once per process instead of per session.
         self._cli_flags: dict[tuple[str, ...], set[str]] = {}
+        self._preflighted_roots: set[Path] = set()
 
     def cli_flags(self, bin_path: str, *subcommand: str) -> set[str]:
         """Long flags a CLI subcommand advertises, or an empty set if unknown.
@@ -1461,7 +1462,10 @@ class AgentRunner:
         if temp_dir is None:
             with tempfile.TemporaryDirectory(prefix="probe-", dir=cwd.resolve().parent) as tmp:
                 return self.preflight(cwd, config, expected_skills, Path(tmp), runtime_probe)
-        return probe_workspace(self, cwd, config, expected_skills, temp_dir, runtime_probe)
+        report = probe_workspace(self, cwd, config, expected_skills, temp_dir, runtime_probe)
+        with self._active_lock:
+            self._preflighted_roots.add(cwd.resolve())
+        return report
 
     def run(
         self,
@@ -1485,7 +1489,8 @@ class AgentRunner:
                                                 ".opencode/skills")
                                    for path in (cwd / root).glob("*/SKILL.md")
                                    if path.parent.name in config.skill_names})
-                self.preflight(cwd, config, expected, Path(tmp))
+                if cwd.resolve() not in self._preflighted_roots:
+                    self.preflight(cwd, config, expected, Path(tmp))
                 checked = config.harness == "codex" and config.codex.verify_skills
             result = self._run_session(
                 prompt, cwd, model, config, harness, skill_names, timeout,

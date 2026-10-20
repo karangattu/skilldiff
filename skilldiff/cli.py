@@ -1201,8 +1201,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             if value is not None:
                 validate_integer(value, key, positive=True)
                 setattr(exp_config, key, value)
+                if key == "parallel":
+                    exp_config._cli_parallel_explicit = True
         if getattr(args, "arm_parallel", False):
             exp_config.arm_parallel = True
+            exp_config._arm_parallel_explicit = True
         if getattr(args, "reflink", False):
             exp_config.reflink = True
         if getattr(args, "model", None) is not None:

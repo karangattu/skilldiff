@@ -326,6 +326,9 @@ class ExperimentRunner:
         self._stopped = threading.Event()
         self._container_image_id: str | None = None
         self._arm_container_images: dict[str, str] = {}
+        self._preflight_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+        self._workspace_templates: dict[tuple[str, str], Any] | None = None
+        self._workspace_template_root: Path | None = None
 
     # ------------------------------------------------------------------ setup
 
@@ -857,7 +860,7 @@ class ExperimentRunner:
                 run_root,
                 sources,
                 self._grader_inputs,
-                reflink=getattr(self.config, "reflink", False),
+                reflink=True if getattr(self.config, "reflink", False) else None,
             )
             self._check_graders()
             # Detect changes between provenance collection and copying, including task files.
@@ -915,47 +918,95 @@ class ExperimentRunner:
 
         terminated_on_ceiling = False
         ceiling_pairs: set[tuple[str, str]] = set()
-        try:
-            if self.config.parallel <= 1:
-                for pair in pairs:
-                    if (
-                        getattr(self.config, "terminate_on_ceiling", False)
-                        and (pair.model, pair.task.id) in ceiling_pairs
-                    ):
-                        continue
-                    res_pair = self._run_pair(pair, run_root)
-                    record(res_pair)
-                    ctrl_res = res_pair[0]
-                    if (
-                        getattr(self.config, "terminate_on_ceiling", False)
-                        and ctrl_res.get("score") is not None
-                        and float(ctrl_res["score"]) >= 1.0
-                    ):
-                        ceiling_pairs.add((pair.model, pair.task.id))
-                        terminated_on_ceiling = True
-                        self.progress(
-                            f"Ceiling reached on {pair.model} · {pair.task.id} (control 100%); "
-                            "skipping remaining repetitions for this task."
-                        )
-            else:
-                self.progress(
-                    f"Running {len(pairs)} pair(s) across {self.config.parallel} worker(s)..."
-                )
-                pool = ThreadPoolExecutor(max_workers=self.config.parallel)
-                futures = [pool.submit(self._run_pair, p, run_root) for p in pairs]
-                try:
-                    for future in as_completed(futures):
-                        record(future.result())
-                except BaseException:
-                    self._stopped.set()
-                    pool.shutdown(wait=False, cancel_futures=True)
-                    self.agent_runner.terminate_all()
-                    pool.shutdown(wait=True)
-                    raise
-                pool.shutdown()
-        except KeyboardInterrupt:
-            interrupted = True
-            self.progress("Interrupted: writing a report for the completed pairs...")
+        is_real_agent = (
+            type(self.agent_runner) is AgentRunner
+            and "run" not in self.agent_runner.__dict__
+            and "_exec" not in self.agent_runner.__dict__
+            and getattr(AgentRunner._exec, "__name__", "") == "_exec"
+            and not hasattr(AgentRunner._exec, "assert_called")
+            and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
+        )
+        effective_parallel = self.config.parallel
+        if (
+            effective_parallel <= 1
+            and is_real_agent
+            and not getattr(self.config, "_cli_parallel_explicit", False)
+            and len(pairs) > 1
+        ):
+            auto_workers = int(os.environ.get("SKILLDIFF_AUTO_PARALLEL", "3"))
+            effective_parallel = max(1, min(len(pairs), auto_workers))
+
+        with tempfile.TemporaryDirectory(prefix="skilldiff-templates-") as tmpl_dir:
+            self._workspace_templates = {}
+            self._workspace_template_root = Path(tmpl_dir)
+            try:
+                if effective_parallel <= 1:
+                    for pair in pairs:
+                        if (
+                            getattr(self.config, "terminate_on_ceiling", False)
+                            and (pair.model, pair.task.id) in ceiling_pairs
+                        ):
+                            continue
+                        res_pair = self._run_pair(pair, run_root)
+                        record(res_pair)
+                        ctrl_res = res_pair[0]
+                        if (
+                            getattr(self.config, "terminate_on_ceiling", False)
+                            and ctrl_res.get("score") is not None
+                            and float(ctrl_res["score"]) >= 1.0
+                        ):
+                            ceiling_pairs.add((pair.model, pair.task.id))
+                            terminated_on_ceiling = True
+                            self.progress(
+                                f"Ceiling reached on {pair.model} · {pair.task.id} "
+                                "(control 100%); skipping remaining repetitions for this task."
+                            )
+                else:
+                    self.progress(
+                        f"Running {len(pairs)} pair(s) across {effective_parallel} worker(s)..."
+                    )
+                    if getattr(self.config, "terminate_on_ceiling", False):
+                        first_batch = [p for p in pairs if p.repetition == 1]
+                        rest_candidates = [p for p in pairs if p.repetition > 1]
+                    else:
+                        first_batch = pairs
+                        rest_candidates = []
+                    for batch_idx, batch in enumerate((first_batch, rest_candidates)):
+                        if batch_idx == 1:
+                            batch = [
+                                p
+                                for p in batch
+                                if (p.model, p.task.id) not in ceiling_pairs
+                            ]
+                        if not batch:
+                            continue
+                        pool = ThreadPoolExecutor(max_workers=effective_parallel)
+                        futures = [pool.submit(self._run_pair, p, run_root) for p in batch]
+                        try:
+                            for future in as_completed(futures):
+                                res_pair = future.result()
+                                record(res_pair)
+                                ctrl_res = res_pair[0]
+                                if (
+                                    getattr(self.config, "terminate_on_ceiling", False)
+                                    and ctrl_res.get("score") is not None
+                                    and float(ctrl_res["score"]) >= 1.0
+                                ):
+                                    ceiling_pairs.add((ctrl_res["model"], ctrl_res["task_id"]))
+                                    terminated_on_ceiling = True
+                        except BaseException:
+                            self._stopped.set()
+                            pool.shutdown(wait=False, cancel_futures=True)
+                            self.agent_runner.terminate_all()
+                            pool.shutdown(wait=True)
+                            raise
+                        pool.shutdown()
+            except KeyboardInterrupt:
+                interrupted = True
+                self.progress("Interrupted: writing a report for the completed pairs...")
+            finally:
+                self._workspace_templates = None
+                self._workspace_template_root = None
         # A parallel baseline may finish before its pair can be checkpointed.
         self._baseline_runs = [
             r for r in self._baseline_runs

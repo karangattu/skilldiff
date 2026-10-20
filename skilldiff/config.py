@@ -1107,6 +1107,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         max_tool_budget=int(max_tool_budget) if max_tool_budget is not None else None,
         terminate_on_ceiling=terminate_on_ceiling,
     )
+    exp_config._arm_parallel_explicit = "arm_parallel" in data
 
     # Preset consistency: each preset configures the shared runner with clear
     # arms; mismatches fail fast instead of running the wrong comparison.

@@ -301,3 +301,76 @@ def test_tooling_and_cli_memoization(monkeypatch):
     assert "OPENCODE_SESSION_ID" not in cleaned
     for var in PARENT_SESSION_VARS:
         assert var not in cleaned
+
+
+def test_preflight_cache_and_parallel_grading_across_repetitions(tmp_path: Path, monkeypatch):
+    import time
+
+    from skilldiff.config import GraderConfig
+    from skilldiff.grader import Candidate, Grader
+    from skilldiff.pairing import probe_arm_preflights
+    from skilldiff.runner import AgentRunner
+    from skilldiff.workspace import Workspace
+
+    preflight_calls = 0
+
+    class CountingAgentRunner(AgentRunner):
+        def preflight(self, cwd, config, expected_skills, temp_dir=None, runtime_probe=None):
+            nonlocal preflight_calls
+            preflight_calls += 1
+            with self._active_lock:
+                self._preflighted_roots.add(cwd.resolve())
+            return {"expected_skills": expected_skills, "cli": {"version": "1.0"}}
+
+    ws_ctrl = Workspace(tmp_path / "ctrl", False, None)
+    ws_treat = Workspace(tmp_path / "treat", True, None)
+    ws_ctrl.setup()
+    ws_treat.setup()
+    arm_dirs = {"control": tmp_path / "out_c", "treatment": tmp_path / "out_t"}
+    for d in arm_dirs.values():
+        d.mkdir()
+
+    cfg = ExperimentConfig(
+        name="cache-test", skill=None, models=["m"], tasks_patterns=[], harness="antigravity"
+    )
+    task = TaskConfig(id="t1", prompt="p")
+    runner = CountingAgentRunner()
+    cache = {}
+    probe_arm_preflights(
+        {"control": ws_ctrl, "treatment": ws_treat},
+        cfg,
+        runner,
+        task,
+        "m",
+        arm_dirs,
+        lambda _: None,
+        preflight_cache=cache,
+    )
+    assert preflight_calls == 2
+    probe_arm_preflights(
+        {"control": ws_ctrl, "treatment": ws_treat},
+        cfg,
+        runner,
+        task,
+        "m",
+        arm_dirs,
+        lambda _: None,
+        preflight_cache=cache,
+    )
+    assert preflight_calls == 2
+
+    cmd = "python3 -c 'import time; time.sleep(0.25); print(\"{\\\"score\\\": 1.0}\")'"
+    grader = Grader(
+        GraderConfig(command=cmd),
+        ["s"],
+        "m",
+    )
+    t0 = time.perf_counter()
+    grades = grader.grade_candidates([
+        Candidate("", "control", ws_ctrl.root, "", "", "", []),
+        Candidate("", "treatment", ws_treat.root, "", "", "", []),
+    ])
+    elapsed = time.perf_counter() - t0
+    assert grades["control"].score == 1.0
+    assert grades["treatment"].score == 1.0
+    assert elapsed < 0.48

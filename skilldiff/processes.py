@@ -25,12 +25,15 @@ class OwnedDescendants:
         self.pid = pid
         self.known: dict[int, str] = {}
         self.stop = threading.Event()
+        self._cleaned = False
         self.thread: threading.Thread | None = None
         if os.name == "posix" and type(pid) is int and pid > 1:
             self.thread = threading.Thread(target=self._watch, daemon=True)
             self.thread.start()
 
     def _watch(self) -> None:
+        if self.stop.wait(0.15):
+            return
         while not self.stop.is_set():
             try:
                 table = process_table()
@@ -59,14 +62,32 @@ class OwnedDescendants:
             self.stop.wait(0.25)
 
     def cleanup(self) -> None:
+        if self._cleaned:
+            return
+        self._cleaned = True
         self.stop.set()
         if not self.thread:
             return
         self.thread.join(timeout=3)
+        descendants = [pid for pid in self.known if pid != self.pid]
+        if not descendants:
+            return
+        alive = []
+        for pid in descendants:
+            try:
+                os.kill(pid, 0)
+                alive.append(pid)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                alive.append(pid)
+        if not alive:
+            return
         try:
             table = process_table()
-            for pid, birth in list(self.known.items()):
-                if pid != self.pid and pid in table and table[pid][1] == birth:
+            for pid in alive:
+                birth = self.known.get(pid)
+                if birth and pid in table and table[pid][1] == birth:
                     try:
                         os.kill(pid, signal.SIGKILL)
                     except ProcessLookupError:

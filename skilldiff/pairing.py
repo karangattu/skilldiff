@@ -113,6 +113,10 @@ def prepare_pair_workspaces(
     tmp_treat: Path,
     tmp_base: Path,
     mounted_fixtures: list[Path] | None = None,
+    template_cache: dict[tuple[str, str], Workspace] | None = None,
+    template_root: Path | None = None,
+    template_lock: Any = None,
+    task_id: str | None = None,
 ) -> dict[str, Workspace]:
     is_ab = config.is_skill_comparison
     pr_mode = (comparison or {}).get("mode", "agent") if comparison else "agent"
@@ -139,7 +143,7 @@ def prepare_pair_workspaces(
         else None
     )
 
-    reflink_enabled = getattr(config, "reflink", False)
+    reflink_enabled = True if getattr(config, "reflink", False) else None
     workspaces = {
         "control": Workspace(
             root=tmp_ctrl / "workspace",
@@ -180,8 +184,59 @@ def prepare_pair_workspaces(
             reflink=reflink_enabled,
             mounted_fixtures=mounted_fixtures,
         )
-    for ws in workspaces.values():
-        ws.setup()
+
+    def _setup_one(arm: str, ws: Workspace) -> None:
+        if template_cache is not None and template_root is not None and task_id is not None:
+            key = (task_id, arm)
+            tmpl = template_cache.get(key)
+            if tmpl is None:
+                if template_lock is not None:
+                    with template_lock:
+                        tmpl = template_cache.get(key)
+                        if tmpl is None:
+                            tmpl_dir = template_root / safe_path_component(task_id) / arm
+                            tmpl = Workspace(
+                                root=tmpl_dir,
+                                is_treatment=ws.is_treatment,
+                                source_commit=ws.source_commit,
+                                skill_dir=ws.skill_dir,
+                                strip_skill_dirs=ws.strip_skill_dirs or None,
+                                fixture_repo=ws.fixture_repo,
+                                harness=ws.harness,
+                                pr_touched_skills=ws.pr_touched_skills or None,
+                                reflink=ws.reflink,
+                                mounted_fixtures=ws.mounted_fixtures or None,
+                            )
+                            tmpl.setup()
+                            template_cache[key] = tmpl
+                else:
+                    tmpl_dir = template_root / safe_path_component(task_id) / arm
+                    tmpl = Workspace(
+                        root=tmpl_dir,
+                        is_treatment=ws.is_treatment,
+                        source_commit=ws.source_commit,
+                        skill_dir=ws.skill_dir,
+                        strip_skill_dirs=ws.strip_skill_dirs or None,
+                        fixture_repo=ws.fixture_repo,
+                        harness=ws.harness,
+                        pr_touched_skills=ws.pr_touched_skills or None,
+                        reflink=ws.reflink,
+                        mounted_fixtures=ws.mounted_fixtures or None,
+                    )
+                    tmpl.setup()
+                    template_cache[key] = tmpl
+            ws.clone_from(tmpl)
+        else:
+            ws.setup()
+
+    if len(workspaces) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(workspaces)) as executor:
+            futs = [executor.submit(_setup_one, arm, ws) for arm, ws in workspaces.items()]
+            for fut in futs:
+                fut.result()
+    else:
+        for arm, ws in workspaces.items():
+            _setup_one(arm, ws)
     return workspaces
 
 
@@ -194,6 +249,8 @@ def probe_arm_preflights(
     arm_dirs: dict[str, Path],
     progress: Callable[[str], None],
     arm_container_images: dict[str, str] | None = None,
+    preflight_cache: dict[tuple[Any, ...], dict[str, Any]] | None = None,
+    preflight_lock: Any = None,
 ) -> dict[str, Any]:
     preflight_reports: dict[str, Any] = {}
     for arm, ws in workspaces.items():
@@ -207,10 +264,42 @@ def probe_arm_preflights(
         arm_execution = deepcopy(execution)
         if arm_container_images and arm in arm_container_images:
             arm_execution.container_image = arm_container_images[arm]
+        cache_key = (
+            task.id,
+            arm,
+            arm_execution.isolation,
+            arm_execution.container_image,
+            tuple(expected),
+            task.runtime_probe,
+        )
+        cached_probe = None
+        if preflight_cache is not None:
+            if preflight_lock is not None:
+                with preflight_lock:
+                    cached_probe = preflight_cache.get(cache_key)
+            else:
+                cached_probe = preflight_cache.get(cache_key)
         try:
-            probe = agent_runner.preflight(
-                ws.root, arm_execution, expected, runtime_probe=task.runtime_probe
-            )
+            if cached_probe is not None:
+                probe = deepcopy(cached_probe)
+                preflighted = getattr(agent_runner, "_preflighted_roots", None)
+                if isinstance(preflighted, set):
+                    active_lock = getattr(agent_runner, "_active_lock", None)
+                    if active_lock is not None:
+                        with active_lock:
+                            preflighted.add(ws.root.resolve())
+                    else:
+                        preflighted.add(ws.root.resolve())
+            else:
+                probe = agent_runner.preflight(
+                    ws.root, arm_execution, expected, runtime_probe=task.runtime_probe
+                )
+                if preflight_cache is not None:
+                    if preflight_lock is not None:
+                        with preflight_lock:
+                            preflight_cache[cache_key] = deepcopy(probe)
+                    else:
+                        preflight_cache[cache_key] = deepcopy(probe)
             preflight_reports[arm] = probe
             atomic_json(directory / "preflight.json", {"status": "ok", **probe})
         except Exception as exc:
@@ -388,6 +477,10 @@ def run_pair(
             tmp_treat=Path(tmp_treat),
             tmp_base=Path(tmp_base),
             mounted_fixtures=mounted_fixtures,
+            template_cache=getattr(runner, "_workspace_templates", None),
+            template_root=getattr(runner, "_workspace_template_root", None),
+            template_lock=getattr(runner, "_lock", None),
+            task_id=task.id,
         )
 
         preflight_reports: dict[str, Any] = {}
@@ -407,6 +500,8 @@ def run_pair(
                 arm_dirs=arm_dirs_map,
                 progress=runner.progress,
                 arm_container_images=arm_images,
+                preflight_cache=getattr(runner, "_preflight_cache", None),
+                preflight_lock=getattr(runner, "_lock", None),
             )
 
         has_baseline = "baseline" in workspaces and not is_correctness
@@ -416,6 +511,7 @@ def run_pair(
             order = balanced_arm_order(model, task.id, pair.repetition, runner._seed)
 
         results: dict[str, RunResult] = {}
+        diffs: dict[str, tuple[str, list[str]]] = {}
         if is_correctness:
             from skilldiff.runner import RunResult as _RR
 
@@ -450,7 +546,7 @@ def run_pair(
                     "",
                 )
         else:
-            def _execute_arm(arm: str) -> tuple[str, RunResult]:
+            def _execute_arm(arm: str) -> tuple[str, RunResult, tuple[str, list[str]]]:
                 max_retries = 2
                 delay = 1.0
                 last_res: RunResult | None = None
@@ -578,7 +674,7 @@ def run_pair(
                     runner.progress(
                         f"Agent finished: {model} · {task.id} · {arm}; artifacts saved"
                     )
-                    return arm, res
+                    return arm, res, (immediate_diff, immediate_files)
 
                 assert last_res is not None
                 immediate_diff, immediate_files = workspaces[arm].get_diff()
@@ -602,32 +698,42 @@ def run_pair(
                     last_res.transcript,
                     immediate_diff,
                 )
-                return arm, last_res
+                return arm, last_res, (immediate_diff, immediate_files)
 
-            arm_parallel = getattr(runner.config, "arm_parallel", False)
+            is_real_agent = (
+                type(runner.agent_runner) is AgentRunner
+                and "run" not in runner.agent_runner.__dict__
+                and "_exec" not in runner.agent_runner.__dict__
+                and getattr(AgentRunner._exec, "__name__", "") == "_exec"
+                and not hasattr(AgentRunner._exec, "assert_called")
+                and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
+            )
+            arm_parallel = bool(
+                getattr(runner.config, "arm_parallel", False)
+                or (
+                    is_real_agent
+                    and not getattr(runner.config, "_arm_parallel_explicit", False)
+                )
+            )
             active_arms = [arm for arm in order if arm in workspaces]
             if arm_parallel and len(active_arms) > 1:
                 with concurrent.futures.ThreadPoolExecutor(
                     max_workers=len(active_arms)
                 ) as executor:
-                    futures = []
-                    for idx, arm in enumerate(active_arms):
-                        if idx > 0:
-                            time.sleep(0.1)
-                        futures.append(executor.submit(_execute_arm, arm))
+                    futures = [executor.submit(_execute_arm, arm) for arm in active_arms]
                     for fut in concurrent.futures.as_completed(futures):
-                        arm, res = fut.result()
+                        arm, res, arm_diff = fut.result()
                         results[arm] = res
+                        diffs[arm] = arm_diff
             else:
                 for arm in active_arms:
-                    arm, res = _execute_arm(arm)
+                    arm, res, arm_diff = _execute_arm(arm)
                     results[arm] = res
+                    diffs[arm] = arm_diff
 
-        diffs = {
-            arm: workspaces[arm].get_diff()
-            for arm in workspaces
-            if arm in results
-        }
+        for arm in workspaces:
+            if arm in results and arm not in diffs:
+                diffs[arm] = workspaces[arm].get_diff()
         runner._ensure_running()
         runner._check_graders()
         grades = grader.grade_candidates([
