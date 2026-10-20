@@ -18,7 +18,7 @@ This project uses semantic versioning.
 - A hit rate needs three measured runs before it can judge an arm. Below that floor the arm is reported as thin evidence instead of failing. An arm that never loaded the skill in any measured run still fails at any sample size.
 - Claude adoption counts only confirmed loads. A skill call whose result never arrives is recorded as unmeasured (`skill_invoked: null`) and stays out of the hit rate instead of counting as a hit or a miss; a call denied in the result event no longer counts as a load.
 - The report's adoption table and its "Skill used" row now use the same eligible-run filter, so both show the same denominator. The column is named "Load events" and states that each harness counts its own events.
-- `skilldiff diagnose --ci` fails when an arm never loaded the skill, not when any single intended run missed it. `skilldiff run --ci` and `skilldiff results --ci` are unchanged.
+- `skilldiff diagnose --ci` fails when an arm never loaded the skill, not when any single intended run missed it. The `--ci` exit codes are unchanged: 4 for a failed adoption gate, 2 for a contaminated baseline, 3 for a ceiling stop.
 
 ### Fixed
 
