@@ -101,6 +101,11 @@ def uncached(total, cached):
     return total - cached
 
 
+def filesystem_denial(text: str) -> str | None:
+    match = re.search(r"Operation not permitted|Permission denied", text, re.IGNORECASE)
+    return match.group(0) if match else None
+
+
 def parse_codex(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     from skilldiff.runner import detect_skill_reference
 

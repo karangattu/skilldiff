@@ -275,6 +275,16 @@ denied tool calls per arm for all four harnesses (including Codex sandbox blocks
 a broken permission setup cannot pass as a low score. To block reads outside the workspace as well, use
 `isolation: docker`/`podman`, or `isolation: macos` for Claude and Codex.
 
+Native macOS setup handles uv Python aliases, shell heredocs, Git configuration,
+and temporary pytest collection without opening host skill or grader contents.
+Use a task `runtime_probe:` that runs the actual test workflow before model calls;
+failed probes show both output streams. Codex records filesystem errors from
+failed commands even when its overall session succeeds. See the
+[runtime setup guide](skills/skilldiff/references/preflight.md) for a probe example.
+
+Set `parallel: 1` and `arm_parallel: false` for serial runs. Explicit concurrency
+settings are honored; omitted settings can use automatic parallelism.
+
 ## Tips for useful results
 
 - Write tasks that need what only the skill knows, such as obscure APIs, recent changes, or house rules. If control already scores 100%, the task is too easy.

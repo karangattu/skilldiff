@@ -139,7 +139,8 @@ Other rules:
 - **Grade outcomes deterministically.** Run tests or parse with `ast`/regex and
   print `{"score": 0.0-1.0, "success": bool, "checks": [...]}` last. Accept all
   valid solutions (aliases, equivalent APIs) and parse code rather than raw text
-  comments. Put ungraded diagnostics under `notes`.
+  comments. Do not require a particular function or output name unless the task
+  explicitly fixes it. Put ungraded diagnostics under `notes`.
 - **Test the grader three ways.** Untouched fixtures must score `<100%`,
   known-good solutions `100%`, and broken solutions must fail cleanly (not crash
   or time out). Set `validation: {good: [...], broken: [...]}` with at least two
@@ -168,6 +169,8 @@ skilldiff check -c skill-eval/skilldiff.yaml --fail-on-ceiling
 Codex discovery is checked before paid sessions. For native macOS isolation,
 custom wrappers, and task `runtime_probe:` checks, read
 [preflight safeguards](references/preflight.md). Availability is separate from adoption.
+Probe the actual test workflow, including temporary tests and browsers. Native
+setup details are in the linked preflight guide.
 
 Fix every `FAIL` and assess every `warn` before running one pair per task. Local
 checks warn about live skill sources and matching copies in `runs/`, including
@@ -237,6 +240,7 @@ Use `--parallel N` only if the user's rate limits allow it. Use `--resume` (or
 `--resume-from <run-dir>`) to continue an interrupted run; completed pairs are
 reused only when skill, task, PR revision, and execution settings match, and a
 mismatch refuses instead of silently mixing results.
+Set `parallel: 1` and `arm_parallel: false` for serial execution.
 
 Container execution needs a local image with the harness CLI, graders, and
 dependencies; see [preflight safeguards](references/preflight.md).

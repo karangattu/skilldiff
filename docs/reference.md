@@ -111,7 +111,9 @@ Every key listed there is checked when the config loads: an unknown or misspelle
 
 Values are checked too: path patterns, `prompts:`, and arguments must be lists of
 strings; flags must be YAML booleans; run and parallel counts must be positive
-integers; prices, thresholds, and timeouts must be finite numbers. Unsupported
+integers; explicit `parallel: 1` is honored, and `arm_parallel: false` separately
+disables simultaneous arms. Omitted settings may use automatic parallelism.
+Prices, thresholds, and timeouts must be finite numbers. Unsupported
 isolation modes fail rather than falling back to host execution. Distinct task
 files must have unique IDs; overlapping globs can safely select the same file.
 
@@ -318,6 +320,9 @@ looks like a skill improvement. `check` warns when there is only one.
 Every supplied validation fixture must produce a graded result. A crash, timeout,
 or missing grade on a broken example fails validation. Timed-out grader processes
 and their children are terminated before evaluation continues.
+Accept equivalent quote styles, function names, and output IDs unless the task
+explicitly fixes those names. A working UI/server rename must not be scored as
+a failed repair solely because a grader expects the old output name.
 
 ## Thresholds and verdicts
 
@@ -469,12 +474,12 @@ OpenCode. The default `service: go` uses your Go subscription. Sign in with `ope
 
 Antigravity. Short names expand to full models. `gemini-3.8` becomes `gemini-3.8-flash-medium`. Permissions are `dangerously_skip_permissions`.
 
-Every harness records the tool calls it refused as `permission_denials` on each run: Claude's `permission_denials` result field, Codex sandbox violations and exec-policy rejections from its stderr log (labeled `shell (sandbox: filesystem)` or `shell (exec policy)`), OpenCode's auto-rejected permission requests, and Antigravity's soft-denied tools (`denied_actions`). Reports warn per arm and `diagnose` lists the sessions, so a denied tool cannot pass as a low score.
+Every harness records the tool calls it refused as `permission_denials` on each run: Claude's `permission_denials` result field, Codex sandbox violations and exec-policy rejections from its stderr log, plus filesystem errors inside failed command results (labeled `shell (sandbox: filesystem)`, `shell (exec policy)`, or `shell (filesystem: Operation not permitted)`), OpenCode's auto-rejected permission requests, and Antigravity's soft-denied tools (`denied_actions`). Reports warn per arm and `diagnose` lists the sessions, so a denied tool cannot pass as a low score.
 
 Sign in with each CLI's normal login before you run. Each harness accepts `bin_path` and `extra_args`. You can also set `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, or `AGY_BIN`.
 
 Each agent run uses a private temporary directory beside its workspace, with
-`TMPDIR`, `TMP`, and `TEMP` set only in the child process. Scripted turns share
+`TMPDIR`, `TMP`, `TEMP`, and zsh's `TMPPREFIX` set only in the child process. Scripted turns share
 that directory; other arms and repetitions get separate directories. Temporary
 files are cleaned up when the run ends, including on failure or timeout, and are
 kept out of the workspace diff. This prevents accidental sharing by programs
@@ -506,6 +511,18 @@ evaluation.
 To install dependencies or packages into the container environment without modifying the base image or polluting workspaces, specify `container_install` (a package spec, local directory, or list of specs/paths). In PR evaluations (`preset: pr` or `pr:` block), set `pr.install: true` (or an install spec like `".[dev]"`) to build derived images per arm: the control arm container receives the base revision installed, and the treatment arm receives the PR revision installed. Immutable image digests are recorded for reproducible runs and resume.
 
 For Codex skill experiments, `check` queries `app-server skills/list` in fresh workspaces to verify skill discovery prior to paid sessions. Codex and Claude also support opt-in macOS native isolation (`isolation: macos`) via `sandbox-exec` with private session directories; Claude takes its runtime root from `claude.read_paths`, as Codex does from `codex.read_paths`. Tasks can declare a `runtime_probe` command. See [preflight reference](../skills/skilldiff/references/preflight.md) for details.
+
+Native macOS sessions support declared uv runtime aliases and package metadata
+checks without exposing bundled skill contents. Pytest can list the common
+session directory but cannot read its sibling files; its default cache stays
+in scratch. Git defaults avoid host configuration and the cache-writing Apple
+launcher. Codex forwards configured task environment variables through a private
+mode-600 shell configuration, without putting their values in CLI arguments.
+Permission failures inside unsuccessful Codex commands are counted alongside
+native sandbox rejections, even when the agent session exits successfully.
+Probe permission errors on stderr fail preflight even with exit zero; failed
+probes preserve stdout and stderr. Service failures include redacted stderr
+details in their error summaries and remain excluded harness failures.
 
 Running these from inside an agent needs a few things too:
 

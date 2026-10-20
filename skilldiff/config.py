@@ -1108,6 +1108,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         terminate_on_ceiling=terminate_on_ceiling,
     )
     exp_config._arm_parallel_explicit = "arm_parallel" in data
+    exp_config._parallel_explicit = "parallel" in data
 
     # Preset consistency: each preset configures the shared runner with clear
     # arms; mismatches fail fast instead of running the wrong comparison.

@@ -11,6 +11,11 @@ On macOS, use `isolation: macos` with Codex or Claude and specific `codex.read_p
 or `claude.read_paths` for external runtimes or editable packages. Native discovery
 and agent execution share the sandbox policy; a sibling-read probe verifies the boundary.
 Host user files and temporary siblings are blocked; own workspace and scratch are usable.
+Pytest may list the common session directory and stat its immediate entries;
+that does not permit reading sibling file contents. Package metadata may stat
+bundled skill files in declared runtime roots, while their contents and directory
+listings remain blocked. Declared uv runtime aliases work when Python is launched
+through a shell; declare both the virtual environment and its Python runtime.
 Target sources, conventional grader/solution/run directories, host skills and
 plugins, and skills bundled in allowed runtimes remain blocked. Native sessions
 use private `CODEX_HOME` with only the login's `auth.json` copied; host config,
@@ -29,6 +34,39 @@ under the actual agent execution boundary. It has a 30-second limit and runs
 before any model session. Validate the grader separately on the host for native
 runs. Grader validation retains feedback in `runs/preflight/<task>/grader.json`;
 fix missing browser/runtime dependencies before running agents.
+Failed probes retain both stdout and stderr. A permission error on stderr fails
+the probe even when its command exits zero. Probe the workflow you will use, not
+only imports: run pytest on a temporary test and launch a browser if the task
+depends on one.
+
+Native macOS sessions set private `TMPPREFIX` as well as `TMPDIR`/`TMP`/`TEMP`,
+so zsh heredocs can create their temporary files. Git uses no global/system
+configuration or host ignore file by default, and uses the command-line-tools
+Git instead of Apple's cache-writing launcher when available. Pytest's default
+cache is placed in session scratch; an explicit `PYTEST_ADDOPTS` takes precedence.
+Codex's throwaway, mode-600 `config.toml` forwards configured `env:` plus the
+managed runtime variables to its shell commands. Values are not put in CLI
+arguments or written to host Codex settings. Explicit Codex `extra_args` can
+still override these defaults. This uses the documented
+[shell environment policy](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+For a dependency-free Python task, this probe checks temporary test collection
+inside the same boundary as the agent (pytest must already be in the selected environment):
+
+```yaml
+runtime_probe: |
+  python - <<'PY'
+  import pathlib, tempfile, pytest
+  with tempfile.TemporaryDirectory() as directory:
+      test = pathlib.Path(directory) / 'test_runtime.py'
+      test.write_text('def test_runtime(): assert 2 + 2 == 4\n')
+      raise SystemExit(pytest.main(['-q', str(test)]))
+  PY
+```
+
+For browser tasks, replace that assertion with a browser fixture or launch. Do
+not disable plugin loading to hide missing runtime access; confirm the required
+plugins actually run. Keep runtime roots precise rather than allowing HOME.
 
 `skilldiff check --scan-home` matches directory/frontmatter names or identical
 `SKILL.md` contents. Scans stop after 20000 entries, 5 seconds, or 20 matches,
@@ -52,6 +90,9 @@ remaining repetitions for tasks where control scores 100%, `--max-turns` and
 environment variables (`PYTHONPATH`, `PYTHONDONTWRITEBYTECODE`) into agents,
 probes, and graders, and `--ci` enforces strict exit codes. Resume also
 requires the same isolation mode and immutable container image identity.
+An explicit YAML `parallel` value, including `1`, overrides automatic pair
+parallelism. `arm_parallel: false` separately disables simultaneous arms.
+When concurrency is omitted, real agent runs may use automatic workers.
 
 ## Trial evidence and cost decisions
 
@@ -76,6 +117,12 @@ For setup examples and native boundary limits, read the [SkillDiff reference](ht
 
 Nobody can answer a permission prompt in a headless session. Anything that would
 ask is refused, and the session still ends `ok`. The defaults avoid prompts:
+Codex also records filesystem errors inside failed command results, even when
+the overall session completes. Successful output merely quoting an error does
+not count. Reports and `diagnose` expose these denials; inspect them before
+interpreting time, tokens, or scores. Connection failures keep the underlying
+stderr cause in the error summary, with credentials redacted. They remain
+harness failures; SkillDiff does not silently retry them or give them zero scores.
 
 | Harness | Default | When the tasks need the network |
 |---|---|---|

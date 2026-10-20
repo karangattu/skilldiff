@@ -155,6 +155,9 @@ def _run_warnings(
             "Keep the harness permission defaults (`claude.sandbox`, `codex.sandbox`, "
             "`dangerously_skip_permissions` for OpenCode and Antigravity), allow the needed "
             "network (`claude.allowed_domains`, `codex.network_access`), then rerun."
+            " For native filesystem errors, check the task's `runtime_probe` and precise "
+            "`read_paths` before interpreting scores or efficiency; do not expose the "
+            "whole home directory to work around a missing runtime."
         )
 
     if is_skill_comparison:

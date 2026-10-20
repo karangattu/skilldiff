@@ -16,7 +16,7 @@ A reusable `skilldiff` evaluation pack for Python Shiny (`py-shiny`) diagnostic 
 
 Each task ships with:
 - A broken starting fixture under `fixtures/<task>/`
-- Two distinct known-good reference solutions and a deliberately broken solution under `solutions/<task>/`
+- At least two distinct known-good reference solutions and a deliberately broken solution under `solutions/<task>/`
 - A deterministic AST + structural grader under `graders/`
 - `grader_ignore: python-tooling` and `allowed_paths: ["app.py"]`
 
@@ -26,3 +26,9 @@ Each task ships with:
 skilldiff check -c eval/py-shiny-troubleshooting/skilldiff.yaml --no-probe --fail-on-ceiling
 skilldiff run -c eval/py-shiny-troubleshooting/skilldiff.yaml --split dev --runs 1 --terminate-on-ceiling
 ```
+
+The module task also includes a valid solution with single-quoted namespace IDs
+and a consistently renamed output. Its structural grader checks distinct module
+UI mounts from the Python syntax tree, accepting equivalent ID names and ignoring
+comments. These graders check static structure; use runtime/browser checks before
+claiming that every app behavior works. Historical evaluation copies are unchanged.

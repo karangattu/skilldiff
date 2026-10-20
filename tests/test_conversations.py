@@ -38,8 +38,9 @@ def test_failed_turn_stops_before_next_prompt(tmp_path, conversation_cli, config
 
 @pytest.mark.parametrize("config_class", CONFIGS)
 def test_conversation_deadline_keeps_completed_turn(tmp_path, conversation_cli, config_class):
+    # Allow process startup on busy workers; the second turn sleeps for ten seconds.
     result = AgentRunner().run(["remember kept", "hang"], tmp_path, "m",
-                               config_class(bin_path=conversation_cli), timeout=0.5)
+                               config_class(bin_path=conversation_cli), timeout=2)
     assert result.status == "timeout"
     assert "kept" in result.transcript
     assert result.input_tokens is not None

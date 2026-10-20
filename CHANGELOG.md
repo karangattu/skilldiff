@@ -6,6 +6,14 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Native macOS evaluations handle shell-launched uv Python aliases, private zsh heredocs, Git without host configuration or launcher-cache writes, and temporary pytest collection/cache files. Package metadata can stat bundled skill files while their contents remain denied.
+- Native Codex sessions forward configured environment values and managed runtime paths through a private shell configuration, keeping values out of process arguments and host settings.
+- Codex records filesystem denials inside failed command results, and keeps redacted service-error details instead of only a generic failure. Runtime probes preserve both output streams and reject permission errors even with exit zero.
+- Explicit YAML `parallel: 1` is honored, and help for `check` and `run` renders percentage signs without crashing.
+- The Shiny module example grader accepts equivalent namespace names and quote styles and ignores names found only in comments.
+
 ## [0.24.0] - 2026-10-19
 
 ### Added

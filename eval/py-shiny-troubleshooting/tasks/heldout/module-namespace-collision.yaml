@@ -9,6 +9,7 @@ validation:
   good:
     - ../../solutions/module-namespace-collision/good-1
     - ../../solutions/module-namespace-collision/good-2
+    - ../../solutions/module-namespace-collision/good-3
   broken:
     - ../../solutions/module-namespace-collision/broken
 prompt: |

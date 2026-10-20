@@ -931,6 +931,7 @@ class ExperimentRunner:
             effective_parallel <= 1
             and is_real_agent
             and not getattr(self.config, "_cli_parallel_explicit", False)
+            and not getattr(self.config, "_parallel_explicit", False)
             and len(pairs) > 1
         ):
             auto_workers = int(os.environ.get("SKILLDIFF_AUTO_PARALLEL", "3"))

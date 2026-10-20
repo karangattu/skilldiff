@@ -133,6 +133,7 @@ CONTAINER_PATH_VARS = frozenset(
         "TMPDIR",
         "TMP",
         "TEMP",
+        "TMPPREFIX",
         "CLAUDE_CONFIG_DIR",
         "CODEX_HOME",
         "XDG_DATA_HOME",
@@ -1107,13 +1108,15 @@ class AgentRunner:
         if temp_dir is not None:
             for key in ("TMPDIR", "TMP", "TEMP"):
                 env[key] = str(temp_dir.resolve())
+            env["TMPPREFIX"] = str(temp_dir.resolve() / "zsh")
         container_name = None
         runtime = None
         if sys.platform == "darwin" and isolation == "local" and cached_which("caffeinate"):
             exec_cmd = ["caffeinate", "-i", *exec_cmd]
         elif isolation == "macos":
-            from skilldiff.isolation import macos_command
+            from skilldiff.isolation import macos_command, macos_environment
 
+            macos_environment(env, temp_dir, forward_env or [])
             exec_cmd = macos_command(exec_cmd, cwd, temp_dir, read_paths or [],
                                      protected_paths or [])
         elif isolation in {"docker", "podman"}:
@@ -1172,7 +1175,8 @@ class AgentRunner:
             container_env = {
                 key: env[key]
                 for key in (*CONTAINER_AUTH_VARS, "PYTHONDONTWRITEBYTECODE", *(forward_env or []),
-                            *(("TMPDIR", "TMP", "TEMP") if temp_dir is not None else ()))
+                            *(("TMPDIR", "TMP", "TEMP", "TMPPREFIX")
+                              if temp_dir is not None else ()))
                 if key in env
             }
             # Pass values through the client's environment, keeping credentials out of argv.
@@ -1945,12 +1949,15 @@ class AgentRunner:
         from skilldiff.telemetry import parse_codex
 
         parsed = parse_codex(execution.stdout, skill_names or _codex_skill_names(cwd))
+        if execution.exit_code and execution.stderr.strip():
+            parsed["error"] = (f"{parsed.get('error') or 'Codex failed'}\n"
+                               f"stderr: {execution.stderr.strip()[-2000:]}")
         result = RunResult(
             prompt="\n---\n".join(prompt) if isinstance(prompt, list) else prompt,
             transcript=f"STDOUT:\n{execution.stdout}\n\nSTDERR:\n{execution.stderr}",
             duration=execution.duration,
             exit_code=execution.exit_code or (1 if parsed.get("error") else 0),
-            permission_denials=codex_permission_denials(execution.stderr),
+            permission_denials=codex_permission_denials(execution.stderr, execution.stdout),
             **parsed,
         )
         return _finalize_status(result, execution)
@@ -2445,7 +2452,7 @@ _CODEX_SANDBOX_VIOLATION = re.compile(r"recorded sandbox violation: resource=(\w
 _CODEX_POLICY_REJECTION = re.compile(r"exec_command failed: .*Rejected\(.*` rejected: ")
 
 
-def codex_permission_denials(stderr: str) -> list[str]:
+def codex_permission_denials(stderr: str, stdout: str = "") -> list[str]:
     """Shell commands Codex's sandbox or exec policy blocked, one label per event."""
     denials = []
     for line in stderr.splitlines():
@@ -2454,6 +2461,29 @@ def codex_permission_denials(stderr: str) -> list[str]:
             denials.append(f"shell (sandbox: {violation.group(1)})")
         elif _CODEX_POLICY_REJECTION.search(line):
             denials.append("shell (exec policy)")
+    from skilldiff.telemetry import filesystem_denial
+
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type") or event.get("method")
+        params = event.get("params")
+        item = event.get("item") if kind == "item.completed" else (
+            params.get("item") if kind == "item/completed" and isinstance(params, dict) else None)
+        if not isinstance(item, dict) or item.get("type") not in {
+            "command_execution", "commandExecution"
+        }:
+            continue
+        failed = (item.get("exit_code", item.get("exitCode")) not in (None, 0)
+                  or item.get("status") in {"failed", "error", "declined"})
+        reason = filesystem_denial(str(item.get("aggregated_output")
+                                       or item.get("aggregatedOutput") or ""))
+        if failed and reason:
+            denials.append(f"shell (filesystem: {reason})")
     return denials
 
 

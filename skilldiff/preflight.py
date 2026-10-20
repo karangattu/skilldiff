@@ -187,8 +187,11 @@ def probe_workspace(
             "stdout": result.stdout,
             "stderr": result.stderr,
         }
-        if result.exit_code:
-            raise RuntimeError(f"Runtime preflight failed: {result.stderr or result.stdout}")
+        from skilldiff.telemetry import filesystem_denial
+
+        if result.exit_code or result.timed_out or filesystem_denial(result.stderr):
+            details = f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            raise RuntimeError(f"Runtime preflight failed (exit {result.exit_code}): {details}")
     if config.harness != "codex" or not config.codex.verify_skills:
         return report
     binary = config.codex.bin_path or runner.codex_bin

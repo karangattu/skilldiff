@@ -1885,7 +1885,7 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument(
         "--fail-on-ceiling",
         action="store_true",
-        help="Fail tasks whose untouched fixture already scores 100%",
+        help="Fail tasks whose untouched fixture already scores 100%%",
     )
     check_parser.add_argument(
         "--scan-home", action="store_true",
@@ -1937,7 +1937,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--terminate-on-ceiling",
         action="store_true",
-        help="Skip remaining repetitions when a task scores 100% in control",
+        help="Skip remaining repetitions when a task scores 100%% in control",
     )
     run_parser.add_argument("--json", action="store_true", help="Output results as JSON")
     run_parser.add_argument(
