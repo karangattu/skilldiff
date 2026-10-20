@@ -6,6 +6,26 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- `adoption_basis` in `results.json` and `skilldiff diagnose --json`, naming the runs the shipping gate judges: the held-out runs when the experiment declares a held-out split, every run otherwise.
+- `adoption_unmeasured_arms` in the same payloads, for arms whose adoption the harness could not confirm.
+- Task prompt text is saved in `results.json` (`task_details[].prompt`) so the report can quote the wording that missed the trigger. Prompts are stored verbatim.
+
+### Changed
+
+- Adoption is now judged on one **decision basis** everywhere. `results.json`, `skilldiff diagnose`, and the report's closing decision read the same runs, so `--ci` can no longer exit 4 while the report says the result is sound. The report names the basis it used.
+- A hit rate needs three measured runs before it can judge an arm. Below that floor the arm is reported as thin evidence instead of failing. An arm that never loaded the skill in any measured run still fails at any sample size.
+- Claude adoption counts only confirmed loads. A skill call whose result never arrives is recorded as unmeasured (`skill_invoked: null`) and stays out of the hit rate instead of counting as a hit or a miss; a call denied in the result event no longer counts as a load.
+- The report's adoption table and its "Skill used" row now use the same eligible-run filter, so both show the same denominator. The column is named "Load events" and states that each harness counts its own events.
+- `skilldiff diagnose --ci` fails when an arm never loaded the skill, not when any single intended run missed it. `skilldiff run --ci` and `skilldiff results --ci` are unchanged.
+
+### Fixed
+
+- The **Evaluation completeness** section counts measured adoption misses on the decision basis, so failed runs are no longer counted as adoption failures.
+- PR experiments record no skill adoption at all: `skill_invocations` is cleared alongside `skill_invoked`, and no adoption is reported for an arm that measures a pull request.
+- The key takeaways say what the no-skill control arm showed about isolation instead of dropping that evidence.
+
 ## [0.23.0] - 2026-10-19
 
 ### Added

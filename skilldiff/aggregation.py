@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from skilldiff import __version__
-from skilldiff.adoption import adoption_eligible, adoption_summary
+from skilldiff.adoption import adoption_eligible, adoption_summary, decision_runs
 from skilldiff.config import ExperimentConfig, TaskConfig
 from skilldiff.persistence import read_json
 from skilldiff.profiler import compute_context_tax, measure_skill_footprint
@@ -527,24 +527,29 @@ def aggregate_results(
         if t_scores and all(s >= 1.0 for s in t_scores):
             non_discriminating_tasks.append(t.id)
 
-    adoption = adoption_summary(
-        {
-            "preset": getattr(config, "preset", None) or "skill",
-            "skill": str(config.skill) if config.skill else None,
-            "skill_a": str(config.skill_a) if config.skill_a else None,
-            "skill_b": str(config.skill_b) if config.skill_b else None,
-            "skill_comparison": skill_comparison_info,
-            "comparison": comparison,
-            "arm_labels": _arm_labels(config, comparison),
-            "task_details": task_details,
-        },
-        {
-            "control": raw_control_runs,
-            "treatment": raw_treatment_runs,
-            "baseline": raw_baseline_runs,
-        },
+    adoption_results = {
+        "preset": getattr(config, "preset", None) or "skill",
+        "skill": str(config.skill) if config.skill else None,
+        "skill_a": str(config.skill_a) if config.skill_a else None,
+        "skill_b": str(config.skill_b) if config.skill_b else None,
+        "skill_comparison": skill_comparison_info,
+        "comparison": comparison,
+        "arm_labels": _arm_labels(config, comparison),
+        "task_details": task_details,
+    }
+    runs_by_arm = {
+        "control": raw_control_runs,
+        "treatment": raw_treatment_runs,
+        "baseline": raw_baseline_runs,
+    }
+    # Every run, for the report's descriptive table.
+    adoption = adoption_summary(adoption_results, runs_by_arm, basis="all")
+    # The runs the closing decision uses, for the shipping gate.
+    decision_arm_runs, adoption_basis = decision_runs(adoption_results, runs_by_arm)
+    decision_adoption = adoption_summary(
+        adoption_results, decision_arm_runs, basis=adoption_basis
     )
-    adoption_failed = bool(adoption["adoption_failed"])
+    adoption_failed = bool(decision_adoption["adoption_failed"])
 
     return {
         "name": config.name,
@@ -570,7 +575,9 @@ def aggregate_results(
         "failure_policy": dict(getattr(config, "failure_policy", {}) or {}),
         "valid": valid,
         "adoption_failed": adoption_failed,
-        "adoption_failed_arms": adoption["adoption_failed_arms"],
+        "adoption_failed_arms": decision_adoption["adoption_failed_arms"],
+        "adoption_unmeasured_arms": decision_adoption["adoption_unmeasured_arms"],
+        "adoption_basis": adoption_basis,
         "skill_usage": adoption["arms"],
         "non_discriminating_tasks": non_discriminating_tasks,
         "interrupted": interrupted,

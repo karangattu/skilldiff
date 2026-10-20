@@ -641,8 +641,10 @@ def run_pair(
             runner._ensure_running()
             res = results[arm]
             if runner.comparison and not is_ab:
+                # PR mode measures a pull request, not a skill: no adoption.
                 res.skill_invoked = None
                 res.skill_available = None
+                res.skill_invocations = None
             grade = grades[arm]
             diff_text, files = diffs[arm]
             records[arm] = build_arm_record(

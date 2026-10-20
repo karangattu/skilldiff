@@ -60,7 +60,7 @@ Rates in USD per 1M tokens from https://www.anthropic.com/pricing (checked 2026-
 
 - **Accuracy.** Control averaged 42% and the skill 81%. Pair by pair, the skill scored higher in 5, lower in 0, and tied in 1 of 6 graded pair(s) (2 ungraded).
 - **Efficiency.** With the skill, runs cost 18% less, took 18% less time and used 13% fewer tokens, summed over the compared pairs. Totals: cost $3.31 → $2.71, time 690s → 563s.
-- **Adoption.** Skill 7/8, 88%, 7 load event(s). Runs where the skill was ignored dilute any effect. A sharper `description` usually fixes this.
+- **Adoption.** Skill 7/8, 88%, 7 load event(s). Runs where the skill was ignored dilute any effect. A sharper `description` usually fixes this. No control run listed the skill.
 - **Checks.** biggest gain `plain decimal output` (fix-total, +100 pp). See By check.
 - **Biggest gain:** `fix-total` (+61 pp).
 - **Sample size.** 8 pair(s) with 4 repetition(s) per task gives wide error bars. Use `runs: 5` or more as a starting point, not a sufficiency rule — pre-register the run budget before looking at results.
@@ -135,7 +135,7 @@ Each pair ran in identical fresh workspaces, in balanced arm order (seed `1234`)
 - **Failure policy:** agent_failure=exclude, missing=exclude
 - **Seed:** `1234` (balanced arm order)
 - **Categories:** `fix-total`=intended, `write-total`=intended
-- **skilldiff:** 0.22.0
+- **skilldiff:** 0.23.0
 
 ## How to read this report
 
@@ -162,9 +162,9 @@ App is the task ID (with the model when multiple models were evaluated). Control
 
 ## Skill adoption and next steps
 
-Hits are eligible runs where the skill loaded at least once. Loads count matching skill load/read events (`N/A` when the run predates event counting). Unknown runs have no measurement and are not counted as misses. The closing decision checks held-out adoption: Skill 4/4.
+Hits are eligible runs where the skill loaded at least once. Load events count matching skill load/read events across the arm's runs (`N/A` when the run predates event counting); each harness counts its own events, so compare arms within one harness. Unknown runs have no measurement and are not counted as misses. The closing decision checks adoption on held-out runs: Skill 4/4. A hit rate needs 3 measured runs before it can judge an arm; fewer than that is thin evidence, and an arm that never loaded the skill always blocks a SHIP.
 
-| Arm | Hits | Eligible | Unknown | Hit rate | Loads | Reading |
+| Arm | Hits | Eligible | Unknown | Hit rate | Load events | Reading |
 |:---|---:|---:|---:|---:|---:|:---|
 | Skill | 7 | 8 | 0 | 88% | 7 | Partial adoption |
 

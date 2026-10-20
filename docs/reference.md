@@ -18,6 +18,13 @@ Each run writes four files:
 
 Each run also saves the transcript and the diff for each agent run.
 
+`results.json` is the raw data for scripts. It includes `skill_usage` (per-arm
+adoption), `adoption_failed`, `adoption_failed_arms`, `adoption_unmeasured_arms`,
+and `adoption_basis`, and each task's prompt text in `task_details`, so the
+report can quote the wording that missed the trigger. Prompts are stored
+verbatim; keep run directories out of shared artifacts if a prompt holds
+sensitive text.
+
 The terminal output and saved reports include an **Evaluation results** table with
 App, Arm, Score, Time, Input, Cached input, Output, Total tokens, Tool calls,
 Turns, Skill loaded, and API-equivalent cost. App is the task ID; each app and arm
@@ -32,8 +39,19 @@ calls, turns, and adoption, each with paired change, 95% CI, and a plain reading
 hit rate, and load events per skill arm plus concrete description and scope
 actions for missed or over-triggered tasks. Then comes one bottom line: SHIP, DO
 NOT SHIP, or NEEDS MORE RUNS, with the reason. A hit is an eligible run where the
-skill loaded at least once; failed and unknown runs never count as misses. Low
-adoption on any skill arm downgrades a would-be SHIP to NEEDS MORE RUNS. When the
+skill loaded at least once; failed and unknown runs never count as misses.
+
+Adoption is judged on the **decision basis**: the held-out runs when the
+experiment declares a held-out split, every run otherwise. The report states the
+basis it used, and `results.json` and `skilldiff diagnose` judge the same runs, so
+one number answers "can this result ship?" everywhere. A skill arm blocks a SHIP
+when it loaded the skill in fewer than two-thirds of its measured runs, or when
+it never loaded the skill in any measured run. A hit rate needs three measured
+runs before it can judge an arm; fewer measured runs is thin evidence, reported
+as such. An arm whose adoption could not be measured — the harness saw a skill
+call but no result for it — also blocks a SHIP. An arm the harness never reported
+adoption for is a gap in the evidence, not a failure, and does not block a
+decision. When the
 config records `pricing:` rates (per 1M tokens, with source and date), reports
 also reproduce an **API-equivalent cost** table from the saved token breakdown.
 Set `cost_basis: api-equivalent` before the run to use that estimate in the
@@ -441,7 +459,7 @@ Keep the entire run directory, including `inputs/`, for recovery. A small siblin
 
 `regrade` is for grader fixes after the fact. It rebuilds each arm's final files from the run's frozen fixture plus the saved `diff.patch`, grades them with the current graders, and rewrites scores, aggregates, and reports. Each regraded record keeps its earlier grade under `regrade_history`, `results.json` gains a `regrades` entry, and the report shows a warning that the run was regraded, so the change stays auditable. Use `--dry-run` to see which scores would change first. A pair whose diff cannot be rebuilt (binary or excluded files) keeps its original grade and is reported as skipped. PR experiments are not supported.
 
-`lint` checks a `SKILL.md` before you spend anything: required frontmatter, naming rules, description length and broad phrasing, unclosed code fences, and broken relative links, with an estimated token count. `diagnose` reads a finished run and names what went wrong: a skill that never triggered or triggered only partially on intended tasks, one that triggered on irrelevant tasks, a skill that loaded without changing outcomes, regressions, blast-radius violations, agent failures, permission denials, and token bloat without score gains, each with a suggested fix. Its JSON includes per-arm `skill_usage` and structured `next_actions` for improving the hit rate.
+`lint` checks a `SKILL.md` before you spend anything: required frontmatter, naming rules, description length and broad phrasing, unclosed code fences, and broken relative links, with an estimated token count. `diagnose` reads a finished run and names what went wrong: a skill that never triggered or triggered only partially on intended tasks, one that triggered on irrelevant tasks, a skill that loaded without changing outcomes, regressions, blast-radius violations, agent failures, permission denials, and token bloat without score gains, each with a suggested fix. Its JSON includes per-arm `skill_usage` and structured `next_actions` for improving the hit rate, plus `adoption_basis` naming the runs it judged. `diagnose` and `results.json` use the same decision basis as the report, so they reach the same adoption verdict.
 
 Claude Code. The default uses your subscription. SkillDiff removes `ANTHROPIC_API_KEY` from each run. To bill through the API, set `auth: api_key` and export the key. `sandbox: true` (default) runs Bash inside Claude Code's own sandbox, so commands need no approval but write only to the workspace and cannot read grader or skill sources. Set `allowed_domains` for hosts commands may reach. With `sandbox: false`, use `permission_mode` plus `allowed_tools`. `isolate: true` selects project/local settings. It does not guarantee that global skills, plugins, or instructions are absent; runtime skill discovery is checked separately. SkillDiff preserves subscription credentials and does not use `--bare`.
 
@@ -505,11 +523,15 @@ Do not inspect held-out outcomes until the design is frozen.
 
 Each arm records optional `session_id` and `reported_total_tokens` fields. CLI
 versions and detected capabilities are saved in its `preflight.json` and `cli`
-run metadata. Each run also records `skill_invoked` (a hit) and
-`skill_invocations` (distinct successful load/read events); older runs without
+run metadata. Each run also records `skill_invoked` (a hit), `skill_invocations`
+(distinct successful load/read events), and `skill_available`; older runs without
 the count show `N/A` for loads. Existing saved results remain readable. Total
 tokens use the reported total when provided, including when the detailed
 breakdown is incomplete.
+`skill_invoked` is `true` for a confirmed load, `false` when the harness saw no
+skill call, and `null` when the harness saw a skill call but no result for it, so
+the load could not be confirmed. A `null` run is unmeasured: it is excluded from
+the hit rate and never counted as a miss.
 API-equivalent costs still require all pricing categories; missing counts stay
 `N/A`. Claude result usage is per-turn and cost is cumulative; AGY results and
 Codex app-server totals are cumulative. OpenCode accounts for completed steps once.

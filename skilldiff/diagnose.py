@@ -7,6 +7,8 @@ from typing import Any
 from skilldiff.adoption import (
     adoption_actions,
     adoption_summary,
+    decision_runs,
+    merge_gate,
     no_effect_findings,
     skill_arm_names,
 )
@@ -134,9 +136,13 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
     unknown_adoption_runs = 0
     is_pr = bool(data.get("comparison")) or data.get("preset") == "pr"
     skill_arms = set(skill_arm_names(data, arms))
-    adoption = adoption_summary(data, arms)
+    adoption = adoption_summary(data, arms, basis="all")
+    decision_arm_runs, adoption_basis = decision_runs(data, arms)
+    decision_adoption = adoption_summary(data, decision_arm_runs, basis=adoption_basis)
     no_effect = no_effect_findings(data, arms)
-    next_actions = adoption_actions(data, adoption, no_effect)
+    next_actions = adoption_actions(
+        data, merge_gate(adoption, decision_adoption), no_effect
+    )
     for arm, records in arms.items():
         for record in records:
             identity = {
@@ -411,8 +417,10 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         "unmatched_runs": unmatched_runs,
         "unknown_adoption_runs": unknown_adoption_runs,
         "unknown_token_pairs": unknown_token_pairs,
-        "adoption_failed": bool(adoption["adoption_failed"]),
-        "adoption_failed_arms": adoption["adoption_failed_arms"],
+        "adoption_failed": bool(decision_adoption["adoption_failed"]),
+        "adoption_failed_arms": decision_adoption["adoption_failed_arms"],
+        "adoption_unmeasured_arms": decision_adoption["adoption_unmeasured_arms"],
+        "adoption_basis": adoption_basis,
         "skill_usage": adoption["arms"],
         "next_actions": next_actions,
         "under_triggered": under_triggered,

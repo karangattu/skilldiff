@@ -3,6 +3,7 @@ import json
 from skilldiff.adoption import (
     adoption_actions,
     adoption_summary,
+    decision_runs,
     no_effect_findings,
 )
 from skilldiff.diagnose import diagnose_run
@@ -17,22 +18,28 @@ def _run(
     score: float = 0.5,
     status: str = "ok",
     loads=None,
+    split: str = "dev",
+    task: str = "t1",
 ) -> dict:
     run = {
         "arm": arm,
         "model": "m",
-        "task_id": "t1",
+        "task_id": task,
         "task_category": category,
-        "task_split": "dev",
+        "task_split": split,
         "repetition": rep,
         "status": status,
         "score": score,
         "success": score >= 1.0,
-        "skill_invoked": invoked,
     }
+    if invoked is not _MISSING:
+        run["skill_invoked"] = invoked
     if loads is not None:
         run["skill_invocations"] = loads
     return run
+
+
+_MISSING = object()
 
 
 def test_plain_adoption_ignores_failed_runs_and_unknowns():
@@ -63,7 +70,162 @@ def test_plain_adoption_ignores_failed_runs_and_unknowns():
     assert treatment["hit_rate"] == 0.5
     assert treatment["loads"] == 2
     assert treatment["reading"] == "Partial adoption"
+    # Two measured runs cannot read a rate from: thin evidence, not a failure.
+    assert treatment["thin"] is True
+    assert summary["adoption_thin_arms"] == ["treatment"]
+    assert summary["adoption_failed_arms"] == []
+    assert summary["adoption_failed"] is False
+
+
+def test_adoption_gate_needs_three_measured_runs():
+    results = {"preset": "skill", "task_details": []}
+    thin = {
+        "treatment": [
+            _run("treatment", rep=1, invoked=True),
+            _run("treatment", rep=2, invoked=False),
+        ]
+    }
+    summary = adoption_summary(results, thin)
+    assert summary["adoption_thin_arms"] == ["treatment"]
+    assert summary["adoption_failed"] is False
+
+    measured = {
+        "treatment": [
+            _run("treatment", rep=1, invoked=True),
+            _run("treatment", rep=2, invoked=False),
+            _run("treatment", rep=3, invoked=False),
+        ]
+    }
+    summary = adoption_summary(results, measured)
     assert summary["adoption_failed_arms"] == ["treatment"]
+    assert summary["adoption_failed"] is True
+
+
+def test_adoption_gate_fails_when_the_skill_never_loaded():
+    results = {"preset": "skill", "task_details": []}
+    runs = {"treatment": [_run("treatment", rep=1, invoked=False)]}
+    summary = adoption_summary(results, runs)
+    assert summary["arms"]["treatment"]["status"] == "not used"
+    assert summary["adoption_failed_arms"] == ["treatment"]
+    assert summary["adoption_failed"] is True
+
+
+def test_unmeasured_adoption_blocks_but_unreported_adoption_does_not():
+    results = {"preset": "skill", "task_details": []}
+    unmeasured = {"treatment": [_run("treatment", rep=1, invoked=None)]}
+    summary = adoption_summary(results, unmeasured)
+    assert summary["arms"]["treatment"]["status"] == "unmeasured"
+    assert summary["adoption_unmeasured_arms"] == ["treatment"]
+    assert summary["adoption_failed"] is True
+
+    # A run record with no adoption field at all was never measured.
+    unreported = {"treatment": [_run("treatment", rep=1, invoked=_MISSING)]}
+    summary = adoption_summary(results, unreported)
+    assert summary["arms"]["treatment"]["status"] == "not measured"
+    assert summary["adoption_unmeasured_arms"] == []
+    assert summary["adoption_not_measured_arms"] == ["treatment"]
+    assert summary["adoption_failed"] is False
+
+
+def test_decision_basis_uses_held_out_runs():
+    results = {
+        "preset": "skill",
+        "task_details": [
+            {"id": "dev1", "category": "intended", "split": "dev"},
+            {"id": "ho1", "category": "intended", "split": "held-out"},
+        ],
+    }
+    runs = {
+        "treatment": [
+            _run("treatment", rep=1, invoked=False, task="dev1"),
+            _run("treatment", rep=1, invoked=True, task="ho1", split="held-out"),
+        ]
+    }
+    decision_runs_by_arm, basis = decision_runs(results, runs)
+    assert basis == "held-out"
+    assert [run["task_id"] for run in decision_runs_by_arm["treatment"]] == ["ho1"]
+
+    summary = adoption_summary(results, decision_runs_by_arm, basis=basis)
+    assert summary["arms"]["treatment"]["hits"] == 1
+    assert summary["adoption_failed"] is False
+
+
+def test_pr_preset_reports_no_adoption():
+    results = {"preset": "pr", "comparison": {"control_commit": "a"}}
+    runs = {
+        "control": [_run("control", rep=1, invoked=True)],
+        "treatment": [_run("treatment", rep=1, invoked=True)],
+    }
+    summary = adoption_summary(results, runs)
+    assert summary["arms"] == {}
+    assert summary["adoption_failed"] is False
+
+
+def _experiment(tmp_path):
+    from skilldiff.config import ExperimentConfig
+
+    skill = tmp_path / "skill"
+    skill.mkdir(exist_ok=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: s\ndescription: d\n---\n", encoding="utf-8"
+    )
+    return ExperimentConfig(
+        name="adopt", skill=skill, models=["sonnet"], tasks_patterns=[], runs=3
+    )
+
+
+def _arm_runs(arm: str, task: str, split: str, invoked) -> list[dict]:
+    return [
+        {
+            "model": "sonnet",
+            "task_id": task,
+            "repetition": rep,
+            "arm": arm,
+            "status": "ok",
+            "score": 0.5,
+            "grade_status": "graded",
+            "task_split": split,
+            "skill_invoked": invoked,
+        }
+        for rep in (1, 2, 3)
+    ]
+
+
+def test_aggregation_judges_adoption_on_the_decision_basis(tmp_path):
+    from skilldiff.aggregation import aggregate_results
+    from skilldiff.config import TaskConfig
+
+    cfg = _experiment(tmp_path)
+    dev = TaskConfig(id="dev1", prompt="p", category="intended", split="dev")
+    held = TaskConfig(id="ho1", prompt="p", category="intended", split="held-out")
+    run_dir = tmp_path / "runs" / "2026-10-15T000000Z"
+    run_dir.mkdir(parents=True)
+    control = _arm_runs("control", "dev1", "dev", False) + _arm_runs(
+        "control", "ho1", "held-out", False
+    )
+    # The skill rarely loaded on dev but always loaded on held-out runs.
+    treatment = _arm_runs("treatment", "dev1", "dev", False) + _arm_runs(
+        "treatment", "ho1", "held-out", True
+    )
+    results = aggregate_results(
+        cfg, [dev, held], run_dir, "2026-10-15T000000Z", control, treatment, [], False
+    )
+    assert results["adoption_basis"] == "held-out"
+    assert results["adoption_failed"] is False
+    assert results["skill_usage"]["treatment"]["hits"] == 3
+    assert results["skill_usage"]["treatment"]["eligible"] == 6
+    assert results["adoption_failed_arms"] == []
+
+    # The same experiment with a held-out arm that never loaded fails.
+    treatment = _arm_runs("treatment", "dev1", "dev", False) + _arm_runs(
+        "treatment", "ho1", "held-out", False
+    )
+    results = aggregate_results(
+        cfg, [dev, held], run_dir, "2026-10-15T000000Z", control, treatment, [], False
+    )
+    assert results["adoption_basis"] == "held-out"
+    assert results["adoption_failed"] is True
+    assert results["adoption_failed_arms"] == ["treatment"]
 
 
 def test_ab_adoption_reports_both_arms_and_trigger_failures():

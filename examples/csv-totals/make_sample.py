@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 
 from skilldiff import __version__
-from skilldiff.adoption import adoption_summary
+from skilldiff.adoption import adoption_summary, decision_runs
 from skilldiff.reporter import (
     build_html_report,
     build_markdown_report,
@@ -234,9 +234,19 @@ def build_results() -> dict:
         "pricing": PRICING,
         "runs": runs,
     }
-    adoption = adoption_summary(results, runs)
-    results["adoption_failed"] = adoption["adoption_failed"]
-    results["adoption_failed_arms"] = adoption["adoption_failed_arms"]
+    runs_by_arm = {
+        "control": runs["control"],
+        "treatment": runs["treatment"],
+    }
+    adoption = adoption_summary(results, runs_by_arm, basis="all")
+    decision_arm_runs, adoption_basis = decision_runs(results, runs_by_arm)
+    decision_adoption = adoption_summary(
+        results, decision_arm_runs, basis=adoption_basis
+    )
+    results["adoption_failed"] = decision_adoption["adoption_failed"]
+    results["adoption_failed_arms"] = decision_adoption["adoption_failed_arms"]
+    results["adoption_unmeasured_arms"] = decision_adoption["adoption_unmeasured_arms"]
+    results["adoption_basis"] = adoption_basis
     results["skill_usage"] = adoption["arms"]
     return results
 

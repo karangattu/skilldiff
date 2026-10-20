@@ -474,6 +474,51 @@ def test_report_ab_shows_usage_for_both_skill_arms():
     assert "## Skill adoption and next steps" in md
 
 
+def test_report_adoption_table_and_metric_row_use_the_same_runs():
+    # A run that failed under the "zero" failure policy is not an eligible
+    # adoption run, so both numbers must use the same denominator.
+    control = _runs("control", [0.0] * 6, 0.5)
+    treatment = _runs("treatment", [1.0] * 6, 0.25, skill_invoked=True)
+    for run in treatment:
+        run["skill_invocations"] = 1
+    treatment[0]["status"] = "error"
+    treatment[0]["skill_invoked"] = False
+    treatment[0]["skill_invocations"] = 0
+    results = _results(
+        control, treatment, tasks_count=3, failure_policy={"agent_failure": "zero"}
+    )
+    md = reporter.build_markdown_report(results)
+    assert "| Skill used | unknown | 5/5 |" in md
+    assert "| Skill | 5 | 5 | 0 | 100% | 5 | Full adoption |" in md
+
+
+def test_key_takeaway_reports_control_isolation():
+    control = _runs("control", [0.0] * 6, 0.5)
+    for run in control:
+        run["skill_available"] = False
+    treatment = _runs("treatment", [1.0] * 6, 0.25, skill_invoked=True)
+    results = _results(control, treatment, tasks_count=3)
+    md = reporter.build_markdown_report(results)
+    assert "**Adoption.** Skill 6/6, 100%." in md
+    assert "No control run listed the skill." in md
+
+
+def test_report_states_the_decision_basis_for_adoption():
+    control = _runs("control", [0.0] * 6, 0.5)
+    treatment = _runs("treatment", [1.0] * 6, 0.25, skill_invoked=True)
+    for run in control + treatment:
+        run["task_split"] = "held-out"
+    results = _results(
+        control,
+        treatment,
+        tasks_count=3,
+        task_details=[{"id": "t", "category": "intended", "split": "held-out"}],
+    )
+    md = reporter.build_markdown_report(results)
+    assert "The closing decision checks adoption on held-out runs" in md
+    assert "A hit rate needs 3 measured runs" in md
+
+
 def test_low_adoption_downgrades_ship():
     control = _runs("control", [0.0, 0.0, 0.5, 0.5, 1.0, 1.0], 0.5)
     treatment = _runs("treatment", [1.0] * 6, 0.25, skill_invoked=True)

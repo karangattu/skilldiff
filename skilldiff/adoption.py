@@ -3,6 +3,11 @@
 A *hit* is an eligible run in which the agent loaded the target skill or read its
 files at least once. A *miss* is an eligible run with confirmed no use. Unknown
 runs have no measurement and are never folded into the hit rate as misses.
+
+Adoption failure is judged on the *decision basis*: the held-out runs when the
+experiment declares a held-out split, every run otherwise. Results, reports and
+``skilldiff diagnose`` all use that basis, so one number answers "can this
+result ship?" everywhere.
 """
 
 from __future__ import annotations
@@ -20,6 +25,9 @@ _DEFAULT_LABELS = {
     "baseline": "Baseline",
 }
 _ADOPTION_FAILURE_RATE = 2.0 / 3.0
+# A hit rate needs a few measured runs before it can judge an arm.
+_ADOPTION_MIN_MEASURED = 3
+HELD_OUT_ALIASES = {"held-out", "heldout", "held_out", "held out", "holdout"}
 
 
 def adoption_eligible(run: dict[str, Any]) -> bool:
@@ -29,6 +37,45 @@ def adoption_eligible(run: dict[str, Any]) -> bool:
         and run.get("status") in (None, "ok", "correctness")
         and run.get("failure_kind") != "harness_error"
     )
+
+
+def task_splits(results: dict[str, Any]) -> dict[str, str]:
+    """Task id to declared split, from the saved task details."""
+    return {
+        str(task["id"]): str(task.get("split", ""))
+        for task in results.get("task_details") or []
+        if isinstance(task, dict) and task.get("id")
+    }
+
+
+def run_split(run: dict[str, Any], splits: dict[str, str]) -> str:
+    """The split a run belongs to: ``held-out`` or ``dev``."""
+    split = str(run.get("task_split") or splits.get(str(run.get("task_id", ""))) or "")
+    return "held-out" if split.strip().lower() in HELD_OUT_ALIASES else "dev"
+
+
+def has_held_out_split(results: dict[str, Any], splits: dict[str, str] | None = None) -> bool:
+    """Whether the experiment declares a held-out split."""
+    splits = task_splits(results) if splits is None else splits
+    return any(split.strip().lower() in HELD_OUT_ALIASES for split in splits.values())
+
+
+def decision_runs(
+    results: dict[str, Any], runs_by_arm: dict[str, list[dict[str, Any]]]
+) -> tuple[dict[str, list[dict[str, Any]]], str]:
+    """The runs the closing decision uses, and the basis label for them.
+
+    Held-out runs when the experiment declares a held-out split, every run
+    otherwise. The label is ``held-out`` or ``all``.
+    """
+    splits = task_splits(results)
+    held = {
+        arm: [run for run in runs if run_split(run, splits) == "held-out"]
+        for arm, runs in runs_by_arm.items()
+    }
+    if not has_held_out_split(results, splits) and not any(held.values()):
+        return {arm: list(runs) for arm, runs in runs_by_arm.items()}, "all"
+    return held, "held-out"
 
 
 def _task_details(results: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -69,10 +116,6 @@ def _run_split(run: dict[str, Any], details: dict[str, dict[str, Any]]) -> str:
     )
 
 
-def _arm_has_skill_measurement(runs: list[dict[str, Any]]) -> bool:
-    return any(adoption_eligible(run) and run.get("skill_invoked") is not None for run in runs)
-
-
 def skill_arm_names(
     results: dict[str, Any], runs_by_arm: dict[str, list[dict[str, Any]]]
 ) -> list[str]:
@@ -85,29 +128,23 @@ def skill_arm_names(
     skill_comparison = results.get("skill_comparison") or {}
     is_ab = bool(skill_comparison) or preset in _SKILL_PRESETS
     if results.get("comparison") and not is_ab:
-        # PR mode may install skills touched by the diff in either arm.
-        return [
-            arm
-            for arm in ("control", "treatment")
-            if _arm_has_skill_measurement(runs_by_arm.get(arm) or [])
-        ]
+        # PR mode measures a pull request, not a skill. The runner records no
+        # skill adoption for those runs, so there is nothing to report.
+        return []
     if is_ab:
         return ["control", "treatment"]
     return ["treatment"] if runs_by_arm.get("treatment") else []
 
 
 def _empty_task() -> dict[str, Any]:
-    return {"hits": 0, "known": 0, "unknown": 0, "loads": 0, "loads_unknown": 0}
+    return {"hits": 0, "known": 0, "loads": 0, "loads_unknown": 0}
 
 
 def _add_task(bucket: dict[str, dict[str, Any]], key: str, run: dict[str, Any]) -> None:
+    """Fold one measured run into a task, category, or split bucket."""
     entry = bucket.setdefault(key, _empty_task())
-    invoked = run.get("skill_invoked")
-    if invoked is None:
-        entry["unknown"] += 1
-        return
     entry["known"] += 1
-    if invoked:
+    if run.get("skill_invoked"):
         entry["hits"] += 1
         value = run.get("skill_invocations")
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
@@ -124,6 +161,22 @@ def _reading(hits: int, known: int) -> str:
     if hits >= known:
         return "Full adoption"
     return "Partial adoption"
+
+
+def _status(runs: int, eligible: int, known: int, hits: int, reported: bool) -> str:
+    """Machine-readable adoption state for one arm."""
+    if not runs:
+        return "no runs"
+    if not eligible:
+        return "no eligible runs"
+    if not known:
+        # The harness reported adoption but could not confirm it.
+        return "unmeasured" if reported else "not measured"
+    if hits <= 0:
+        return "not used"
+    if hits >= known:
+        return "full"
+    return "partial"
 
 
 def _prompt_snippet(text: str, limit: int = 180) -> str:
@@ -143,8 +196,26 @@ def _default_arm_label(arm: str, preset: str) -> str:
     return _DEFAULT_LABELS.get(arm, arm)
 
 
+def _arm_fails(data: dict[str, Any]) -> bool:
+    """Whether one arm's adoption blocks a shipping decision."""
+    known = int(data.get("known") or 0)
+    if not known:
+        # No measurement at all is an unmeasured arm, handled separately.
+        return False
+    if int(data.get("hits") or 0) == 0:
+        # The skill never loaded in any measured run: a definitive miss.
+        return True
+    if known < _ADOPTION_MIN_MEASURED:
+        # Too few measured runs to read a rate from.
+        return False
+    hit_rate = data.get("hit_rate")
+    return hit_rate is not None and hit_rate < _ADOPTION_FAILURE_RATE
+
+
 def adoption_summary(
-    results: dict[str, Any], runs_by_arm: dict[str, list[dict[str, Any]]]
+    results: dict[str, Any],
+    runs_by_arm: dict[str, list[dict[str, Any]]],
+    basis: str = "all",
 ) -> dict[str, Any]:
     """Per-arm hits, misses, unknowns, load events, and trigger failures."""
     details = _task_details(results)
@@ -215,6 +286,10 @@ def adoption_summary(
             1 for run in eligible if run.get("skill_available") is False
         )
         hit_rate = len(hits) / len(known) if known else None
+        # Did the harness report adoption for this arm at all? A run record
+        # without the field means the harness never measured it, which is a
+        # gap in the evidence rather than a confirmed problem.
+        reported = any("skill_invoked" in run for run in runs)
         arms[arm] = {
             "label": str(labels.get(arm) or _default_arm_label(arm, preset)),
             "skill": str(
@@ -231,6 +306,9 @@ def adoption_summary(
             "loads": loads if not loads_unknown else None,
             "loads_unknown": loads_unknown,
             "reading": _reading(len(hits), len(known)),
+            "status": _status(len(runs), len(eligible), len(known), len(hits), reported),
+            "reported": reported,
+            "thin": 0 < len(known) < _ADOPTION_MIN_MEASURED,
             "unavailable_runs": unavailable,
             "untriggered": untriggered,
             "untriggered_tasks": untriggered_tasks,
@@ -241,19 +319,51 @@ def adoption_summary(
             "by_category": by_category,
             "by_split": by_split,
         }
-    failed_arms = [
+    # A hit rate needs a few measured runs before it can judge an arm. Below
+    # that floor the arm is thin, not failed, unless it never loaded at all.
+    failed_arms = [arm for arm, data in arms.items() if _arm_fails(data)]
+    unmeasured_arms = [
         arm
         for arm, data in arms.items()
-        if data["known"] and data["hit_rate"] < _ADOPTION_FAILURE_RATE
+        if data["eligible"] > 0 and data["known"] == 0 and data.get("reported")
+    ]
+    not_measured_arms = [
+        arm
+        for arm, data in arms.items()
+        if data["eligible"] > 0 and data["known"] == 0 and not data.get("reported")
+    ]
+    thin_arms = [
+        arm
+        for arm, data in arms.items()
+        if 0 < data["known"] < _ADOPTION_MIN_MEASURED
     ]
     return {
         "arms": arms,
-        "adoption_failed": bool(failed_arms),
+        "basis": basis,
+        "adoption_failed": bool(failed_arms or unmeasured_arms),
         "adoption_failed_arms": failed_arms,
+        "adoption_unmeasured_arms": unmeasured_arms,
+        "adoption_not_measured_arms": not_measured_arms,
+        "adoption_thin_arms": thin_arms,
+        "min_measured": _ADOPTION_MIN_MEASURED,
+        "failure_rate": _ADOPTION_FAILURE_RATE,
+    }
+
+
+def merge_gate(summary: dict[str, Any], gate: dict[str, Any]) -> dict[str, Any]:
+    """Keep the descriptive arms but take the shipping gate from the decision basis."""
+    return {
+        **summary,
+        "adoption_failed": bool(gate.get("adoption_failed")),
+        "adoption_failed_arms": gate.get("adoption_failed_arms") or [],
+        "adoption_unmeasured_arms": gate.get("adoption_unmeasured_arms") or [],
+        "adoption_thin_arms": gate.get("adoption_thin_arms") or [],
+        "basis": gate.get("basis") or summary.get("basis"),
     }
 
 
 def adoption_failure_detail(summary: dict[str, Any]) -> str:
+    """One clause per arm that blocks a SHIP: low hit rate or no measurement."""
     parts = []
     for arm in summary.get("adoption_failed_arms") or []:
         data = (summary.get("arms") or {}).get(arm) or {}
@@ -263,6 +373,13 @@ def adoption_failure_detail(summary: dict[str, Any]) -> str:
             parts.append(
                 f"{data.get('label') or arm} loaded in {hits}/{known} measured runs"
             )
+    for arm in summary.get("adoption_unmeasured_arms") or []:
+        data = (summary.get("arms") or {}).get(arm) or {}
+        eligible = int(data.get("eligible") or 0)
+        parts.append(
+            f"{data.get('label') or arm} could not be measured in "
+            f"{eligible} eligible run(s)"
+        )
     return "; ".join(parts)
 
 
@@ -497,6 +614,52 @@ def adoption_actions(
                     "prompt_examples": [],
                 }
             )
+        if data.get("status") == "unmeasured":
+            actions.append(
+                {
+                    "kind": "unmeasured",
+                    "arm": arm,
+                    "tasks": [],
+                    "advice": (
+                        f"Skill use could not be measured in {data['eligible']} eligible "
+                        f"{label} run(s): the transcript showed a skill call but no "
+                        "result for it, so the load is unconfirmed. Check a transcript "
+                        "for a failed or interrupted skill load before drawing a "
+                        "conclusion."
+                    ),
+                    "prompt_examples": [],
+                }
+            )
+        if data.get("status") == "not measured":
+            actions.append(
+                {
+                    "kind": "unmeasured",
+                    "arm": arm,
+                    "tasks": [],
+                    "advice": (
+                        f"The harness did not report skill use for {data['eligible']} "
+                        f"eligible {label} run(s), so adoption is unmeasured. This "
+                        "does not block the decision, but the result cannot show that "
+                        "the skill was followed."
+                    ),
+                    "prompt_examples": [],
+                }
+            )
+        if data.get("thin"):
+            actions.append(
+                {
+                    "kind": "thin",
+                    "arm": arm,
+                    "tasks": [],
+                    "advice": (
+                        f"{label} adoption was measured on only {data['known']} "
+                        f"run(s). A hit rate needs {summary.get('min_measured', 3)} "
+                        "measured runs before it can judge the trigger; add runs "
+                        "before trusting it."
+                    ),
+                    "prompt_examples": [],
+                }
+            )
     if len(summary.get("arms", {})) > 1:
         failed = [
             data
@@ -538,6 +701,26 @@ def adoption_actions(
                     + ", ".join(labels)
                     + " loaded in fewer than two-thirds of measured runs. Fix the "
                     "trigger on dev tasks and rerun before deciding."
+                ),
+                "prompt_examples": [],
+            }
+        )
+    if summary.get("adoption_unmeasured_arms"):
+        labels = [
+            summary["arms"][arm].get("label", arm)
+            for arm in summary["adoption_unmeasured_arms"]
+            if arm in summary["arms"]
+        ]
+        actions.append(
+            {
+                "kind": "verdict",
+                "arm": ",".join(summary["adoption_unmeasured_arms"]),
+                "tasks": [],
+                "advice": (
+                    "Unmeasured adoption blocks a SHIP result: "
+                    + ", ".join(labels)
+                    + " could not be measured in the eligible run(s). Inspect the "
+                    "transcripts, then rerun before deciding."
                 ),
                 "prompt_examples": [],
             }

@@ -66,7 +66,10 @@ Your agent explains the score, skill use, cost, time, and tokens. It links the
 report and gives SkillDiff's decision: **SHIP**, **DO NOT SHIP**, or
 **NEEDS MORE RUNS**, with the evidence and uncertainty. A first trial checks setup;
 it does not establish a shipping decision. Missing measurements stay `N/A`.
-Low adoption blocks a SHIP result.
+Low adoption blocks a SHIP result. Adoption is judged on the runs the closing
+decision uses — the held-out runs when the experiment declares a held-out split,
+every run otherwise — and the report, the saved results, and `skilldiff diagnose`
+all judge those same runs.
 
 Reports include per-arm hit rates, load counts, and concrete next steps for
 improving a skill's description, plus JSON for agent analysis, Markdown for

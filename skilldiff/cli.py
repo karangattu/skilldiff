@@ -1533,6 +1533,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
 
     usage = report.get("skill_usage") or {}
     if usage:
+        basis = report.get("adoption_basis") or "all"
         print("\nSkill adoption:")
         for data in usage.values():
             known = int(data.get("known") or 0)
@@ -1544,6 +1545,10 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
                 f"  {data.get('label', 'Skill')}: {hits}/{known} runs ({rate}); "
                 f"{data.get('unknown', 0)} unknown{loads_txt}"
             )
+        print(
+            f"  Decision basis: {basis} runs; "
+            f"adoption_failed: {report.get('adoption_failed')}"
+        )
 
     print("\nActionable Recommendations:")
     for rec in report.get("recommendations", []):
@@ -1715,17 +1720,21 @@ def _format_results(results: dict) -> str:
     from skilldiff.adoption import (
         adoption_actions,
         adoption_summary,
+        decision_runs,
+        merge_gate,
         no_effect_findings,
     )
 
     raw_runs = results.get("runs") or {}
-    adoption = adoption_summary(
-        results,
-        {
-            "control": raw_runs.get("control") or [],
-            "treatment": raw_runs.get("treatment") or [],
-            "baseline": raw_runs.get("baseline") or [],
-        },
+    runs_by_arm = {
+        "control": raw_runs.get("control") or [],
+        "treatment": raw_runs.get("treatment") or [],
+        "baseline": raw_runs.get("baseline") or [],
+    }
+    adoption = adoption_summary(results, runs_by_arm, basis="all")
+    decision_arm_runs, adoption_basis = decision_runs(results, runs_by_arm)
+    decision_adoption = adoption_summary(
+        results, decision_arm_runs, basis=adoption_basis
     )
     if adoption.get("arms"):
         lines = []
@@ -1743,18 +1752,13 @@ def _format_results(results: dict) -> str:
                 f"  - {data.get('label', 'Skill')}: {hits}/{known} runs ({rate}); "
                 f"{data.get('unknown', 0)} unknown{loads_txt}"
             )
+        if adoption_basis == "held-out":
+            lines.append("  (the closing decision checks the held-out runs)")
         sections.append("Skill adoption:\n" + "\n".join(lines))
         actions = adoption_actions(
             results,
-            adoption,
-            no_effect_findings(
-                results,
-                {
-                    "control": raw_runs.get("control") or [],
-                    "treatment": raw_runs.get("treatment") or [],
-                    "baseline": raw_runs.get("baseline") or [],
-                },
-            ),
+            merge_gate(adoption, decision_adoption),
+            no_effect_findings(results, runs_by_arm),
         )
         if actions:
             sections.append(

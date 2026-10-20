@@ -69,10 +69,17 @@ steps** section lists, per skill arm, hits/eligible runs, unknown runs, hit rate
 and distinct load/read events, then gives concrete description and scope actions
 for missed or over-triggered tasks. A *hit* is an eligible run where the skill
 loaded at least once; failed runs and unknown measurements never count as misses.
-When fewer than two-thirds of measured runs load any skill arm, `results.json`
-and `diagnose` set `adoption_failed: true`, **Evaluation completeness** counts
-adoption failures, and a would-be SHIP becomes NEEDS MORE RUNS with the
-description fix as the next action. Tasks where every control run scores 100%
+Adoption is judged on the **decision basis** — the held-out runs when the
+experiment declares a held-out split, every run otherwise — and the report, the
+saved results, and `diagnose` all judge the same runs. `results.json` and
+`diagnose --json` name that basis in `adoption_basis`. When fewer than
+two-thirds of measured runs load any skill arm, when the arm never loaded the
+skill in any measured run, or when the arm's adoption could not be measured,
+`results.json` and `diagnose` set `adoption_failed: true`, **Evaluation
+completeness** counts adoption failures, and a would-be SHIP becomes NEEDS MORE
+RUNS with the description fix as the next action. A hit rate needs three
+measured runs to judge an arm; fewer measured runs is thin evidence, not a pass.
+Tasks where every control run scores 100%
 are recorded in `non_discriminating_tasks`. Run records also include
 `files_changed_normalized` (with `grader_ignore` paths removed and generated
 directories such as `.venv` and `node_modules` collapsed) and Run details shows
@@ -86,8 +93,9 @@ The report itself ends with a **Closing decision** table — score, cost, time,
 tokens, tool calls, turns, and adoption, each with paired change, 95% CI, and
 one plain reading — followed by the bottom line: SHIP, DO NOT SHIP, or
 NEEDS MORE RUNS (with ceiling or floor effects noted when tasks cannot discriminate),
-plus one sentence that states why. Low adoption on any skill arm downgrades a
-would-be SHIP to NEEDS MORE RUNS and names the description fix. End your summary
+plus one sentence that states why. Low adoption on any skill arm on the decision
+basis downgrades a would-be SHIP to NEEDS MORE RUNS and names the description
+fix. End your summary
 with that same bottom line and reason; do not invent a different verdict from the
 one the report computed, and carry the **Skill adoption and next steps** actions
 into the summary.

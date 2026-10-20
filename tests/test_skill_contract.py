@@ -93,6 +93,7 @@ def test_skill_documents_workflow_improvements():
         "--max-tool-budget",
         "--ci",
         "adoption_failed",
+        "adoption_basis",
         "non_discriminating_tasks",
         "files_changed_normalized",
         "eval/py-shiny-troubleshooting",

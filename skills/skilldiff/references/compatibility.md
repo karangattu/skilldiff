@@ -15,7 +15,9 @@ Native global skills are in `~/.gemini/antigravity-cli/skills`
 and plugins can also supply skills. AGY has no `isolate: true` option. Treat
 filesystem exposure scans as advisory; confirmed target discovery or successful
 loading in control invalidates the baseline. Count adoption only from successful
-target-skill loads or reads, not denied calls or other installed skills.
+target-skill loads or reads, not denied calls or other installed skills. A skill
+call with no result is not a hit: record the run as unmeasured so it stays out of
+the hit rate instead of counting as either a hit or a miss.
 Claude's project/local settings selection is not proof that global skills are
 absent. Preserve subscription authentication; do not select `--bare` as the
 default.

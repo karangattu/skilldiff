@@ -108,7 +108,6 @@ from skilldiff.reporting.types import (
     Cell,
 )
 from skilldiff.reporting.verdict import (
-    _HELD_OUT_ALIASES,
     _READING_BETTER,
     _READING_SAME,
     _READING_WORSE,
@@ -148,7 +147,6 @@ __all__ = [
     "_EVALUATION_HEADERS",
     "_EVALUATION_NOTE",
     "_GROUP_ALIGN",
-    "_HELD_OUT_ALIASES",
     "_INLINE",
     "_NUMERIC_RUN_COLUMNS",
     "_READING_BETTER",

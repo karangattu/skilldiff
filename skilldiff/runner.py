@@ -1227,9 +1227,10 @@ class AgentRunner:
         known = set()
         unknown = set()
         session_id = "ses_" + uuid.uuid4().hex
-        skill_invoked = False
+        skill_invoked: Optional[bool] = False
         skill_invocations = 0
         skill_invocations_known = True
+        skill_unconfirmed = False
         skill_available = None
         denials: Optional[list[str]] = None
         transcripts: list[str] = []
@@ -1261,8 +1262,10 @@ class AgentRunner:
                     totals[metric] += value
                 elif res.status == "ok":
                     unknown.add(metric)
-            if res.skill_invoked:
+            if res.skill_invoked is True:
                 skill_invoked = True
+            elif res.skill_invoked is None:
+                skill_unconfirmed = True
             if res.skill_invocations is None:
                 if skill_names and res.status in (None, "ok"):
                     skill_invocations_known = False
@@ -1286,6 +1289,17 @@ class AgentRunner:
         totals = {key: value if key in known and key not in unknown else None
                   for key, value in totals.items()}
 
+        if skill_invoked is not True and skill_unconfirmed:
+            skill_invoked = None
+        if not skill_names:
+            run_skill_invocations = None
+        elif skill_invoked is True:
+            run_skill_invocations = skill_invocations if skill_invocations_known else None
+        elif skill_invoked is None:
+            run_skill_invocations = None
+        else:
+            run_skill_invocations = 0
+
         return RunResult(
             prompt="\n---\n".join(prompts),
             response=last_res.response,
@@ -1301,11 +1315,7 @@ class AgentRunner:
             cache_creation_tokens=totals["cache_creation_tokens"],
             num_turns=totals["num_turns"],
             skill_invoked=skill_invoked,
-            skill_invocations=(
-                skill_invocations
-                if skill_names and skill_invocations_known
-                else None
-            ),
+            skill_invocations=run_skill_invocations,
             skill_available=skill_available,
             session_id=last_res.session_id,
             reported_total_tokens=totals["reported_total_tokens"],
@@ -2064,6 +2074,10 @@ def _claude_skill_evidence(block: dict[str, Any], skill_names: list[str]) -> Opt
     return None
 
 
+# Claude tool names whose denials mean the call never ran.
+_CLAUDE_DENIED_TOOLS = {"Skill": "skill"}
+
+
 def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     """Parse `claude -p --output-format stream-json` (or plain `json`) output."""
     parsed: dict[str, Any] = {
@@ -2088,8 +2102,12 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     saw_result = False
     usage_snapshots = []
     turn_counts = []
+    # Skill evidence is only a hit once the call succeeded. A tool_use without a
+    # matching tool_result is unconfirmed, not a hit.
     pending_hits: dict[str, str] = {}
-    uncorrelated_hits = 0
+    confirmed_hits: dict[str, str] = {}
+    unconfirmed_hits = 0
+    denied_tools: set[str] = set()
 
     from skilldiff.telemetry import count, money
     from skilldiff.telemetry import events as read_events
@@ -2132,7 +2150,10 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                         if tool_id:
                             pending_hits[tool_id] = evidence
                         else:
-                            uncorrelated_hits += 1
+                            # No id to tie the call to its result: the call
+                            # itself is the evidence.
+                            confirmed_hits[f"__unidentified_{unconfirmed_hits}"] = evidence
+                            unconfirmed_hits += 1
         elif event_type == "user":
             content = (event.get("message") or {}).get("content")
             if not isinstance(content, list):
@@ -2140,8 +2161,14 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             for block in content:
                 if not isinstance(block, dict) or block.get("type") != "tool_result":
                     continue
+                tool_use_id = str(block.get("tool_use_id") or "")
+                evidence = pending_hits.pop(tool_use_id, None)
+                if evidence is None:
+                    continue
                 if block.get("is_error"):
-                    pending_hits.pop(str(block.get("tool_use_id") or ""), None)
+                    # The call was denied or failed: the skill never loaded.
+                    continue
+                confirmed_hits[tool_use_id] = evidence
         elif event_type == "result":
             saw_result = True
             parsed["session_id"] = event.get("session_id") or parsed["session_id"]
@@ -2170,6 +2197,7 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                             parsed["permission_denials"].append(f"{tool} ({reason})")
                         else:
                             parsed["permission_denials"].append(tool)
+                        denied_tools.add(tool)
                     else:
                         parsed["permission_denials"].append(str(d))
             subtype = str(event.get("subtype") or "")
@@ -2183,10 +2211,34 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
         parsed["response"] = last_text
         parsed["is_error"] = True
         parsed["error"] = "Claude exited without a result event"
-    parsed["skill_invocations"] = (
-        uncorrelated_hits + len(pending_hits) if skill_names else None
-    )
-    parsed["skill_invoked"] = bool(parsed["skill_invocations"])
+    if skill_names:
+        # A denied call never ran: void that many confirmed calls of the kind.
+        for tool, evidence_kind in _CLAUDE_DENIED_TOOLS.items():
+            denials = sum(1 for name in denied_tools if name == tool)
+            if not denials:
+                continue
+            voided = [
+                tool_use_id
+                for tool_use_id, kind in confirmed_hits.items()
+                if kind == evidence_kind
+            ][:denials]
+            for tool_use_id in voided:
+                confirmed_hits.pop(tool_use_id, None)
+        hits = len(confirmed_hits)
+        unconfirmed = len(pending_hits)
+        if hits:
+            parsed["skill_invocations"] = hits
+            parsed["skill_invoked"] = True
+        elif unconfirmed:
+            # A skill call we never saw the result of: unmeasured, not a hit.
+            parsed["skill_invocations"] = None
+            parsed["skill_invoked"] = None
+        else:
+            parsed["skill_invocations"] = 0
+            parsed["skill_invoked"] = False
+    else:
+        parsed["skill_invocations"] = None
+        parsed["skill_invoked"] = False
     for target, source in (
         ("input_tokens", "input_tokens"), ("output_tokens", "output_tokens"),
         ("cache_read_tokens", "cache_read_input_tokens"),

@@ -5,6 +5,7 @@ from skilldiff.adoption import (
     adoption_actions,
     adoption_failure_detail,
     adoption_summary,
+    merge_gate,
     no_effect_findings,
 )
 from skilldiff.reporting.checks import (
@@ -367,6 +368,7 @@ def render_report_table(
             treatment_denials=decision.get("treatment_denials", 0) if decision is not None else 0,
             adoption_failed=bool(adoption.get("adoption_failed")),
             adoption_detail=adoption_failure_detail(adoption),
+            adoption_unmeasured=bool(adoption.get("adoption_unmeasured_arms")),
         )
         lines.append(_strip_inline(verdict))
         if preset == "revision":
@@ -386,6 +388,30 @@ def render_report_table(
         lines.append("")
         lines.append(_strip_inline(f"Recommendation: {rec_label} — {rec_reason}"))
     return "\n".join(lines)
+
+
+def _control_isolation_note(
+    control_runs: list[dict[str, Any]], adoption: dict[str, Any]
+) -> str:
+    """Say what the no-skill control arm showed about skill isolation."""
+    if "control" in (adoption.get("arms") or {}):
+        # A/B mode: the control arm carries its own skill, so it is in the table.
+        return ""
+    if not control_runs:
+        return ""
+    contaminated = sum(
+        1
+        for run in control_runs
+        if run.get("skill_available") or run.get("skill_invoked")
+    )
+    if contaminated:
+        return (
+            f" {contaminated} control run(s) listed or loaded the skill, so the "
+            "baseline is contaminated."
+        )
+    if any(run.get("skill_available") is False for run in control_runs):
+        return " No control run listed the skill."
+    return ""
 
 
 def _key_takeaways(
@@ -478,6 +504,7 @@ def _key_takeaways(
                     " The revisions triggered at different rates, so adoption "
                     "confounds the body comparison."
                 )
+        text += _control_isolation_note(control_runs, adoption)
         bullets.append(text)
 
     try:
@@ -846,6 +873,9 @@ def build_report_blocks(
             adoption_detail=adoption_failure_detail(
                 decision.get("decision_adoption") or {}
             ),
+            adoption_unmeasured=bool(
+                (decision.get("decision_adoption") or {}).get("adoption_unmeasured_arms")
+            ),
         )
     else:
         diff = _score_difference(headline_control, headline_skill)
@@ -938,14 +968,12 @@ def build_report_blocks(
         )
         blast_errors = sum(1 for r in control_runs + treatment_runs if _is_blast_run(r))
         adoption_failures = 0
-        if results.get("adoption_failed"):
-            skill_arms = set(
-                ((decision.get("adoption") or {}).get("arms") or {}).keys()
-            )
+        decision_adoption = (decision or {}).get("decision_adoption") or {}
+        if decision_adoption.get("adoption_failed"):
+            # Measured misses on the same basis the closing decision uses.
             adoption_failures = sum(
-                1
-                for r in control_runs + treatment_runs
-                if r.get("arm") in skill_arms and r.get("skill_invoked") is False
+                max(0, int(data.get("known") or 0) - int(data.get("hits") or 0))
+                for data in (decision_adoption.get("arms") or {}).values()
             )
         if not planned:
             planned = completed
@@ -1617,24 +1645,35 @@ def build_report_blocks(
         blocks.append(("h", 2, "Skill adoption and next steps"))
         adoption_note = (
             "Hits are eligible runs where the skill loaded at least once. "
-            "Loads count matching skill load/read events (`N/A` when the run "
-            "predates event counting). Unknown runs have no measurement and are "
-            "not counted as misses."
+            "Load events count matching skill load/read events across the arm's "
+            "runs (`N/A` when the run predates event counting); each harness "
+            "counts its own events, so compare arms within one harness. Unknown "
+            "runs have no measurement and are not counted as misses."
         )
-        if decision.get("held_out"):
-            gate = decision.get("decision_adoption") or {}
-            gate_bits = []
-            for data in (gate.get("arms") or {}).values():
-                gate_bits.append(
-                    f"{data.get('label', 'Skill')} "
-                    f"{data.get('hits', 0)}/{data.get('known', 0)}"
-                )
-            if gate_bits:
-                adoption_note += (
-                    " The closing decision checks held-out adoption: "
-                    + ", ".join(gate_bits)
-                    + "."
-                )
+        gate = decision.get("decision_adoption") or {}
+        gate_bits = []
+        for data in (gate.get("arms") or {}).values():
+            gate_bits.append(
+                f"{data.get('label', 'Skill')} "
+                f"{data.get('hits', 0)}/{data.get('known', 0)}"
+            )
+        if gate_bits:
+            basis = gate.get("basis") or decision.get("adoption_basis") or "all"
+            basis_text = (
+                "held-out runs" if basis == "held-out" else "all runs"
+            )
+            adoption_note += (
+                f" The closing decision checks adoption on {basis_text}: "
+                + ", ".join(gate_bits)
+                + "."
+            )
+        floor = gate.get("min_measured") or adoption.get("min_measured")
+        if floor:
+            adoption_note += (
+                f" A hit rate needs {floor} measured runs before it can judge an "
+                "arm; fewer than that is thin evidence, and an arm that never "
+                "loaded the skill always blocks a SHIP."
+            )
         blocks.append(("p", adoption_note))
         adoption_rows: list[list[Cell]] = []
         for data in adoption["arms"].values():
@@ -1648,6 +1687,13 @@ def build_report_blocks(
                 if data.get("loads") is not None
                 else "N/A"
             )
+            reading = str(data.get("reading") or "Unknown")
+            if data.get("status") == "unmeasured":
+                reading = "Unmeasured"
+            elif data.get("status") == "not measured":
+                reading = "Not measured"
+            elif data.get("thin"):
+                reading = f"{reading} (thin)"
             adoption_rows.append(
                 [
                     str(data.get("label") or "Skill"),
@@ -1656,20 +1702,28 @@ def build_report_blocks(
                     str(data.get("unknown", 0)),
                     rate,
                     loads,
-                    str(data.get("reading") or "Unknown"),
+                    reading,
                 ]
             )
         blocks.append(
             (
                 "table",
-                ["Arm", "Hits", "Eligible", "Unknown", "Hit rate", "Loads", "Reading"],
+                [
+                    "Arm",
+                    "Hits",
+                    "Eligible",
+                    "Unknown",
+                    "Hit rate",
+                    "Load events",
+                    "Reading",
+                ],
                 adoption_rows,
                 ["l", "r", "r", "r", "r", "r", "l"],
             )
         )
         actions = adoption_actions(
             results,
-            adoption,
+            merge_gate(adoption, gate),
             no_effect_findings(
                 results,
                 {

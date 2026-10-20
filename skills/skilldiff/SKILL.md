@@ -259,10 +259,16 @@ against the report before you write your summary. Report these results:
 2. **Adoption.** Say how many skill runs actually loaded the skill, per skill arm
    (including both A and B in revision/compression mode), and separately note
    unknown runs and load-event counts. Low adoption usually means that the
-   skill's `description` doesn't match how users ask for the task. When fewer
-   than two-thirds of measured runs load a skill arm, `results.json` and
-   `skilldiff diagnose` set `adoption_failed: true`, **Evaluation completeness**
-   counts adoption failures, and the closing decision cannot be SHIP. Read the
+   skill's `description` doesn't match how users ask for the task. Adoption is
+   judged on the **decision basis**: the held-out runs when the experiment
+   declares a held-out split, every run otherwise. The report names that basis,
+   and `results.json` and `skilldiff diagnose` judge the same runs. When fewer
+   than two-thirds of measured runs load a skill arm, or the arm never loaded the
+   skill in any measured run, `results.json` and `skilldiff diagnose` set
+   `adoption_failed: true`, **Evaluation completeness**
+   counts adoption failures, and the closing decision cannot be SHIP. A hit rate
+   needs three measured runs to judge an arm; fewer is thin evidence, so say so
+   rather than calling it a pass or a failure. Read the
    report's **Skill adoption and next steps** section and give the user its
    concrete action items: which task phrasing to add to the description, which
    irrelevant tasks need a scope boundary, or whether the skill loaded but did

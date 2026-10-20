@@ -1,6 +1,6 @@
 {
   "name": "csv-totals",
-  "skilldiff_version": "0.22.0",
+  "skilldiff_version": "0.23.0",
   "preset": "skill",
   "arm_labels": {},
   "harness": "claude",
@@ -969,6 +969,8 @@
   },
   "adoption_failed": false,
   "adoption_failed_arms": [],
+  "adoption_unmeasured_arms": [],
+  "adoption_basis": "held-out",
   "skill_usage": {
     "treatment": {
       "label": "Skill",
@@ -982,6 +984,9 @@
       "loads": 7,
       "loads_unknown": 0,
       "reading": "Partial adoption",
+      "status": "partial",
+      "reported": true,
+      "thin": false,
       "unavailable_runs": 0,
       "untriggered": [
         {
@@ -1001,7 +1006,6 @@
         "fix-total": {
           "hits": 3,
           "known": 4,
-          "unknown": 0,
           "loads": 3,
           "loads_unknown": 0,
           "hit_rate": 0.75
@@ -1009,7 +1013,6 @@
         "write-total": {
           "hits": 4,
           "known": 4,
-          "unknown": 0,
           "loads": 4,
           "loads_unknown": 0,
           "hit_rate": 1.0
@@ -1019,7 +1022,6 @@
         "intended": {
           "hits": 7,
           "known": 8,
-          "unknown": 0,
           "loads": 7,
           "loads_unknown": 0,
           "hit_rate": 0.875
@@ -1029,7 +1031,6 @@
         "dev": {
           "hits": 3,
           "known": 4,
-          "unknown": 0,
           "loads": 3,
           "loads_unknown": 0,
           "hit_rate": 0.75
@@ -1037,7 +1038,6 @@
         "held-out": {
           "hits": 4,
           "known": 4,
-          "unknown": 0,
           "loads": 4,
           "loads_unknown": 0,
           "hit_rate": 1.0

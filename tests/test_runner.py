@@ -222,6 +222,124 @@ def test_parse_claude_does_not_count_a_denied_skill_tool() -> None:
     assert parsed["skill_invocations"] == 0
 
 
+def test_parse_claude_counts_a_confirmed_skill_load() -> None:
+    stream = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "tool-1",
+                                "name": "Skill",
+                                "input": {"skill": "my-skill"},
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "tool-1",
+                                "content": "loaded",
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps({"type": "result", "result": "ok", "subtype": "success"}),
+        ]
+    )
+    parsed = parse_claude_output(stream, ["my-skill"])
+    assert parsed["skill_invoked"] is True
+    assert parsed["skill_invocations"] == 1
+
+
+def test_parse_claude_treats_an_unresolved_skill_call_as_unmeasured() -> None:
+    # The call was made but no result came back: unconfirmed, not a hit.
+    stream = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "tool-1",
+                                "name": "Skill",
+                                "input": {"skill": "my-skill"},
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps({"type": "result", "result": "ok", "subtype": "success"}),
+        ]
+    )
+    parsed = parse_claude_output(stream, ["my-skill"])
+    assert parsed["skill_invoked"] is None
+    assert parsed["skill_invocations"] is None
+
+
+def test_parse_claude_ignores_a_skill_call_denied_in_the_result() -> None:
+    # The result event reports the denial; the call never ran.
+    stream = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "tool-1",
+                                "name": "Skill",
+                                "input": {"skill": "my-skill"},
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "tool-1",
+                                "content": "The user doesn't want to take this action",
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "result": "ok",
+                    "subtype": "success",
+                    "permission_denials": [
+                        {"tool_name": "Skill", "reason": "user denied"}
+                    ],
+                }
+            ),
+        ]
+    )
+    parsed = parse_claude_output(stream, ["my-skill"])
+    assert parsed["skill_invoked"] is False
+    assert parsed["skill_invocations"] == 0
+    assert parsed["permission_denials"] == ["Skill (user denied)"]
+
+
 def test_parse_claude_marks_error_results() -> None:
     stream = json.dumps(
         {"type": "result", "subtype": "error_max_turns", "is_error": True, "num_turns": 30}

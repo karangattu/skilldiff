@@ -2,7 +2,14 @@ import math
 from pathlib import Path
 from typing import Any, Optional
 
-from skilldiff.adoption import adoption_summary
+from skilldiff.adoption import (
+    adoption_failure_detail,
+    adoption_summary,
+    decision_runs,
+    has_held_out_split,
+    run_split,
+    task_splits,
+)
 from skilldiff.reporting.evaluation import _load_runs_for_report
 from skilldiff.reporting.metrics import (
     _cost_basis_note,
@@ -57,8 +64,6 @@ _READING_SAME = {
 }
 
 _RECOMMENDATION_KIND = {"SHIP": "tip", "DO NOT SHIP": "warning", "NEEDS MORE RUNS": "note"}
-
-_HELD_OUT_ALIASES = {"held-out", "heldout", "held_out", "held out", "holdout"}
 
 
 def row_reading(
@@ -166,6 +171,7 @@ def _verdict(
     treatment_denials: int = 0,
     adoption_failed: bool = False,
     adoption_detail: str = "",
+    adoption_unmeasured: bool = False,
 ) -> tuple[str, str]:
     total = int(paired.get("pairs", 0))
     score = paired.get("score") or {}
@@ -215,7 +221,14 @@ def _verdict(
             cautions.append(f"denials: control {control_denials}, treatment {treatment_denials}")
     if adoption_failed:
         detail = f" ({adoption_detail})" if adoption_detail else ""
-        cautions.append(f"adoption below two-thirds{detail}; fix the description and rerun")
+        if adoption_unmeasured:
+            cautions.append(
+                f"adoption unmeasured{detail}; inspect the transcripts and rerun"
+            )
+        else:
+            cautions.append(
+                f"adoption below two-thirds{detail}; fix the description and rerun"
+            )
     caution_txt = f" ({'; '.join(cautions)})" if cautions else ""
 
     def _out(msg: str, k: str) -> tuple[str, str]:
@@ -821,8 +834,7 @@ def _completeness_reading(
 
 
 def _run_split(run: dict[str, Any], task_splits: dict[str, str]) -> str:
-    split = str(run.get("task_split") or task_splits.get(str(run.get("task_id", ""))) or "")
-    return "held-out" if split.strip().lower() in _HELD_OUT_ALIASES else "dev"
+    return run_split(run, task_splits)
 
 
 def build_decision_context(
@@ -850,15 +862,11 @@ def build_decision_context(
                       for r in treatment_runs]
     baseline_runs = [analysis_run(r, policy.get("agent_failure", "exclude"))
                      for r in baseline_runs]
-    splits = {
-        str(task["id"]): str(task.get("split", ""))
-        for task in results.get("task_details") or []
-        if isinstance(task, dict) and task.get("id")
-    }
+    splits = task_splits(results)
     held_control = [r for r in control_runs if _run_split(r, splits) == "held-out"]
     held_treatment = [r for r in treatment_runs if _run_split(r, splits) == "held-out"]
-    has_held_out = bool(held_control or held_treatment) or any(
-        split.strip().lower() in _HELD_OUT_ALIASES for split in splits.values()
+    has_held_out = bool(held_control or held_treatment) or has_held_out_split(
+        results, splits
     )
     held = paired_comparison(held_control, held_treatment) if has_held_out else {}
     selected_control, selected_treatment = control_runs, treatment_runs
@@ -889,26 +897,33 @@ def build_decision_context(
             "treatment": treatment_runs,
             "baseline": baseline_runs,
         },
+        basis="all",
     )
-    decision_adoption = (
-        adoption_summary(
-            results,
-            {
-                "control": selected_control,
-                "treatment": selected_treatment,
-                "baseline": baseline_runs,
-            },
-        )
-        if has_held_out
-        else adoption
+    # The gate uses the same runs the closing decision uses.
+    decision_arm_runs, adoption_basis = decision_runs(
+        results,
+        {
+            "control": selected_control,
+            "treatment": selected_treatment,
+            "baseline": baseline_runs,
+        },
+    )
+    decision_adoption = adoption_summary(
+        results, decision_arm_runs, basis=adoption_basis
     )
     if not adoption.get("arms") and isinstance(results.get("skill_usage"), dict):
         adoption = {
             "arms": results["skill_usage"],
+            "basis": "all",
             "adoption_failed": bool(results.get("adoption_failed")),
             "adoption_failed_arms": results.get("adoption_failed_arms") or [],
+            "adoption_unmeasured_arms": results.get("adoption_unmeasured_arms") or [],
+            "adoption_thin_arms": [],
         }
-        decision_adoption = adoption
+        decision_adoption = {
+            **adoption,
+            "basis": results.get("adoption_basis") or "all",
+        }
     pairs = int(held.get("pairs", 0))
     scored = int((held.get("score") or {}).get("n", 0))
     coverage = f"{scored}/{pairs} usable score pair(s)"
@@ -939,6 +954,7 @@ def build_decision_context(
         "basis_note": note, "coverage": coverage, "recommendation": recommendation,
         "control_denials": control_denials, "treatment_denials": treatment_denials,
         "adoption": adoption,
+        "adoption_basis": adoption_basis,
         "decision_adoption": decision_adoption,
     }
 
@@ -965,35 +981,46 @@ def _recommendation(
 
     adoption_failed = bool((adoption or {}).get("adoption_failed"))
     failed_arms = (adoption or {}).get("adoption_failed_arms") or []
-    adoption_detail = ""
-    if adoption_failed:
-        parts = []
-        for arm in failed_arms:
-            data = ((adoption or {}).get("arms") or {}).get(arm) or {}
-            label = data.get("label") or arm
-            known = int(data.get("known") or 0)
-            hits = int(data.get("hits") or 0)
-            if known:
-                parts.append(f"{label} loaded in {hits}/{known} measured runs")
-        if parts:
-            adoption_detail = "; ".join(parts)
+    unmeasured_arms = (adoption or {}).get("adoption_unmeasured_arms") or []
+    adoption_detail = adoption_failure_detail(adoption or {})
 
     def gate_ship(reason: str) -> tuple[str, str, str]:
         if not adoption_failed:
             return _RECOMMENDATION_KIND["SHIP"], "SHIP", reason
         detail = f" ({adoption_detail})" if adoption_detail else ""
-        fix = (
-            "Both arms share the trigger, so improve the shared description on dev "
-            "tasks and rerun before choosing a body version."
-            if preset == "compression"
-            else "Sharpen the skill description on dev tasks and rerun before "
-            "deciding (see Skill adoption and next steps)."
-        )
+        if unmeasured_arms and not failed_arms:
+            fix = (
+                "Inspect the transcripts to confirm whether the skill loaded, then "
+                "rerun before deciding."
+            )
+            cause = (
+                "Adoption could not be measured"
+                f"{detail}, so the measured gain cannot be attributed to the skill."
+            )
+        else:
+            labels = [
+                ((adoption or {}).get("arms") or {}).get(arm, {}).get("label", arm)
+                for arm in failed_arms
+            ]
+            named = ", ".join(labels) if labels else "the skill arm"
+            if preset == "compression":
+                fix = (
+                    "Both arms share the trigger, so improve the shared description "
+                    "on dev tasks and rerun before choosing a body version."
+                )
+            else:
+                fix = (
+                    f"Sharpen the {named} description on dev tasks and rerun before "
+                    "deciding (see Skill adoption and next steps)."
+                )
+            cause = (
+                f"Adoption is below two-thirds{detail}, so the measured gain does not "
+                "cover the runs where the skill never loaded."
+            )
         return (
             _RECOMMENDATION_KIND["NEEDS MORE RUNS"],
             "NEEDS MORE RUNS",
-            f"{reason} Adoption is below two-thirds{detail}, so the measured gain "
-            f"does not cover the runs where the skill never loaded. {fix}",
+            f"{reason} {cause} {fix}",
         )
 
     basis = ""

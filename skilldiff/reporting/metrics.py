@@ -2,6 +2,7 @@ import math
 import statistics
 from typing import Any, Optional
 
+from skilldiff.adoption import adoption_eligible
 from skilldiff.stats import pair_runs, usable_agent_run
 
 
@@ -104,7 +105,13 @@ def calculate_metrics(runs_data: list[dict[str, Any]]) -> dict[str, Any]:
         for r in analyzed
         if "tool_calls" in r and r.get("tool_calls") is not None
     ]
-    known = [r for r in analyzed if r.get("skill_invoked") is not None]
+    # Adoption uses the same eligible-run filter as the adoption tables, so the
+    # two never report different denominators for the same runs.
+    known = [
+        r
+        for r in runs_data
+        if adoption_eligible(r) and r.get("skill_invoked") is not None
+    ]
     grade_counts: dict[str, int] = {}
     for r in runs_data:
         gs = str(r.get("grade_status") or ("graded" if "score" in r else "unknown"))
