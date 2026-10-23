@@ -59,3 +59,20 @@ def test_prompt_coverage_accepts_matching_language(tmp_path):
     report = lint_prompt_coverage(skill, tasks)
     assert report["stats"]["uncovered"] == 0
     assert report["tasks"][0]["coverage"] > 0
+
+
+def test_prompt_coverage_flags_solution_leakage_from_body(tmp_path):
+    skill = _skill(
+        tmp_path,
+        "General troubleshooting helper for data processing pipelines.",
+    )
+    tasks = _tasks(
+        tmp_path,
+        ["Please apply the diagnostics workflow to resolve pipeline issues."],
+    )
+    report = lint_prompt_coverage(skill, tasks)
+    assert report["stats"]["leaked"] == 1
+    assert any("leaks solution terms" in w for w in report["warnings"])
+    assert "diagnostic" in report["tasks"][0]["leaked_terms"]
+    assert "workflow" in report["tasks"][0]["leaked_terms"]
+

@@ -1900,9 +1900,11 @@ def cmd_lint(args: argparse.Namespace) -> int:
     if prompt_stats:
         average = prompt_stats.get("average_coverage")
         average_txt = f"{average:.0%}" if average is not None else "N/A"
+        leaks = prompt_stats.get("leaked", 0)
+        leaks_txt = f", {leaks} solution leak(s)" if leaks else ""
         print(
             f"  prompt trigger coverage: {prompt_stats.get('tasks', 0)} task prompt(s), "
-            f"{prompt_stats.get('uncovered', 0)} possible gap(s), average {average_txt}"
+            f"{prompt_stats.get('uncovered', 0)} possible gap(s){leaks_txt}, average {average_txt}"
         )
 
     if res.errors:

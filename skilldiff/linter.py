@@ -76,10 +76,12 @@ def lint_prompt_coverage(skill_dir: Path, prompts_path: Path) -> dict[str, Any]:
     description_terms = _prompt_terms(description)
     body_terms = _prompt_terms(content[end_idx + 4 :] if end_idx != -1 else "")
     known_terms = description_terms | body_terms
+    leakage_candidates = body_terms - description_terms
 
     rows: list[dict[str, Any]] = []
     warnings: list[str] = []
     uncovered = 0
+    leaked = 0
     covered_scores: list[float] = []
     prompt_items = load_task_prompts(prompts_path)
     if not prompt_items:
@@ -90,6 +92,7 @@ def lint_prompt_coverage(skill_dir: Path, prompts_path: Path) -> dict[str, Any]:
             continue
         matched = sorted(terms & known_terms)
         missing = sorted(terms - known_terms)
+        leaked_terms = sorted(terms & leakage_candidates)
         score = len(matched) / len(terms)
         covered_scores.append(score)
         row = {
@@ -97,6 +100,7 @@ def lint_prompt_coverage(skill_dir: Path, prompts_path: Path) -> dict[str, Any]:
             "coverage": round(score, 3),
             "matched_terms": matched[:10],
             "missing_terms": missing[:10],
+            "leaked_terms": leaked_terms[:10],
         }
         rows.append(row)
         if not matched:
@@ -112,6 +116,14 @@ def lint_prompt_coverage(skill_dir: Path, prompts_path: Path) -> dict[str, Any]:
                 f"Task '{task_id}' has low trigger overlap ({score:.0%}); possible "
                 "trigger gap. Missing terms include: " + ", ".join(missing[:6])
             )
+        if len(leaked_terms) >= 2:
+            leaked += 1
+            warnings.append(
+                f"Task '{task_id}' leaks solution terms found only in the skill body: "
+                + ", ".join(leaked_terms[:6])
+                + ". Describe the user symptom instead of the internal fix to avoid "
+                "spoiling the test for the control arm."
+            )
     average = sum(covered_scores) / len(covered_scores) if covered_scores else None
     return {
         "tasks": rows,
@@ -119,6 +131,7 @@ def lint_prompt_coverage(skill_dir: Path, prompts_path: Path) -> dict[str, Any]:
         "stats": {
             "tasks": len(rows),
             "uncovered": uncovered,
+            "leaked": leaked,
             "average_coverage": round(average, 3) if average is not None else None,
         },
     }
