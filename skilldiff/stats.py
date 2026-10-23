@@ -94,10 +94,13 @@ def relative_bootstrap_ci(
         sample = rng.choices(pairs, k=len(pairs))
         baseline = sum(c for c, _ in sample)
         if baseline <= 0:
-            return None  # A percentage cannot be established against a zero baseline.
+            continue  # This resample cannot establish a percentage change.
         changes.append(sum(t - c for c, t in sample) / baseline)
+    if not changes:
+        return None
     changes.sort()
-    return changes[int(0.025 * BOOTSTRAP_RESAMPLES)], changes[int(0.975 * BOOTSTRAP_RESAMPLES)]
+    size = len(changes)
+    return changes[int(0.025 * size)], changes[min(int(0.975 * size), size - 1)]
 
 
 def _get_score(run: dict[str, Any]) -> Optional[float]:

@@ -4,6 +4,7 @@ from skilldiff.stats import (
     classify_effect,
     pair_runs,
     paired_comparison,
+    relative_bootstrap_ci,
 )
 
 
@@ -95,3 +96,8 @@ def test_relative_interval_resamples_matched_pairs_and_handles_zero_baseline():
     for run in control:
         run["cost"] = 0
     assert paired_comparison(control, treatment)["cost"]["relative_ci_high"] is None
+
+
+def test_relative_interval_skips_resamples_with_zero_baseline():
+    pairs = [(0.0, 0.0), (100.0, 50.0), (100.0, 50.0)]
+    assert relative_bootstrap_ci(pairs) == (-0.5, -0.5)
