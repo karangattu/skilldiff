@@ -289,7 +289,8 @@ def test_container_cleanup_failure_is_reported(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
     result = AgentRunner()._exec(["echo", "x"], tmp_path, dict(os.environ), 2,
                                  isolation="docker", container_image="fixture:tag")
-    assert result.exit_code != 0
+    assert result.exit_code == 0
+    assert result.cleanup_error is not None
     assert "cleanup" in result.stderr.lower()
 
 

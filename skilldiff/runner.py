@@ -1426,7 +1426,7 @@ class AgentRunner:
                     + ("\n" + protocol_error if protocol_error else "")
                     + ("\n" + cleanup_error if cleanup_error else "")
                 ),
-                exit_code=exit_code if not cleanup_error else (exit_code or -1),
+                exit_code=exit_code,
                 duration=duration,
                 timed_out=timed_out,
                 cleanup_error=cleanup_error,
