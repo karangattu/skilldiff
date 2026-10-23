@@ -66,6 +66,12 @@ class RunResult:
     # e.g. ["Bash", "Edit"] for Claude, "bash" for OpenCode, or
     # "shell (sandbox: filesystem)" for Codex. None when not reported.
     permission_denials: Optional[list[str]] = None
+    # Model IDs the harness reported serving (Claude modelUsage keys). Differs from
+    # the configured name when an alias such as "haiku" resolves to another model.
+    served_models: Optional[list[str]] = None
+    # Models the agent CLI flagged as unrecognized. Its harness-reported cost for
+    # these models may not match list prices.
+    unrecognized_models: Optional[list[str]] = None
     session_id: Optional[str] = None
     reported_total_tokens: Optional[int] = None
 
@@ -1392,6 +1398,8 @@ class AgentRunner:
         skill_unconfirmed = False
         skill_available = None
         denials: Optional[list[str]] = None
+        served_models: set[str] = set()
+        unrecognized_models: set[str] = set()
         transcripts: list[str] = []
         last_res: Optional[RunResult] = None
 
@@ -1434,6 +1442,8 @@ class AgentRunner:
                 skill_available = res.skill_available
             if res.permission_denials is not None:
                 denials = (denials or []) + res.permission_denials
+            served_models.update(res.served_models or [])
+            unrecognized_models.update(res.unrecognized_models or [])
             turn_header = (
                 f"--- TURN {idx + 1} ---\nPROMPT: {turn_prompt}\nRESPONSE:\n{res.response}"
             )
@@ -1481,6 +1491,8 @@ class AgentRunner:
             status=last_res.status,
             failure_kind=last_res.failure_kind,
             permission_denials=denials,
+            served_models=sorted(served_models) or None,
+            unrecognized_models=sorted(unrecognized_models) or None,
         )
 
     def preflight(self, cwd: Path, config: ExperimentConfig,
@@ -1725,17 +1737,21 @@ class AgentRunner:
 
     def probe_claude_auth(
         self, model: str, claude_cfg: ClaudeConfig, timeout: float = 90
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, list[str]]:
         """Make one tiny authenticated call so expired credentials fail before a run.
 
-        Returns (ok, detail). Uses a single turn, no tools, and a small budget cap.
+        Returns (ok, detail, notes). Uses a single turn, no tools, and a small budget
+        cap. `notes` are warnings about the model the harness actually served.
         """
         import dataclasses
 
+        # The budget is enforced against the CLI's own cost figure, which can exceed
+        # list price for models it does not recognize. A cap near the real cost of
+        # one call makes the probe fail for budget reasons, not auth reasons.
         probe_cfg = dataclasses.replace(
             claude_cfg,
             max_turns=1,
-            max_budget_usd=0.05,
+            max_budget_usd=0.25,
             allowed_tools=[],
             effort=None,
             permission_mode=None,
@@ -1744,35 +1760,53 @@ class AgentRunner:
             result = self._run_claude(
                 "Reply with the single word OK.", Path(tmp), model, probe_cfg, timeout=timeout
             )
+        notes: list[str] = []
+        served = result.served_models or []
+        if served and model not in served:
+            notes.append(
+                f"model '{model}' was served as {', '.join(served)}. Pin the full model ID "
+                "in models: so the configured name, pricing rates, and reports refer to "
+                "the model that ran."
+            )
+        if result.unrecognized_models:
+            notes.append(
+                f"the Claude CLI does not recognize {', '.join(result.unrecognized_models)}. "
+                "Its harness-reported cost may not match list prices; use "
+                "cost_basis: api-equivalent with recorded rates."
+            )
         if result.status == "ok" and not result.error:
-            return True, "authenticated call succeeded"
+            return True, "authenticated call succeeded", notes
         detail = (result.error or result.status or "unknown failure").strip().splitlines()
-        return False, (detail[0] if detail else "unknown failure")[:300]
+        return False, (detail[0] if detail else "unknown failure")[:300], notes
 
     def probe_claude_sandbox_canary(
-        self, model: str, claude_cfg: ClaudeConfig, timeout: float = 90
-    ) -> tuple[bool, list[str]]:
+        self, model: str, claude_cfg: ClaudeConfig, timeout: float = 180
+    ) -> tuple[bool, list[str], bool]:
+        """Run each command shape from `_CANARY_COMMANDS` once and report refusals.
+
+        Returns (ok, denials, inconclusive). `inconclusive` is True when the agent
+        ran fewer command shapes than were requested, so a clean result proves little.
+        """
         import dataclasses
 
         probe_cfg = dataclasses.replace(
             claude_cfg,
-            max_turns=2,
-            max_budget_usd=0.10,
+            max_turns=len(_CANARY_COMMANDS) + 4,
+            max_budget_usd=0.25,
             effort=None,
         )
         prompt = (
-            "Run each of these 4 commands using the Bash tool:\n"
-            "1. cat << 'EOF'\nhello\nEOF\n"
-            "2. python3 -c \"print('canary')\"\n"
-            "3. VAR='test'; echo \"$VAR\"\n"
-            "4. echo \"quoted string test\""
+            "Run each of these commands as its own Bash tool call, in order, exactly as "
+            "written. Do not combine them:\n"
+            + "\n".join(f"{i}. {cmd}" for i, cmd in enumerate(_CANARY_COMMANDS, 1))
         )
         with tempfile.TemporaryDirectory(prefix="skilldiff-canary-probe-") as tmp:
             result = self._run_claude(
                 prompt, Path(tmp), model, probe_cfg, timeout=timeout
             )
         denials = result.permission_denials or []
-        return result.status == "ok", denials
+        ran = result.tool_calls or 0
+        return result.status == "ok", denials, ran < len(_CANARY_COMMANDS)
 
     def claude_command(
         self,
@@ -1891,6 +1925,8 @@ class AgentRunner:
             skill_invocations=parsed["skill_invocations"] if skill_names else None,
             skill_available=parsed["skill_available"] if skill_names else None,
             permission_denials=parsed["permission_denials"],
+            served_models=parsed["served_models"],
+            unrecognized_models=claude_unrecognized_models(execution.stderr),
             session_id=parsed["session_id"],
             reported_total_tokens=parsed["reported_total_tokens"],
         )
@@ -2260,6 +2296,41 @@ _CLAUDE_DENIED_TOOLS = {
     "shell": "command",
 }
 
+# Bash command shapes the sandbox canary runs. Each one was refused in a real
+# held-out run (quoted text, `$!` after a backgrounded command, `$(...)` in a
+# redirect, `cd` before git, brace expansion next to a quote), so the canary must
+# exercise them rather than only benign commands.
+_CANARY_COMMANDS = (
+    "cat << 'EOF'\nhello\nEOF",
+    "python3 -c \"print('canary')\"",
+    "VAR='test'; echo \"$VAR\"",
+    "echo \"quoted string test\"",
+    "python3 -c \"import time; time.sleep(0.2)\" & PID=$!; wait $PID; echo \"done $?\"",
+    "echo ok > \"$(echo canary-out.txt)\"",
+    "cd . && git --version",
+    "echo {a,b}\"c\"",
+)
+
+# Marker the Claude CLI writes to stderr for a model ID it does not recognize,
+# followed by a JSON payload naming the model.
+_CLAUDE_UNRECOGNIZED_MODEL = "[claude-code:unrecognized_model]"
+
+
+def claude_unrecognized_models(stderr: str) -> Optional[list[str]]:
+    """Return the model IDs the Claude CLI flagged as unrecognized, in first-seen order."""
+    found: list[str] = []
+    for line in (stderr or "").splitlines():
+        if _CLAUDE_UNRECOGNIZED_MODEL not in line:
+            continue
+        payload = line.split(_CLAUDE_UNRECOGNIZED_MODEL, 1)[1].strip()
+        try:
+            model = json.loads(payload).get("model")
+        except (ValueError, AttributeError):
+            continue
+        if model and str(model) not in found:
+            found.append(str(model))
+    return found or None
+
 
 def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     """Parse `claude -p --output-format stream-json` (or plain `json`) output."""
@@ -2278,6 +2349,7 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
         "skill_invocations": None,
         "skill_available": None,
         "permission_denials": None,
+        "served_models": None,
         "session_id": None,
         "reported_total_tokens": None,
     }
@@ -2291,6 +2363,9 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     confirmed_hits: dict[str, str] = {}
     unidentified_hits = 0
     denied_tools: list[str] = []
+    # The harness explains each refusal in a system event that precedes the result
+    # event; the result's denial list omits the reason, so join them by tool_use_id.
+    denial_reasons: dict[str, str] = {}
 
     from skilldiff.telemetry import count, money
     from skilldiff.telemetry import events as read_events
@@ -2309,6 +2384,11 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             skills = event.get("skills")
             if isinstance(skills, list):
                 parsed["skill_available"] = any(_skill_matches(s, skill_names) for s in skills)
+        elif event_type == "system" and event.get("subtype") == "permission_denied":
+            reason = event.get("decision_reason") or event.get("message")
+            tool_id = str(event.get("tool_use_id") or "")
+            if reason and tool_id:
+                denial_reasons[tool_id] = str(reason)
         elif event_type == "assistant":
             if parsed["tool_calls"] is None:
                 parsed["tool_calls"] = 0
@@ -2368,6 +2448,9 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             if usage or not failed:
                 usage_snapshots.append(usage)
                 turn_counts.append(count(event.get("num_turns")))
+            model_usage = event.get("modelUsage")
+            if isinstance(model_usage, dict):
+                parsed["served_models"] = sorted(str(m) for m in model_usage)
             denials = event.get("permission_denials")
             if isinstance(denials, list):
                 if parsed["permission_denials"] is None:
@@ -2375,12 +2458,15 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                 for d in denials:
                     if isinstance(d, dict):
                         tool = str(d.get("tool_name") or "unknown")
-                        reason = d.get("reason") or d.get("message")
+                        denied_id = str(d.get("tool_use_id") or d.get("id") or "")
+                        reason = (
+                            d.get("reason") or d.get("message")
+                            or denial_reasons.get(denied_id)
+                        )
                         if reason:
                             parsed["permission_denials"].append(f"{tool} ({reason})")
                         else:
                             parsed["permission_denials"].append(tool)
-                        denied_id = str(d.get("tool_use_id") or d.get("id") or "")
                         denied_input = d.get("tool_input") or d.get("input")
                         if denied_id and (
                             denied_id in confirmed_hits or denied_id in pending_hits

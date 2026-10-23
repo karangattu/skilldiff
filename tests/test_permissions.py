@@ -23,8 +23,10 @@ from skilldiff.preflight import host_sandbox_fix, host_sandbox_problems
 from skilldiff.runner import (
     AgentRunner,
     ExecResult,
+    RunResult,
     antigravity_permission_denials,
     claude_sandbox_settings,
+    claude_unrecognized_models,
     codex_permission_denials,
     codex_sandbox_args,
     opencode_approval_flag,
@@ -51,6 +53,101 @@ def test_claude_result_records_permission_denials():
     assert parse_claude_output(clean, [])["permission_denials"] == []
     assert parse_claude_output(json.dumps({"type": "result", "result": "ok"}), [])[
         "permission_denials"] is None
+
+
+def test_claude_denial_reason_is_joined_from_permission_denied_event():
+    # The result event lists the refused call without its reason; the reason is in
+    # the preceding system event, joined by tool_use_id.
+    reason = "Quoted text in this command can't be checked before it runs"
+    stdout = "\n".join(json.dumps(event) for event in (
+        {"type": "system", "subtype": "permission_denied", "tool_name": "Bash",
+         "tool_use_id": "t9", "decision_reason": reason},
+        {"type": "result", "subtype": "success", "result": "done", "permission_denials": [
+            {"tool_name": "Bash", "tool_use_id": "t9", "tool_input": {"command": "x"}},
+        ]},
+    ))
+    assert parse_claude_output(stdout, [])["permission_denials"] == [f"Bash ({reason})"]
+
+
+def test_claude_result_records_served_models():
+    stdout = json.dumps({"type": "result", "result": "ok", "modelUsage": {
+        "claude-haiku-5-5": {"outputTokens": 3},
+        "claude-haiku-4-5-20251001": {"outputTokens": 1},
+    }})
+    assert parse_claude_output(stdout, [])["served_models"] == [
+        "claude-haiku-4-5-20251001", "claude-haiku-5-5"]
+    assert parse_claude_output(json.dumps({"type": "result", "result": "ok"}), [])[
+        "served_models"] is None
+
+
+def test_claude_unrecognized_models_are_read_from_stderr():
+    marker = '[claude-code:unrecognized_model] {"model":"claude-haiku-5-5","query_source":"sdk"}'
+    assert claude_unrecognized_models(f"noise\n{marker}\n{marker}\n") == ["claude-haiku-5-5"]
+    assert claude_unrecognized_models("plain stderr") is None
+    assert claude_unrecognized_models("") is None
+
+
+def _claude_result(**changes):
+    base = {
+        "prompt": "", "response": "", "transcript": "", "duration": 1.0, "cost": None,
+        "input_tokens": None, "output_tokens": None, "tool_calls": 1, "exit_code": 0,
+    }
+    return RunResult(**(base | changes))
+
+
+def test_auth_probe_warns_when_alias_is_served_as_another_model(monkeypatch):
+    served = _claude_result(served_models=["claude-haiku-4-5-20251001"])
+    monkeypatch.setattr(AgentRunner, "_run_claude", lambda self, *a, **k: served)
+    ok, detail, notes = AgentRunner(claude_bin="claude").probe_claude_auth(
+        "haiku", ClaudeConfig())
+    assert ok and detail == "authenticated call succeeded"
+    assert len(notes) == 1
+    assert "'haiku' was served as claude-haiku-4-5-20251001" in notes[0]
+
+
+def test_auth_probe_is_silent_when_the_pinned_model_is_served(monkeypatch):
+    pinned = _claude_result(served_models=["claude-haiku-5-5"])
+    monkeypatch.setattr(AgentRunner, "_run_claude", lambda self, *a, **k: pinned)
+    ok, _, notes = AgentRunner(claude_bin="claude").probe_claude_auth(
+        "claude-haiku-5-5", ClaudeConfig())
+    assert ok and notes == []
+
+
+def test_auth_probe_warns_about_unrecognized_model_cost(monkeypatch):
+    flagged = _claude_result(served_models=["claude-haiku-5-5"],
+                             unrecognized_models=["claude-haiku-5-5"])
+    monkeypatch.setattr(AgentRunner, "_run_claude", lambda self, *a, **k: flagged)
+    _, _, notes = AgentRunner(claude_bin="claude").probe_claude_auth(
+        "claude-haiku-5-5", ClaudeConfig())
+    assert any("does not recognize claude-haiku-5-5" in note for note in notes)
+
+
+def test_sandbox_canary_exercises_every_refused_shape(monkeypatch):
+    # Each shape here was refused in a real run; a canary without them passed
+    # while the agents were blocked.
+    prompts = []
+
+    def fake_run(self, prompt, cwd, model, cfg, timeout=None, **kwargs):
+        prompts.append(prompt)
+        return _claude_result(tool_calls=8, permission_denials=[
+            "Bash (A variable in this command can't be checked before it runs)"])
+
+    monkeypatch.setattr(AgentRunner, "_run_claude", fake_run)
+    ok, denied, inconclusive = AgentRunner(claude_bin="claude").probe_claude_sandbox_canary(
+        "claude-haiku-5-5", ClaudeConfig())
+    prompt = prompts[0]
+    for shape in ("$!", '$(echo canary-out.txt)', "cd . && git --version", "{a,b}"):
+        assert shape in prompt
+    assert ok and not inconclusive
+    assert denied == ["Bash (A variable in this command can't be checked before it runs)"]
+
+
+def test_sandbox_canary_is_inconclusive_when_commands_are_skipped(monkeypatch):
+    monkeypatch.setattr(
+        AgentRunner, "_run_claude", lambda self, *a, **k: _claude_result(tool_calls=2))
+    _, denied, inconclusive = AgentRunner(claude_bin="claude").probe_claude_sandbox_canary(
+        "claude-haiku-5-5", ClaudeConfig())
+    assert denied == [] and inconclusive
 
 
 def test_claude_runs_bash_in_its_own_sandbox_by_default(tmp_path):
@@ -346,15 +443,17 @@ def test_probe_claude_sandbox_canary():
             cost=0.0,
             input_tokens=0,
             output_tokens=0,
-            tool_calls=1,
+            tool_calls=8,
             exit_code=0,
             status="ok",
             permission_denials=denials,
         ),
     ):
-        ok, found = runner.probe_claude_sandbox_canary("claude-sonnet", ClaudeConfig())
+        ok, found, inconclusive = runner.probe_claude_sandbox_canary(
+            "claude-sonnet", ClaudeConfig())
     assert ok is True
     assert found == denials
+    assert inconclusive is False
 
 
 def test_diagnose_reports_denied_patterns_and_asymmetry(tmp_path):
@@ -386,3 +485,27 @@ def test_diagnose_reports_denied_patterns_and_asymmetry(tmp_path):
     assert "Quoted text in this command can't be checked before it runs" in rec
     assert "uneven across arms — confound" in rec
 
+
+
+def test_diagnose_reports_model_alias_and_unrecognized_model(tmp_path):
+    record = {
+        "model": "haiku", "task_id": "t", "repetition": 1, "status": "ok",
+        "grade_status": "graded", "score": 1.0, "success": True, "cost": 1.0,
+        "duration": 10.0, "input_tokens": 1, "output_tokens": 1,
+        "cache_read_tokens": 0, "cache_creation_tokens": 0, "skill_invoked": False,
+        "served_models": ["claude-haiku-4-5-20251001"],
+        "unrecognized_models": ["claude-haiku-5-5"],
+    }
+    data = {
+        "name": "alias", "models": ["haiku"], "tasks": ["t"], "harness": "claude",
+        "failure_policy": {"agent_failure": "exclude"},
+        "runs": {"treatment": [record]},
+    }
+    path = tmp_path / "results.json"
+    path.write_text(json.dumps(data))
+    report = diagnose_run(path)
+    text = " ".join(report["recommendations"])
+    assert "Model alias: haiku served as claude-haiku-4-5-20251001" in text
+    assert "Unrecognized models: the Claude CLI does not recognize claude-haiku-5-5" in text
+    assert report["model_alias_mismatches"][0]["model"] == "haiku"
+    assert report["unrecognized_model_runs"][0]["models"] == ["claude-haiku-5-5"]

@@ -943,7 +943,7 @@ class ExperimentRunner:
                 self.progress(
                     f"[{done}/{total}] {ctrl['model']} · {ctrl['task_id']} · "
                     f"run {ctrl['repetition']}: control {_run_summary(ctrl)} | "
-                    f"treatment {_run_summary(treat)} [spent: ${spent:.2f}]"
+                    f"treatment {_run_summary(treat)} [harness-reported spend: ${spent:.2f}]"
                 )
 
         terminated_on_ceiling = False

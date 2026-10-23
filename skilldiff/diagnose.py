@@ -134,6 +134,8 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
     agent_failures = []
     grader_failures = []
     permission_denied = []
+    model_alias_mismatches = []
+    unrecognized_model_runs = []
     token_bloat_tasks = []
     recommendations = []
     unknown_adoption_runs = 0
@@ -168,6 +170,16 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
             denials = record.get("permission_denials")
             if isinstance(denials, list) and denials:
                 permission_denied.append(identity | {"tools": [str(t) for t in denials]})
+            served = record.get("served_models")
+            if isinstance(served, list) and served and identity["model"] not in served:
+                model_alias_mismatches.append(
+                    identity | {"served": sorted({str(m) for m in served})}
+                )
+            unrecognized = record.get("unrecognized_models")
+            if isinstance(unrecognized, list) and unrecognized:
+                unrecognized_model_runs.append(
+                    identity | {"models": sorted({str(m) for m in unrecognized})}
+                )
             feedback = str(record.get("feedback") or "")
             blast = record.get("grade_error_kind") == "blast_radius" or is_blast_violation(feedback)
             if blast:
@@ -280,6 +292,23 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
             "Headless sessions cannot answer prompts and sandboxed commands fail, so those "
             "agents worked without the tools. Fix the harness permissions (see `skilldiff check`) "
             "before blaming the agent or the skill."
+        )
+    if model_alias_mismatches:
+        served_desc = sorted({
+            f"{item['model']} served as {', '.join(item['served'])}"
+            for item in model_alias_mismatches
+        })
+        recommendations.append(
+            f"Model alias: {'; '.join(served_desc)} ({len(model_alias_mismatches)} "
+            "session(s)). The configured name is not the model that ran, so pricing and "
+            "reports attribute the usage to the wrong model. Pin the full model ID in `models:`."
+        )
+    if unrecognized_model_runs:
+        unknown = sorted({m for item in unrecognized_model_runs for m in item["models"]})
+        recommendations.append(
+            f"Unrecognized models: the Claude CLI does not recognize {', '.join(unknown)} "
+            f"({len(unrecognized_model_runs)} session(s)). Its harness-reported cost may not "
+            "match list prices; use `cost_basis: api-equivalent` with recorded rates."
         )
     planned_pairs = _planned_pairs(data)
     expected_keys = _planned_keys(data)
@@ -456,6 +485,8 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         "agent_failures": agent_failures,
         "grader_failures": grader_failures,
         "permission_denied": permission_denied,
+        "model_alias_mismatches": model_alias_mismatches,
+        "unrecognized_model_runs": unrecognized_model_runs,
         "token_bloat_tasks": token_bloat_tasks,
         "recommendations": recommendations,
     }

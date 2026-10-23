@@ -282,13 +282,15 @@ def test_probe_claude_auth_success_and_failure(tmp_path, monkeypatch):
     assert runner.probe_claude_auth("sonnet", ok_cfg, timeout=20) == (
         True,
         "authenticated call succeeded",
+        [],
     )
     bad = _fake_claude(
         tmp_path,
         'echo \'{"type":"result","subtype":"error","is_error":true,'
         '"result":"Failed to authenticate: OAuth session expired"}\'; exit 1',
     )
-    success, detail = runner.probe_claude_auth("sonnet", ClaudeConfig(bin_path=str(bad)), 20)
+    success, detail, _notes = runner.probe_claude_auth(
+        "sonnet", ClaudeConfig(bin_path=str(bad)), 20)
     assert success is False and "OAuth session expired" in detail
 
 

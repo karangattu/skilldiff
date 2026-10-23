@@ -6,6 +6,24 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Claude denials name the sandbox's stated reason. The `permission_denied` events carry it, and it was previously dropped, so `diagnose` could only list tool names. A denial now reads like `Bash (Quoted text in this command can't be checked before it runs)`.
+- Claude runs record `served_models` (the model IDs the harness reports serving) and `unrecognized_models` (IDs the Claude CLI flags as unknown on stderr). `results.json` and `diagnose --json` expose both.
+- `skilldiff check` warns when a configured `models:` name is served as a different model, such as `haiku` resolving to Haiku 4.5, and when the Claude CLI does not recognize the configured model.
+- `skilldiff diagnose` recommends pinning a full model ID for an alias mismatch, and recommends `cost_basis: api-equivalent` for unrecognized models.
+
+### Fixed
+
+- The sandbox canary runs the Bash shapes the sandbox refuses in practice: a backgrounded command followed by `$!`, command substitution in a redirect, `cd` before `git`, and brace expansion next to a quote. The old canary ran only benign commands and reported the sandbox as permitting everything while real runs were refused. It now runs up to 12 turns with a $0.25 budget (previously 2 turns and $0.10), and it warns when the agent skips a shape, which makes the result inconclusive.
+- The auth probe budget is $0.25, up from $0.05. The budget is enforced against the CLI's own cost figure, which can exceed list price for models it does not recognize. A $0.05 cap ended the probe with `error_max_budget_usd`, which `check` reported as an unconfirmed auth session.
+- The `check` warning for denied canary shapes joins reasons with `; `, since reasons can contain commas.
+
+### Changed
+
+- The progress line reports `harness-reported spend`, not `spent`. The figure is the CLI's own cost, which can be far above the API-equivalent cost for unrecognized models.
+- `probe_claude_auth` returns `(ok, detail, notes)` and `probe_claude_sandbox_canary` returns `(ok, denials, inconclusive)`. These are internal runner APIs.
+
 ## [0.26.0] - 2026-10-20
 
 ### Added

@@ -364,6 +364,8 @@ def build_arm_record(
         "skill_invocations": res.skill_invocations,
         "skill_available": res.skill_available,
         "permission_denials": res.permission_denials,
+        "served_models": res.served_models,
+        "unrecognized_models": res.unrecognized_models,
         "files_changed": files,
         "files_changed_normalized": normalize_changed_paths(
             files, getattr(task, "grader_ignore", None)

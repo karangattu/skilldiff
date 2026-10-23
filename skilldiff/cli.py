@@ -913,19 +913,24 @@ def cmd_check(args: argparse.Namespace) -> int:
             and not getattr(args, "no_probe", False)
             and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
         ):
-            probe_ok, detail = runner.probe_claude_auth(cfg.models[0], cfg.claude)
+            probe_ok, detail, model_notes = runner.probe_claude_auth(cfg.models[0], cfg.claude)
             if probe_ok:
                 ok(f"claude auth probe: {detail}")
+                for note in model_notes:
+                    warn(f"claude model: {note}")
                 if claude_sandbox_settings(cfg.claude, cfg.isolation):
-                    canary_ok, denied = runner.probe_claude_sandbox_canary(
+                    canary_ok, denied, inconclusive = runner.probe_claude_sandbox_canary(
                         cfg.models[0], cfg.claude
                     )
+                    if inconclusive:
+                        warn("claude sandbox canary: the agent did not run every command "
+                             "shape, so the result is inconclusive")
                     if denied:
                         warn(
                             f"claude sandbox canary: {len(denied)} command shape(s) denied "
-                            f"({', '.join(denied)})"
+                            f"({'; '.join(denied)})"
                         )
-                    elif canary_ok:
+                    elif canary_ok and not inconclusive:
                         ok("claude sandbox canary: representative command shapes permitted")
             elif looks_like_auth_error(detail):
                 fail(

@@ -156,8 +156,9 @@ the agent works without it. Keep the defaults (`claude.sandbox: true`,
 `codex.sandbox: workspace-write`, and `dangerously_skip_permissions: true` for
 OpenCode and Antigravity). They avoid prompts and give both arms the same permissions.
 If tasks need the network, set `claude.allowed_domains` or `codex.network_access:
-true`. Reports and `skilldiff diagnose` flag denied tools for every harness; fix
-them and rerun before interpreting scores. For defaults and read-isolation limits, see
+true`. Reports and `skilldiff diagnose` flag denied tools for every harness (Claude's
+with the sandbox's reason); fix them and rerun before interpreting scores. `diagnose`
+also flags a `models:` alias served as another model: pin the full ID. For defaults and read-isolation limits, see
 [preflight safeguards](references/preflight.md).
 
 ## 4. Validate, then smoke-test
