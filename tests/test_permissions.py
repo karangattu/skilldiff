@@ -3,6 +3,7 @@
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -668,6 +669,7 @@ def test_check_fails_when_the_canary_is_denied(tmp_path, monkeypatch, capsys, ca
     from skilldiff.cli import cmd_check
     from skilldiff.runner import ClaudeCommandProbe, ClaudeModelProbe
 
+    monkeypatch.setenv("CLAUDE_BIN", sys.executable)
     skill = tmp_path / "skill"
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: demo\ndescription: demo\n---\n")
@@ -707,6 +709,7 @@ def test_check_fails_when_the_served_model_differs(
     from skilldiff.cli import cmd_check
     from skilldiff.runner import ClaudeCommandProbe, ClaudeModelProbe
 
+    monkeypatch.setenv("CLAUDE_BIN", sys.executable)
     skill = tmp_path / "skill"
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: demo\ndescription: demo\n---\n")
@@ -802,6 +805,7 @@ def test_check_rejects_a_budget_below_the_observed_call_cost(
     from skilldiff.cli import cmd_check
     from skilldiff.runner import ClaudeCommandProbe, ClaudeModelProbe
 
+    monkeypatch.setenv("CLAUDE_BIN", sys.executable)
     skill = tmp_path / "skill"
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: demo\ndescription: demo\n---\n")
@@ -837,6 +841,7 @@ def test_check_refuses_harness_cost_for_an_unrecognized_model(
     from skilldiff.cli import cmd_check
     from skilldiff.runner import ClaudeCommandProbe, ClaudeModelProbe
 
+    monkeypatch.setenv("CLAUDE_BIN", sys.executable)
     skill = tmp_path / "skill"
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: demo\ndescription: demo\n---\n")
@@ -876,6 +881,7 @@ def test_check_fails_when_a_task_runtime_probe_is_refused(
     from skilldiff.cli import cmd_check
     from skilldiff.runner import ClaudeCommandProbe, ClaudeModelProbe
 
+    monkeypatch.setenv("CLAUDE_BIN", sys.executable)
     skill = tmp_path / "skill"
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: demo\ndescription: demo\n---\n")
