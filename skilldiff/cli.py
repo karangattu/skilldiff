@@ -1577,15 +1577,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     quiet = bool(getattr(args, "quiet", False))
     resume_arg = getattr(args, "resume", False)
     resume_path = getattr(args, "resume_from", None)
+    retry_failed = bool(getattr(args, "retry_failed", False))
     resume: bool | Path = False
     if resume_path:
         resume = Path(resume_path)
-    elif resume_arg:
+    elif resume_arg or retry_failed:
         resume = True
     runner = ExperimentRunner(
         exp_config,
         tasks,
         progress=None if quiet else (lambda msg: print(msg, flush=True)),
+        retry_failed=retry_failed,
     )
     arms = 3 if (exp_config.is_skill_comparison and exp_config.include_baseline) else 2
     is_correctness = bool(exp_config.pr) and (
@@ -1663,7 +1665,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 1
         print("Claude model and sandbox preflight passed.", flush=True)
     try:
-        results = runner.run(resume=resume)
+        results = runner.run(resume=resume, retry_failed=retry_failed)
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"Experiment error: {exc}", file=sys.stderr)
         return 1
@@ -2368,6 +2370,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--resume-from", help="Resume a specific run directory (strict hash check)"
+    )
+    run_parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="When resuming, retry pairs that encountered harness errors, timeouts, or failures",
     )
     run_parser.add_argument(
         "--no-probe",

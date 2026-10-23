@@ -285,6 +285,14 @@ def collect_provenance(config: ExperimentConfig, tasks: list[TaskConfig]) -> dic
     }
 
 
+def is_failed_record(record: dict[str, Any]) -> bool:
+    return bool(
+        record.get("failure_kind") in {"harness_error", "rate_limit"}
+        or record.get("status") in {"rate_limit", "interrupted", "error", "harness_error"}
+        or record.get("grade_status") in {"error", "timeout"}
+        or record.get("complete") is False
+        or record.get("is_error") is True
+    )
 
 
 class ExperimentRunner:
@@ -296,6 +304,7 @@ class ExperimentRunner:
         agent_runner: AgentRunner | None = None,
         progress: Optional[Callable[[str], None]] = None,
         resume_dir: Path | None = None,
+        retry_failed: bool = False,
     ):
         self.config = deepcopy(config)
         self.tasks = deepcopy(tasks)
@@ -308,6 +317,7 @@ class ExperimentRunner:
         self._lock = threading.Lock()
         self.comparison: dict[str, str] | None = None
         self.resume_dir = resume_dir
+        self.retry_failed = retry_failed
         self._baseline_runs: list[dict[str, Any]] = []
         self._retry_history: list[dict[str, Any]] = []
         self._seed: int = (
@@ -640,7 +650,9 @@ class ExperimentRunner:
             reasons.append("python version changed")
         return reasons
 
-    def _load_resume_state(self, resume_dir: Path) -> set[tuple[str, str, int]]:
+    def _load_resume_state(
+        self, resume_dir: Path, retry_failed: bool = False
+    ) -> set[tuple[str, str, int]]:
         previous = read_json(resume_dir / "experiment.json")
         checkpoint = read_json(resume_dir / "checkpoint.json")
         if checkpoint.get("version") != 1 or not isinstance(checkpoint.get("experiment"), dict):
@@ -675,11 +687,33 @@ class ExperimentRunner:
             if (not isinstance(item[0], str) or not isinstance(item[1], str)
                     or type(item[2]) is not int or key not in allowed or key in completed):
                 raise ValueError(f"Invalid or duplicate completed pair in checkpoint: {item}")
+            if retry_failed:
+                failed = False
+                for arm in self._arms():
+                    arm_run = self._arm_directory(resume_dir, key, arm) / "run.json"
+                    if arm_run.is_file():
+                        try:
+                            rec = read_json(arm_run)
+                            if is_failed_record(rec):
+                                failed = True
+                                break
+                        except Exception:
+                            failed = True
+                            break
+                    else:
+                        failed = True
+                        break
+                if failed:
+                    for arm in self._arms():
+                        arm_json = self._arm_directory(resume_dir, key, arm) / "run.json"
+                        rel = str(arm_json.relative_to(resume_dir))
+                        self._record_hashes.pop(rel, None)
+                    continue
             completed.add(key)
         return completed
 
     def _load_previous_runs(
-        self, resume_dir: Path, completed: set[tuple[str, str, int]]
+        self, resume_dir: Path, completed: set[tuple[str, str, int]], retry_failed: bool = False
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         runs: dict[str, list[dict[str, Any]]] = {"control": [], "treatment": [], "baseline": []}
         expected_records = set()
@@ -691,6 +725,9 @@ class ExperimentRunner:
                         directory = self._arm_directory(resume_dir, key, arm)
                         if key not in completed:
                             if directory.exists():
+                                if retry_failed:
+                                    shutil.rmtree(directory)
+                                    continue
                                 raise ValueError(
                                     f"Incomplete saved pair at {directory}; artifacts preserved. "
                                     "Start a new run; sessions will not be rerun automatically."
@@ -751,7 +788,9 @@ class ExperimentRunner:
         if self._container_image_id:
             self._execution_config.container_image = self._container_image_id
 
-    def run(self, resume: bool | Path = False) -> dict[str, Any]:
+    def run(self, resume: bool | Path = False, retry_failed: bool = False) -> dict[str, Any]:
+        if retry_failed:
+            self.retry_failed = True
         if self.config.isolation not in {"local", "docker", "podman", "macos"}:
             raise ValueError(f"Unsupported isolation mode: {self.config.isolation}")
         if self.config.isolation == "macos":
@@ -892,8 +931,10 @@ class ExperimentRunner:
             manifest = load_snapshots(run_root, sources)
             if manifest.get("grader_inputs") != self._grader_inputs:
                 raise ValueError("Tracked grader files or dependency locks differ from snapshot")
-            completed = self._load_resume_state(run_root)
-            control_runs, treatment_runs = self._load_previous_runs(run_root, completed)
+            completed = self._load_resume_state(run_root, retry_failed=self.retry_failed)
+            control_runs, treatment_runs = self._load_previous_runs(
+                run_root, completed, retry_failed=self.retry_failed
+            )
             self._seed = previous["seed"]
             self._timestamp = previous["timestamp"]
         else:

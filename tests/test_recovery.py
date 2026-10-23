@@ -535,3 +535,25 @@ def test_interruption_keeps_arm_resources_diff_and_explicit_partial_records(expe
     assert any(record['status'] == 'interrupted' for record in records)
     assert result['runs']['control'] == result['runs']['treatment'] == []
     assert len(result['incomplete_runs']) == 2
+
+
+def test_resume_retry_failed_reruns_errored_pairs(experiment):
+    cfg, tasks = experiment
+    cfg.runs = 2
+    first = ExperimentRunner(cfg, tasks).run()
+    root = Path(first["run_dir"])
+
+    rep2_treat = list(root.glob("**/treatment/002/run.json"))
+    assert len(rep2_treat) == 1
+    rec = json.loads(rep2_treat[0].read_text())
+    rec["status"] = "rate_limit"
+    rec["complete"] = False
+    rep2_treat[0].write_text(json.dumps(rec))
+
+    resumed = ExperimentRunner(cfg, tasks, retry_failed=True).run(resume=root)
+    assert len(resumed["runs"]["control"]) == 2
+    assert len(resumed["runs"]["treatment"]) == 2
+    rep2_treat_new = json.loads(rep2_treat[0].read_text())
+    assert rep2_treat_new["status"] == "ok"
+    assert rep2_treat_new["complete"] is True
+
