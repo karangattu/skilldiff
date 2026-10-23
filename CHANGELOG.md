@@ -6,6 +6,14 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Manual releases check out the requested tag before testing and building.
+- Codex token snapshots ignore per-turn usage after a cumulative snapshot arrives.
+- Multi-turn failed runs mark missing metrics as unknown.
+- Container cleanup failures keep the agent exit code and report cleanup separately.
+- Relative cost and token intervals skip bootstrap resamples with a zero baseline.
+
 ## [0.27.0] - 2026-10-22
 
 ### Added
