@@ -1494,7 +1494,7 @@ class AgentRunner:
                 if value is not None:
                     known.add(metric)
                     totals[metric] += value
-                elif res.status == "ok":
+                else:
                     unknown.add(metric)
             if res.skill_invoked is True:
                 skill_invoked = True

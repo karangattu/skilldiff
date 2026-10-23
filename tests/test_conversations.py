@@ -33,7 +33,11 @@ def test_failed_turn_stops_before_next_prompt(tmp_path, conversation_cli, config
     assert result.failure_kind == "harness_error"
     assert "forbidden" not in result.transcript
     assert "kept" in result.transcript
-    assert result.input_tokens is not None
+    # OpenCode reports usage per turn, so a failed turn makes the total unknown.
+    if config_class is OpenCodeConfig:
+        assert result.input_tokens is None
+    else:
+        assert result.input_tokens is not None
 
 
 @pytest.mark.parametrize("config_class", CONFIGS)
@@ -43,7 +47,10 @@ def test_conversation_deadline_keeps_completed_turn(tmp_path, conversation_cli, 
                                config_class(bin_path=conversation_cli), timeout=2)
     assert result.status == "timeout"
     assert "kept" in result.transcript
-    assert result.input_tokens is not None
+    if config_class is OpenCodeConfig:
+        assert result.input_tokens is None
+    else:
+        assert result.input_tokens is not None
     assert result.duration is not None and result.duration < 5
 
 

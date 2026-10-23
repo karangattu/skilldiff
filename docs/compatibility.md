@@ -14,7 +14,8 @@ SkillDiff never retries by removing permissions, isolation, or structured output
 
 Every arm has a separate conversation and private temporary directory. Follow-up
 prompts share their arm's workspace and one deadline. A failed turn stops the
-remaining prompts. Partial transcripts and usage survive failures and timeouts.
+remaining prompts. Partial transcripts survive failures and timeouts; turn-aggregated
+totals stay N/A when a turn lacks a metric.
 Missing completion, malformed output, or explicit failures are harness errors,
 including when the CLI exits zero; these attempts never enter paired decisions.
 

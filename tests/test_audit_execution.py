@@ -14,7 +14,7 @@ import pytest
 from skilldiff.config import AntigravityConfig, ExperimentConfig, GraderConfig, TaskConfig
 from skilldiff.experiment import ExperimentRunner
 from skilldiff.grader import Grader, GradeResult, validate_grader_against_directories
-from skilldiff.runner import AgentRunner, ExecResult
+from skilldiff.runner import AgentRunner, ExecResult, RunResult
 from skilldiff.workspace import Workspace
 
 
@@ -266,6 +266,22 @@ def test_multi_turn_preserves_unknown_metrics(tmp_path, partial):
     result = AgentRunner(antigravity_bin=fake).run(
         ["one", "two"], tmp_path, "m", AntigravityConfig())
     assert result.status == "ok"
+    for name in ("cost", "input_tokens", "output_tokens", "num_turns", "cache_read_tokens"):
+        assert getattr(result, name) is None, name
+
+
+def test_multi_turn_failed_turn_marks_missing_metrics_unknown(tmp_path, monkeypatch):
+    runner = AgentRunner()
+    runs = iter([
+        RunResult("one", "ok", "", 0.1, 0.1, 10, 2, 0, 0,
+                  cache_read_tokens=0, cache_creation_tokens=0, num_turns=1),
+        RunResult("two", "", "", 0.1, None, None, None, None, 1,
+                  error="boom", status="error"),
+    ])
+    monkeypatch.setattr(runner, "_run_session", lambda *args, **kwargs: next(runs))
+    result = runner._run_multi_turn(
+        ["one", "two"], tmp_path, "m", AntigravityConfig())
+    assert result.status == "error"
     for name in ("cost", "input_tokens", "output_tokens", "num_turns", "cache_read_tokens"):
         assert getattr(result, name) is None, name
 
