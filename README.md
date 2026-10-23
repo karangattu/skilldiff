@@ -1,14 +1,14 @@
 # SkillDiff
 
-![SkillDiff — paired agent terminals, with and without a skill, joined by a delta comparison symbol](assets/skill_diff_logo.png)
+![SkillDiff: paired agent terminals, with and without a skill, joined by a delta comparison symbol](assets/skill_diff_logo.png)
 
 Tell your coding agent which skill to evaluate. SkillDiff runs matched tasks with
 and without the skill and measures what changes. Your agent prepares the tests,
 runs the evaluation, and explains whether the evidence supports keeping the skill.
 
-SkillDiff is designed to be used through Claude Code, Codex, Antigravity CLI (AGY),
-or OpenCode V2. You provide the goal and skill path. The installed SkillDiff skill
-gives your agent the setup, evaluation, and reporting instructions.
+You can run SkillDiff through Claude Code, Codex, Antigravity CLI (AGY),
+or OpenCode V2. You provide the goal and skill path, and the installed SkillDiff skill
+gives your agent instructions for setup, evaluation, and reporting.
 
 ## Set up once through your agent
 
@@ -32,7 +32,7 @@ and asks only when it cannot establish a necessary choice.
 
 ### Try the demo
 
-No skill or test files of your own are needed:
+You do not need your own skill or test files:
 
 ```text
 Use skilldiff to try its changelog demo and explain the result.
@@ -63,13 +63,12 @@ paid evaluation unless you already authorized it.
 ## What you get
 
 Your agent explains the score, skill use, cost, time, and tokens. It links the
-report and gives SkillDiff's decision: **SHIP**, **DO NOT SHIP**, or
-**NEEDS MORE RUNS**, with the evidence and uncertainty. A first trial checks setup;
+report and gives SkillDiff's decision: `SHIP`, `DO NOT SHIP`, or
+`NEEDS MORE RUNS`, with the evidence and uncertainty. A first trial checks setup;
 it does not establish a shipping decision. Missing measurements stay `N/A`.
-Low adoption blocks a SHIP result. Adoption is judged on the runs the closing
-decision uses — the held-out runs when the experiment declares a held-out split,
-every run otherwise — and the report, the saved results, and `skilldiff diagnose`
-all judge those same runs.
+Low adoption blocks a `SHIP` result. Adoption is judged on the runs used by the closing
+decision (the held-out runs when configured, or all runs otherwise). The report,
+saved results, and `skilldiff diagnose` all evaluate this same set of runs.
 
 Reports include per-arm hit rates, load counts, and concrete next steps for
 improving a skill's description, plus JSON for agent analysis, Markdown for
@@ -79,11 +78,11 @@ API-equivalent cost from a built-in rate table; pin a full model ID such as
 the ones you chose. Bare family names such as `sonnet` fail config loading. See
 [reports and outputs](docs/reference.md#reports-and-outputs) for the full format.
 
-The prompt never names the skill by default, so adoption measures **discovery**:
+The prompt never names the skill by default, so adoption measures discovery:
 whether the description makes the agent reach for the skill on its own. Set
 `skill_invocation: explicit` to name the skill in the prompt and measure
-**obedience** instead. Run the same experiment both ways and the gap between the
-two adoption rates is what your description is worth. See
+obedience instead. Running the same experiment both ways shows what the
+description contributes. See
 [explicit versus implicit skill use](docs/reference.md#explicit-versus-implicit-skill-use).
 
 ## Agent instructions
@@ -101,8 +100,8 @@ installed once in the native workspace directory. Follow-up `prompts:` share one
 conversation, workspace, and deadline; arms and repetitions have separate sessions.
 
 Empty output, malformed streams, explicit failures, and missing completion events
-are harness errors even when the CLI exits zero. Partial telemetry is retained,
-and these sessions do not enter paired decisions. Unknown usage and cost stay `N/A`.
+are harness errors even when the CLI exits zero. SkillDiff keeps partial telemetry,
+but excludes these sessions from paired decisions. Unknown usage and cost stay `N/A`.
 Claude subscription authentication remains the default; SkillDiff does not use
 `--bare`. See [the compatibility contract and verification limits](docs/compatibility.md).
 
@@ -187,9 +186,9 @@ and write access to their login folder. Allow `skilldiff` once:
 | Antigravity | Approve `skilldiff` when asked, or add `command(skilldiff)` and `unsandboxed(skilldiff)` to `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` |
 
 If you skip this setup, `skilldiff check` fails with a `host:` line and prints the
-fix for your agent. `skilldiff run` refuses to start rather than fail every session.
-A full run can outlast your agent's shell timeout, so the skill tells your agent to
-run it in the background.
+fix for your agent. `skilldiff run` halts before starting any sessions.
+Because a full evaluation can exceed the agent's shell timeout, the skill tells your
+agent to run it in the background.
 
 </details>
 
@@ -272,9 +271,9 @@ flowchart TB
 <details>
 <summary>Evaluation details and permissions</summary>
 
-The agent sessions skilldiff starts run headless, so nobody can answer a permission
-prompt. A tool that asks is refused, and the agent quietly works without it. The
-defaults avoid prompts and give both arms the same permissions:
+Agent sessions started by skilldiff run headless, so prompts cannot be answered
+interactively. Any tool that prompts for permission is refused, and the agent continues
+without it. The default settings avoid prompts and give both arms matching permissions:
 
 | Harness | Default | To allow network |
 |---|---|---|
