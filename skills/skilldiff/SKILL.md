@@ -42,11 +42,13 @@ Lint it before you spend anything:
 
 ```bash
 skilldiff lint /abs/path/to/skill
+skilldiff lint /abs/path/to/skill --prompts ./skill-eval/tasks/  # trigger coverage
 ```
 
-`lint` checks the frontmatter, description length and trigger keywords, broken
-links, and the skill's estimated token footprint. Fix what it flags now: a weak
-description is the usual cause of the low adoption you will measure later.
+`lint` checks the frontmatter, description, trigger keywords, links, and token
+footprint. `--prompts` also flags task prompts with little language shared with
+the description, a signal for symptom-style prompts that may not trigger. Fix
+what it flags: a weak description is the usual cause of low adoption.
 
 ## 2. Scaffold
 
@@ -60,6 +62,10 @@ skilldiff init --skill /abs/path/to/skill --dir ./skill-eval --harness codex
 skilldiff init --skill /abs/path/to/skill --dir ./skill-eval --harness opencode
 skilldiff init --skill /abs/path/to/skill --dir ./skill-eval --harness antigravity
 ```
+
+Claude scaffolds pin `claude-sonnet-5-5`. Use full IDs such as
+`claude-haiku-5-5`; bare `sonnet`/`haiku`/`opus` fail config loading.
+`--template claude-eval` adds the eval profile, cost basis, thresholds, and splits.
 
 Ask the user which agent CLI they use if it is not obvious. The other three
 modes scaffold the same way:
@@ -151,15 +157,16 @@ environment variables: `SKILLDIFF_RESPONSE_FILE` (the agent's final message),
 `SKILLDIFF_DIFF_FILE` (the agent's git diff), `SKILLDIFF_CHANGED_FILES_FILE` (the
 changed paths, one per line, without `grader_ignore` paths), and `SKILLDIFF_TASK_DIR`.
 
-**Permissions.** Sessions run headless, so any tool that would prompt is refused and
-the agent works without it. Keep the defaults (`claude.sandbox: true`,
-`codex.sandbox: workspace-write`, and `dangerously_skip_permissions: true` for
-OpenCode and Antigravity). They avoid prompts and give both arms the same permissions.
-If tasks need the network, set `claude.allowed_domains` or `codex.network_access:
-true`. Reports and `skilldiff diagnose` flag denied tools for every harness (Claude's
-with the sandbox's reason); fix them and rerun before interpreting scores. `diagnose`
-also flags a `models:` alias served as another model: pin the full ID. For defaults and read-isolation limits, see
-[preflight safeguards](references/preflight.md).
+**Permissions.** Sessions run headless, so anything that would prompt is refused.
+Keep the defaults (`claude.sandbox: true`, `codex.sandbox: workspace-write`, and
+`dangerously_skip_permissions: true` for OpenCode and Antigravity). Set
+`claude.allowed_domains` or `codex.network_access: true` for network tasks. For
+apps that need background launch and localhost, use opt-in `claude.profile: eval`;
+it keeps the sandbox on and never allows unsandboxed commands. Do not set
+`sandbox: false`, which exposes graders and skill sources. `check` fails on any
+refused canary shape and probes each task's `runtime_probe` through Claude. Fix
+denials before interpreting scores; `diagnose` also flags a model served as
+another ID. See [preflight safeguards](references/preflight.md).
 
 ## 4. Validate, then smoke-test
 
@@ -221,16 +228,12 @@ runs: 5
 #   acceptable_score_regression_pp: 5
 #   required_cost_reduction_pct: 10
 #   required_token_reduction_pct: 20
-# cost_basis: api-equivalent  # decide with saved rates (default: harness)
-# API-equivalent cost basis: look the rates up on the provider's own pricing
-# page BEFORE the run and record them here, so the saved run reproduces the
-# estimate and the report shows the API-equivalent cost per arm:
+# cost_basis: api-equivalent  # Claude subscription default
 # pricing:
 #   source: https://www.anthropic.com/pricing
-#   date: "2026-09-27"
-#   currency: USD
+#   date: "2026-10-19"
 #   rates:
-#     claude-sonnet-5: {input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75}
+#     claude-sonnet-5-5: {input: 2.00, output: 10.00, cache_read: 0.10, cache_write: 2.50}
 ```
 
 `runs: 5` is a starting point, not a sufficiency rule. Many repetitions of two

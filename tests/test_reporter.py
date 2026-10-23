@@ -1180,3 +1180,32 @@ def test_create_reports_redacts_secrets(tmp_path, monkeypatch):
 
 
 
+
+
+def test_report_shows_denial_reasons_models_and_retries():
+    control = _runs("control", [1.0, 1.0], 0.5)
+    treatment = _runs("treatment", [1.0, 1.0], 0.5, skill_invoked=True)
+    control[0].update(
+        {
+            "permission_denials": [
+                "Bash (Quoted text in this command can't be checked before it runs)"
+            ],
+            "served_models": ["claude-haiku-4-5-20251001"],
+        }
+    )
+    treatment[0].update({"unrecognized_models": ["claude-haiku-5-5"]})
+    results = _results(
+        control,
+        treatment,
+        retries=[
+            {"model": "m", "task_id": "t", "arm": "treatment", "status": "rate_limit",
+             "cost": 0.02}
+        ],
+    )
+    md = reporter.build_markdown_report(results)
+    assert "## Harness diagnostics" in md
+    assert "Quoted text in this command can't be checked before it runs" in md
+    assert "served as claude-haiku-4-5-20251001" in md
+    assert "Unrecognized by the Claude CLI" in md
+    assert "Rate-limit retries: 1 event(s)" in md
+    assert "preserved cost $0.02" in md

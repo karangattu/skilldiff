@@ -85,7 +85,7 @@ def _write_task(root: Path, name: str, body: str = "") -> Path:
 
 def _write_config(root: Path, body: str) -> Path:
     config_path = root / "skilldiff.yaml"
-    config_path.write_text(f"name: t\nmodels:\n  - haiku\n{body}")
+    config_path.write_text(f"name: t\nmodels:\n  - claude-sonnet-5-5\n{body}")
     return config_path
 
 

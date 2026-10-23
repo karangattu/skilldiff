@@ -21,6 +21,8 @@ from skilldiff.diagnose import diagnose_run
 from skilldiff.experiment import _run_warnings
 from skilldiff.preflight import host_sandbox_fix, host_sandbox_problems
 from skilldiff.runner import (
+    _CANARY_COMMANDS,
+    _EVAL_CANARY_COMMANDS,
     AgentRunner,
     ExecResult,
     RunResult,
@@ -95,59 +97,119 @@ def _claude_result(**changes):
     return RunResult(**(base | changes))
 
 
-def test_auth_probe_warns_when_alias_is_served_as_another_model(monkeypatch):
+def _command_transcript(commands, *, denials=None, failed=False):
+    events = []
+    for index, command in enumerate(commands, start=1):
+        tool_id = f"t{index}"
+        events.append(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": tool_id,
+                            "name": "Bash",
+                            "input": {"command": command},
+                        }
+                    ]
+                },
+            }
+        )
+        events.append(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "is_error": failed,
+                            "content": "failed" if failed else "ok",
+                        }
+                    ]
+                },
+            }
+        )
+    events.append(
+        {
+            "type": "result",
+            "subtype": "success",
+            "result": "done",
+            "permission_denials": denials or [],
+        }
+    )
+    return "\n".join(json.dumps(event) for event in events)
+
+
+def _command_result(commands, *, denials=None, failed=False):
+    return _claude_result(
+        transcript="STDOUT:\n"
+        + _command_transcript(commands, denials=denials, failed=failed)
+        + "\n\nSTDERR:\n",
+        tool_calls=len(commands),
+        permission_denials=denials,
+    )
+
+
+def test_auth_probe_reports_when_alias_is_served_as_another_model(monkeypatch):
     served = _claude_result(served_models=["claude-haiku-4-5-20251001"])
     monkeypatch.setattr(AgentRunner, "_run_claude", lambda self, *a, **k: served)
-    ok, detail, notes = AgentRunner(claude_bin="claude").probe_claude_auth(
-        "haiku", ClaudeConfig())
-    assert ok and detail == "authenticated call succeeded"
-    assert len(notes) == 1
-    assert "'haiku' was served as claude-haiku-4-5-20251001" in notes[0]
+    probe = AgentRunner(claude_bin="claude").probe_claude_auth(
+        "claude-haiku-5-5", ClaudeConfig()
+    )
+    assert probe.ok and probe.mismatch
+    assert probe.served_models == ["claude-haiku-4-5-20251001"]
 
 
 def test_auth_probe_is_silent_when_the_pinned_model_is_served(monkeypatch):
     pinned = _claude_result(served_models=["claude-haiku-5-5"])
     monkeypatch.setattr(AgentRunner, "_run_claude", lambda self, *a, **k: pinned)
-    ok, _, notes = AgentRunner(claude_bin="claude").probe_claude_auth(
-        "claude-haiku-5-5", ClaudeConfig())
-    assert ok and notes == []
+    probe = AgentRunner(claude_bin="claude").probe_claude_auth(
+        "claude-haiku-5-5", ClaudeConfig()
+    )
+    assert probe.ok and not probe.mismatch and not probe.unrecognized_models
 
 
-def test_auth_probe_warns_about_unrecognized_model_cost(monkeypatch):
+def test_auth_probe_reports_an_unrecognized_model(monkeypatch):
     flagged = _claude_result(served_models=["claude-haiku-5-5"],
                              unrecognized_models=["claude-haiku-5-5"])
     monkeypatch.setattr(AgentRunner, "_run_claude", lambda self, *a, **k: flagged)
-    _, _, notes = AgentRunner(claude_bin="claude").probe_claude_auth(
-        "claude-haiku-5-5", ClaudeConfig())
-    assert any("does not recognize claude-haiku-5-5" in note for note in notes)
+    probe = AgentRunner(claude_bin="claude").probe_claude_auth(
+        "claude-haiku-5-5", ClaudeConfig()
+    )
+    assert probe.ok and probe.unrecognized_models == ["claude-haiku-5-5"]
 
 
-def test_sandbox_canary_exercises_every_refused_shape(monkeypatch):
-    # Each shape here was refused in a real run; a canary without them passed
-    # while the agents were blocked.
+def test_sandbox_canary_exercises_refused_shapes(monkeypatch):
+    # These basic shapes were refused in a real run; the eval-only app shapes
+    # are covered separately below.
     prompts = []
+    denials = ["Bash (A variable in this command can't be checked before it runs)"]
 
     def fake_run(self, prompt, cwd, model, cfg, timeout=None, **kwargs):
         prompts.append(prompt)
-        return _claude_result(tool_calls=8, permission_denials=[
-            "Bash (A variable in this command can't be checked before it runs)"])
+        return _command_result(list(_CANARY_COMMANDS), denials=denials)
 
     monkeypatch.setattr(AgentRunner, "_run_claude", fake_run)
-    ok, denied, inconclusive = AgentRunner(claude_bin="claude").probe_claude_sandbox_canary(
-        "claude-haiku-5-5", ClaudeConfig())
+    probe = AgentRunner(claude_bin="claude").probe_claude_sandbox_canary(
+        "claude-haiku-5-5", ClaudeConfig()
+    )
     prompt = prompts[0]
-    for shape in ("$!", '$(echo canary-out.txt)', "cd . && git --version", "{a,b}"):
+    for shape in ('$(echo canary-out.txt)', "cd . && git --version", "{a,b}"):
         assert shape in prompt
-    assert ok and not inconclusive
-    assert denied == ["Bash (A variable in this command can't be checked before it runs)"]
+    assert not probe.ok
+    assert probe.denials == denials
+    assert not probe.inconclusive
 
 
 def test_sandbox_canary_is_inconclusive_when_commands_are_skipped(monkeypatch):
     monkeypatch.setattr(
         AgentRunner, "_run_claude", lambda self, *a, **k: _claude_result(tool_calls=2))
-    _, denied, inconclusive = AgentRunner(claude_bin="claude").probe_claude_sandbox_canary(
-        "claude-haiku-5-5", ClaudeConfig())
-    assert denied == [] and inconclusive
+    probe = AgentRunner(claude_bin="claude").probe_claude_sandbox_canary(
+        "claude-haiku-5-5", ClaudeConfig()
+    )
+    assert not probe.ok and probe.inconclusive and probe.missing
 
 
 def test_claude_runs_bash_in_its_own_sandbox_by_default(tmp_path):
@@ -428,32 +490,53 @@ def test_claude_permission_denial_reasons():
 
 
 def test_probe_claude_sandbox_canary():
-    from skilldiff.runner import RunResult
 
     runner = AgentRunner()
     denials = ["Bash (Quoted text in this command can't be checked before it runs)"]
     with patch.object(
         runner,
         "_run_claude",
-        return_value=RunResult(
-            prompt="",
-            response="done",
-            transcript="",
-            duration=1.0,
-            cost=0.0,
-            input_tokens=0,
-            output_tokens=0,
-            tool_calls=8,
-            exit_code=0,
-            status="ok",
-            permission_denials=denials,
-        ),
+        return_value=_command_result(list(_CANARY_COMMANDS), denials=denials),
     ):
-        ok, found, inconclusive = runner.probe_claude_sandbox_canary(
-            "claude-sonnet", ClaudeConfig())
-    assert ok is True
-    assert found == denials
-    assert inconclusive is False
+        probe = runner.probe_claude_sandbox_canary(
+            "claude-sonnet-5-5", ClaudeConfig())
+    assert probe.ok is False
+    assert probe.denials == denials
+    assert probe.inconclusive is False
+
+
+def test_eval_canary_adds_app_shapes(monkeypatch):
+    prompts = []
+
+    def fake_run(self, prompt, cwd, model, cfg, timeout=None, **kwargs):
+        prompts.append(prompt)
+        return _command_result([*_CANARY_COMMANDS, *_EVAL_CANARY_COMMANDS])
+
+    monkeypatch.setattr(AgentRunner, "_run_claude", fake_run)
+    probe = AgentRunner(claude_bin="claude").probe_claude_sandbox_canary(
+        "claude-sonnet-5-5", ClaudeConfig(profile="eval")
+    )
+    assert probe.ok
+    prompt = prompts[0]
+    for shape in ("127.0.0.1", "tracked.txt", "$PID"):
+        assert shape in prompt
+
+
+def test_eval_profile_keeps_the_sandbox_and_adds_localhost(tmp_path):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    settings = claude_sandbox_settings(
+        ClaudeConfig(profile="eval"), temp_dir=scratch
+    )
+    sandbox = settings["sandbox"]
+    assert sandbox["enabled"]
+    assert sandbox["allowUnsandboxedCommands"] is False
+    assert sandbox["network"]["allowLocalBinding"] is True
+    assert "localhost" in sandbox["network"]["allowedDomains"]
+    cmd = AgentRunner(claude_bin="claude").claude_command(
+        "hi", "claude-sonnet-5-5", ClaudeConfig(profile="eval"), temp_dir=scratch
+    )
+    assert cmd[cmd.index("--permission-mode") + 1] == "bypassPermissions"
 
 
 def test_diagnose_reports_denied_patterns_and_asymmetry(tmp_path):
@@ -509,3 +592,326 @@ def test_diagnose_reports_model_alias_and_unrecognized_model(tmp_path):
     assert "Unrecognized models: the Claude CLI does not recognize claude-haiku-5-5" in text
     assert report["model_alias_mismatches"][0]["model"] == "haiku"
     assert report["unrecognized_model_runs"][0]["models"] == ["claude-haiku-5-5"]
+
+
+def test_diagnose_reports_rate_limit_retries(tmp_path):
+    runs = {
+        "control": [
+            {"status": "ok", "task_id": "t", "model": "m", "arm": "control",
+             "repetition": 1, "score": 1.0, "grade_status": "graded"}
+        ],
+        "treatment": [
+            {"status": "ok", "task_id": "t", "model": "m", "arm": "treatment",
+             "repetition": 1, "score": 1.0, "grade_status": "graded"}
+        ],
+    }
+    (tmp_path / "results.json").write_text(
+        json.dumps(
+            {
+                "runs": runs,
+                "retries": [
+                    {"model": "m", "task_id": "t", "arm": "treatment",
+                     "status": "rate_limit", "cost": 0.01}
+                ],
+            }
+        )
+    )
+    report = diagnose_run(tmp_path)
+    assert report["rate_limit_retries"]["count"] == 1
+    assert report["harness_diagnostics"]["retries"]["by_arm"] == {"treatment": 1}
+    assert any("Rate-limit retries" in item for item in report["recommendations"])
+
+
+def test_probe_claude_commands_reports_omissions_and_failures(monkeypatch):
+    runner = AgentRunner(claude_bin="claude")
+    command = "python3 -c \"print('app')\""
+    monkeypatch.setattr(
+        AgentRunner,
+        "_run_claude",
+        lambda self, *a, **k: _command_result([command], failed=True),
+    )
+    failed = runner.probe_claude_commands(
+        "claude-sonnet-5-5", ClaudeConfig(), Path("."), [command]
+    )
+    assert not failed.ok and failed.failed and not failed.missing
+
+    monkeypatch.setattr(
+        AgentRunner, "_run_claude", lambda self, *a, **k: _claude_result(tool_calls=1)
+    )
+    missing = runner.probe_claude_commands(
+        "claude-sonnet-5-5", ClaudeConfig(), Path("."), [command]
+    )
+    assert not missing.ok and missing.inconclusive
+
+
+def test_auth_probe_budget_scales_from_the_rate_table(monkeypatch):
+    captured = {}
+
+    def fake_run(self, prompt, cwd, model, cfg, timeout=None, **kwargs):
+        captured["budget"] = cfg.max_budget_usd
+        return _claude_result(served_models=[model])
+
+    monkeypatch.setattr(AgentRunner, "_run_claude", fake_run)
+    from skilldiff.pricing import merge_pricing
+
+    pricing, _ = merge_pricing({}, ["claude-sonnet-5-5"], "claude")
+    probe = AgentRunner(claude_bin="claude").probe_claude_auth(
+        "claude-sonnet-5-5", ClaudeConfig(), pricing=pricing
+    )
+    assert probe.ok
+    assert captured["budget"] > 0.25
+
+
+def test_check_fails_when_the_canary_is_denied(tmp_path, monkeypatch, capsys, capable_cli):
+    from argparse import Namespace
+
+    from skilldiff.cli import cmd_check
+    from skilldiff.runner import ClaudeCommandProbe, ClaudeModelProbe
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: demo\n---\n")
+    (tmp_path / "tasks").mkdir()
+    (tmp_path / "tasks" / "t.yaml").write_text("id: t\nprompt: hi\n")
+    (tmp_path / "skilldiff.yaml").write_text(
+        "name: t\nskill: ./skill\nmodels: [claude-sonnet-5-5]\n"
+        "tasks: [./tasks/*.yaml]\n"
+    )
+    monkeypatch.setattr(
+        AgentRunner,
+        "probe_claude_auth",
+        lambda self, model, cfg, pricing=None, timeout=90: ClaudeModelProbe(
+            configured=model, ok=True, detail="ok", served_models=[model]
+        ),
+    )
+    monkeypatch.setattr(
+        AgentRunner,
+        "probe_claude_sandbox_canary",
+        lambda self, model, cfg, pricing=None, timeout=180: ClaudeCommandProbe(
+            ok=False,
+            denials=["Bash (Quoted text in this command can't be checked before it runs)"],
+        ),
+    )
+    code = cmd_check(Namespace(config=str(tmp_path / "skilldiff.yaml"), no_grade=True))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "FAIL  claude sandbox canary" in out
+    assert "Quoted text" in out
+
+
+def test_check_fails_when_the_served_model_differs(
+    tmp_path, monkeypatch, capsys, capable_cli
+):
+    from argparse import Namespace
+
+    from skilldiff.cli import cmd_check
+    from skilldiff.runner import ClaudeCommandProbe, ClaudeModelProbe
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: demo\n---\n")
+    (tmp_path / "tasks").mkdir()
+    (tmp_path / "tasks" / "t.yaml").write_text("id: t\nprompt: hi\n")
+    (tmp_path / "skilldiff.yaml").write_text(
+        "name: t\nskill: ./skill\nmodels: [claude-haiku-5-5]\n"
+        "tasks: [./tasks/*.yaml]\n"
+    )
+    monkeypatch.setattr(
+        AgentRunner,
+        "probe_claude_auth",
+        lambda self, model, cfg, pricing=None, timeout=90: ClaudeModelProbe(
+            configured=model,
+            ok=True,
+            detail="ok",
+            served_models=["claude-haiku-4-5-20251001"],
+        ),
+    )
+    monkeypatch.setattr(
+        AgentRunner,
+        "probe_claude_sandbox_canary",
+        lambda self, model, cfg, pricing=None, timeout=180: ClaudeCommandProbe(ok=True),
+    )
+    code = cmd_check(Namespace(config=str(tmp_path / "skilldiff.yaml"), no_grade=True))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "configured 'claude-haiku-5-5' was served as claude-haiku-4-5-20251001" in out
+
+
+def test_claude_assistant_usage_is_recorded_per_request():
+    stdout = "\n".join(
+        json.dumps(event)
+        for event in (
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "msg-1",
+                    "usage": {
+                        "input_tokens": 10,
+                        "cache_read_input_tokens": 1000,
+                        "cache_creation_input_tokens": 500,
+                        "output_tokens": 20,
+                    },
+                    "content": [],
+                },
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "msg-2",
+                    "usage": {
+                        "input_tokens": 12,
+                        "cache_read_input_tokens": 1500,
+                        "cache_creation_input_tokens": 0,
+                        "output_tokens": 30,
+                    },
+                    "content": [],
+                },
+            },
+            {"type": "result", "subtype": "success", "result": "done"},
+        )
+    )
+    parsed = parse_claude_output(stdout, [])
+    assert parsed["request_usage"] == [
+        {
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "cache_read_tokens": 1000,
+            "cache_creation_tokens": 500,
+        },
+        {
+            "input_tokens": 12,
+            "output_tokens": 30,
+            "cache_read_tokens": 1500,
+            "cache_creation_tokens": 0,
+        },
+    ]
+
+
+def test_eval_profile_rejects_an_unsandboxed_local_config():
+    with pytest.raises(ValueError, match="requires claude.sandbox"):
+        AgentRunner(claude_bin="claude").claude_command(
+            "hi", "claude-sonnet-5-5", ClaudeConfig(profile="eval", sandbox=False)
+        )
+
+
+def test_check_rejects_a_budget_below_the_observed_call_cost(
+    tmp_path, monkeypatch, capsys, capable_cli
+):
+    from argparse import Namespace
+
+    from skilldiff.cli import cmd_check
+    from skilldiff.runner import ClaudeCommandProbe, ClaudeModelProbe
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: demo\n---\n")
+    (tmp_path / "tasks").mkdir()
+    (tmp_path / "tasks" / "t.yaml").write_text("id: t\nprompt: hi\n")
+    (tmp_path / "skilldiff.yaml").write_text(
+        "name: t\nskill: ./skill\nmodels: [claude-sonnet-5-5]\n"
+        "tasks: [./tasks/*.yaml]\nclaude:\n  max_budget_usd: 0.05\n"
+    )
+    monkeypatch.setattr(
+        AgentRunner,
+        "probe_claude_auth",
+        lambda self, model, cfg, pricing=None, timeout=90: ClaudeModelProbe(
+            configured=model, ok=True, detail="ok", served_models=[model], cost=0.02
+        ),
+    )
+    monkeypatch.setattr(
+        AgentRunner,
+        "probe_claude_sandbox_canary",
+        lambda self, model, cfg, pricing=None, timeout=180: ClaudeCommandProbe(ok=True),
+    )
+    code = cmd_check(Namespace(config=str(tmp_path / "skilldiff.yaml"), no_grade=True))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "below four times the observed" in out
+
+
+def test_check_refuses_harness_cost_for_an_unrecognized_model(
+    tmp_path, monkeypatch, capsys, capable_cli
+):
+    from argparse import Namespace
+
+    from skilldiff.cli import cmd_check
+    from skilldiff.runner import ClaudeCommandProbe, ClaudeModelProbe
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: demo\n---\n")
+    (tmp_path / "tasks").mkdir()
+    (tmp_path / "tasks" / "t.yaml").write_text("id: t\nprompt: hi\n")
+    (tmp_path / "skilldiff.yaml").write_text(
+        "name: t\nskill: ./skill\nmodels: [claude-sonnet-5-5]\n"
+        "tasks: [./tasks/*.yaml]\ncost_basis: harness\n"
+    )
+    monkeypatch.setattr(
+        AgentRunner,
+        "probe_claude_auth",
+        lambda self, model, cfg, pricing=None, timeout=90: ClaudeModelProbe(
+            configured=model,
+            ok=True,
+            detail="ok",
+            served_models=[model],
+            unrecognized_models=[model],
+        ),
+    )
+    monkeypatch.setattr(
+        AgentRunner,
+        "probe_claude_sandbox_canary",
+        lambda self, model, cfg, pricing=None, timeout=180: ClaudeCommandProbe(ok=True),
+    )
+    code = cmd_check(Namespace(config=str(tmp_path / "skilldiff.yaml"), no_grade=True))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "cost_basis is harness" in out
+
+
+def test_check_fails_when_a_task_runtime_probe_is_refused(
+    tmp_path, monkeypatch, capsys, capable_cli
+):
+    from argparse import Namespace
+
+    from skilldiff.cli import cmd_check
+    from skilldiff.runner import ClaudeCommandProbe, ClaudeModelProbe
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: demo\n---\n")
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("ok = True\n")
+    (tmp_path / "tasks").mkdir()
+    (tmp_path / "tasks" / "t.yaml").write_text(
+        "id: t\nprompt: hi\nrepo: ../fixture\n"
+        'runtime_probe: "python3 -c \\"print(1)\\""\n'
+    )
+    (tmp_path / "skilldiff.yaml").write_text(
+        "name: t\nskill: ./skill\nmodels: [claude-sonnet-5-5]\n"
+        "tasks: [./tasks/*.yaml]\n"
+    )
+    monkeypatch.setattr(
+        AgentRunner,
+        "probe_claude_auth",
+        lambda self, model, cfg, pricing=None, timeout=90: ClaudeModelProbe(
+            configured=model, ok=True, detail="ok", served_models=[model]
+        ),
+    )
+    monkeypatch.setattr(
+        AgentRunner,
+        "probe_claude_sandbox_canary",
+        lambda self, model, cfg, pricing=None, timeout=180: ClaudeCommandProbe(ok=True),
+    )
+    monkeypatch.setattr(AgentRunner, "preflight", lambda self, *a, **k: {})
+    monkeypatch.setattr(
+        AgentRunner,
+        "probe_claude_commands",
+        lambda self, *a, **k: ClaudeCommandProbe(
+            ok=False, denials=["Bash (runtime probe denied)"]
+        ),
+    )
+    code = cmd_check(Namespace(config=str(tmp_path / "skilldiff.yaml"), no_grade=True))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "runtime_probe refused" in out

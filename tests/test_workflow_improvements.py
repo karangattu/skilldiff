@@ -72,7 +72,7 @@ def test_mounted_fixtures_in_pr_mode_and_workspace_overlay(tmp_path: Path) -> No
     exp_file = tmp_path / "skilldiff.yaml"
     exp_file.write_text(
         f"name: pr-eval\npr:\n  repo: ./repo\n  base: {base_sha}\n  head: {base_sha}\n"
-        "models:\n  - sonnet\ntasks:\n  - ./tasks/*.yaml\n",
+        "models:\n  - claude-sonnet-5-5\ntasks:\n  - ./tasks/*.yaml\n",
         encoding="utf-8",
     )
     exp_cfg, tasks = load_experiment(exp_file)
@@ -123,7 +123,7 @@ def test_env_and_budget_limits_applied(tmp_path: Path) -> None:
     (skill / "SKILL.md").write_text("---\nname: s\ndescription: d\n---\nbody\n", encoding="utf-8")
     exp_file = tmp_path / "skilldiff.yaml"
     exp_file.write_text(
-        "name: e\nskill: ./skill\nmodels:\n  - sonnet\ntasks:\n  - ./task.yaml\n"
+        "name: e\nskill: ./skill\nmodels:\n  - claude-sonnet-5-5\ntasks:\n  - ./task.yaml\n"
         "max_turns: 5\nmax_tool_budget: 3\nterminate_on_ceiling: true\n"
         "env:\n  PYTHONPATH: /tmp/custom-shiny\n",
         encoding="utf-8",
@@ -193,7 +193,7 @@ def test_check_fail_on_ceiling_and_terminate_on_ceiling(
     )
     exp_file = tmp_path / "skilldiff.yaml"
     exp_file.write_text(
-        "name: ceil\nskill: ./skill\nmodels:\n  - sonnet\ntasks:\n  - ./task.yaml\n"
+        "name: ceil\nskill: ./skill\nmodels:\n  - claude-sonnet-5-5\ntasks:\n  - ./task.yaml\n"
         "runs: 3\nterminate_on_ceiling: true\n",
         encoding="utf-8",
     )
@@ -267,22 +267,29 @@ def test_adoption_failure_in_aggregation_diagnose_and_ci(tmp_path: Path) -> None
 
 
 def test_py_shiny_troubleshooting_pack_validates(
-    monkeypatch: pytest.MonkeyPatch, capable_cli, conversation_cli
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capable_cli, conversation_cli
 ) -> None:
+    import shutil
+
     monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
     monkeypatch.setenv("CLAUDE_BIN", conversation_cli)
-    pack_cfg = (
+    source = (
         Path(__file__).resolve().parents[1]
-        / "examples/py-shiny-troubleshooting/skilldiff.yaml"
+        / "examples/py-shiny-troubleshooting"
+    )
+    pack_root = tmp_path / "py-shiny-troubleshooting"
+    shutil.copytree(source, pack_root)
+    pack_cfg = pack_root / "skilldiff.yaml"
+    # The shipped example keeps its historical alias; pin a full ID in the copy
+    # so this test exercises the current hard-fail policy without editing examples.
+    pack_cfg.write_text(
+        pack_cfg.read_text(encoding="utf-8").replace(
+            "models:\n  - sonnet\n", "models:\n  - claude-sonnet-5-5\n"
+        ),
+        encoding="utf-8",
     )
     exp_cfg, tasks = load_experiment(pack_cfg)
     assert len(tasks) == 6
     parser = build_parser()
     args = parser.parse_args(["check", "-c", str(pack_cfg), "--no-probe", "--fail-on-ceiling"])
-    rc = cmd_check(args)
-    shutil_runs = pack_cfg.parent / "runs"
-    if shutil_runs.exists():
-        import shutil
-
-        shutil.rmtree(shutil_runs, ignore_errors=True)
-    assert rc == 0
+    assert cmd_check(args) == 0

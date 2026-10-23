@@ -6,16 +6,22 @@ reproduce, and the closing decision your summary must end with.
 
 ## API-equivalent cost
 
-If the run recorded `pricing:` rates (source, date, and per-model rates per 1M
-tokens, written to `skilldiff.yaml` before the run), the report includes an
-**API-equivalent cost** table — recorded token breakdown per arm × those
-rates — and regenerating the report reproduces the estimate exactly. Carry
-those costs into the final evaluation table in your summary. If the run has
-no recorded rates, look up the current per-token prices on the providers'
-own pricing pages yourself, multiply them by the token counts in the report,
-and show the API-equivalent cost per arm, naming the price source and date
-next to the table. Label costs computed with newly looked-up rates as
-estimates; do not present them as the run's recorded pricing.
+Claude models use a built-in rate table keyed by full model ID, so a new Claude
+run needs no `pricing:` block. Add `pricing:` rates to override the table or to
+price another provider; the report includes an **API-equivalent cost** table from
+the recorded token breakdown, and regenerating the report reproduces the estimate.
+Carry those costs into the final evaluation table in your summary. If the run has
+no recorded rates, look up the current per-token prices on the providers' own
+pricing pages yourself, multiply them by the token counts in the report, and show
+the API-equivalent cost per arm, naming the price source and date next to the
+table. Label costs computed with newly looked-up rates as estimates; do not present
+them as the run's recorded pricing.
+
+Haiku 5.5 has two prompt-size tiers (up to and over 100K tokens). SkillDiff prices
+each request when Claude's stream records per-request usage. Without that usage,
+the decision cost is `N/A`; `tier_policy: upper_bound` adds a labelled planning
+estimate that the SHIP/DO NOT SHIP calculation ignores. Do not replace an `N/A`
+with a high-tier number in the decision.
 
 For Codex runs, if usage includes input and output counts but omits
 `cache_write_input_tokens`, calculate totals and API-equivalent cost from the
@@ -54,14 +60,17 @@ turn, not measured prompt injection or spend.
 
 ## Recorded decision cost basis
 
-The evaluation table always labels its API estimate. The closing decision uses
-`cost_basis: harness` by default. A run configured with `api-equivalent` uses
-its saved rates and measured usage for cost comparisons, uncertainty, and its
-verdict across report formats and terminal output. Unknown usage or rates stay
-`N/A`. Original harness cost is preserved in arm records. Results with no basis
-retain the historical harness interpretation. Looking up prices after a run
-can add a labelled estimate to a summary, but must not change its recorded
-verdict or masquerade as pre-registered pricing.
+The evaluation table always labels its API estimate. Claude subscription runs
+default to `cost_basis: api-equivalent`; API-key and other-harness runs default to
+`harness`. Full Claude model IDs use the built-in table. A run configured with
+`api-equivalent` uses its saved rates and measured usage for cost comparisons,
+uncertainty, and its verdict across report formats and terminal output. Unknown
+usage or rates stay `N/A`. Original harness cost is preserved in arm records.
+Results with no basis retain the historical harness interpretation. Looking up
+prices after a run can add a labelled estimate to a summary, but must not change
+its recorded verdict or masquerade as pre-registered pricing. A run that used a
+bare model alias or an unrecognized model is not eligible for a harness-cost
+decision; pin the full model ID or use API-equivalent cost.
 
 Discovery preflight establishes skill availability, not adoption. Report
 "Skill loaded" from transcript evidence. The report's **Skill adoption and next
@@ -86,6 +95,15 @@ directories such as `.venv` and `node_modules` collapsed) and Run details shows
 status, score, and checks before cost, time, turns, and tokens. Incomplete trial
 telemetry and diffs are audit evidence; incomplete pairs do not enter this table
 or the decision.
+
+## Harness diagnostics
+
+The main report shows denials with their stated reasons, configured-versus-served
+models, unrecognized model IDs, and rate-limit retry counts in a **Harness
+diagnostics** section. `diagnose` uses the same summary. Treat any denial,
+model mismatch, or retry cluster as an evaluation-infrastructure problem before
+blaming the skill. A profile can pass the canary and still hit a task-specific
+runtime probe; `check` runs those probes through the same boundary.
 
 ## Closing decision
 

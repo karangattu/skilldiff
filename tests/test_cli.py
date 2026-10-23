@@ -61,6 +61,8 @@ def test_cli_init_and_overwrite(tmp_path: Path, monkeypatch):
     assert generated_config["claude"]["permission_mode"] == "acceptEdits"
     assert generated_config["claude"]["allowed_tools"] == []
     assert generated_config["claude"]["isolate"] is True
+    assert generated_config["models"] == ["claude-sonnet-5-5"]
+    assert generated_config["cost_basis"] == "api-equivalent"
 
     ret_no_force = cmd_init(args)
     assert ret_no_force == 1
@@ -79,7 +81,7 @@ def test_cli_run_and_results(tmp_path: Path, monkeypatch, capsys):
     cfg_file = tmp_path / "skilldiff.yaml"
     cfg_file.write_text(
         "name: test-exp\nskill: ./skills/changelog-style\n"
-        "models:\n  - sonnet\ntasks:\n  - ./tasks/*.yaml\nruns: 1\n"
+        "models:\n  - claude-sonnet-5-5\ntasks:\n  - ./tasks/*.yaml\nruns: 1\n"
     )
 
     ret_run = cmd_run(Args(config="skilldiff.yaml", runs=1))
@@ -88,7 +90,7 @@ def test_cli_run_and_results(tmp_path: Path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "test-exp" in captured.out
     assert "Task score" in captured.out
-    assert "[1/1] sonnet · changelog-entry · run 1" in captured.out
+    assert "[1/1] claude-sonnet-5-5 · changelog-entry · run 1" in captured.out
     assert "Report:" in captured.out
     assert "report.html" in captured.out
     assert "| App | Arm | Score | Time | Input | Cached input |" in captured.out
@@ -135,7 +137,7 @@ def test_cli_check_demo(tmp_path: Path, monkeypatch, capsys, capable_cli):
     fake.chmod(0o755)
     monkeypatch.setenv("CLAUDE_BIN", str(fake))
 
-    code = cmd_check(Args(config="skilldiff.yaml", no_grade=False))
+    code = cmd_check(Args(config="skilldiff.yaml", no_grade=False, no_probe=True))
     out = capsys.readouterr().out
     assert code == 0, out
     assert "untouched fixture scores 0%" in out
@@ -350,3 +352,22 @@ def test_cli_init_pr_install_requires_pr(tmp_path, capsys):
     assert "--pr-install requires --pr" in capsys.readouterr().err
 
 
+
+
+def test_cli_init_claude_eval_template(tmp_path: Path, capsys):
+    from skilldiff.config import load_experiment
+
+    exp = tmp_path / "claude-eval"
+    code = cmd_init(Args(force=False, dir=str(exp), template="claude-eval"))
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "profile: eval" in out.lower() or "opt-in" in out.lower()
+
+    cfg, tasks = load_experiment(exp / "skilldiff.yaml")
+    assert cfg.models == ["claude-sonnet-5-5"]
+    assert cfg.cost_basis == "api-equivalent"
+    assert cfg.claude.profile == "eval"
+    assert cfg.thresholds["acceptable_score_regression_pp"] == 5
+    assert (exp / "tasks" / "dev" / "changelog-entry.yaml").is_file()
+    assert (exp / "tasks" / "heldout" / "changelog-entry-heldout.yaml").is_file()
+    assert {task.split for task in tasks} == {"dev", "held-out"}

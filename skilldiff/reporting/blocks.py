@@ -10,6 +10,7 @@ from skilldiff.adoption import (
     no_effect_findings,
     task_invocation_overrides,
 )
+from skilldiff.harness_diagnostics import denial_sentence, summarize_harness_diagnostics
 from skilldiff.reporting.checks import (
     _check_table_rows,
     compare_checks,
@@ -1032,17 +1033,74 @@ def build_report_blocks(
             note += " The run was interrupted, so planned pairs reflect the full design."
         blocks.append(("p", note))
 
+    harness_diag = summarize_harness_diagnostics(
+        {
+            "control": control_runs,
+            "treatment": treatment_runs,
+            **({"baseline": baseline_runs} if baseline_runs else {}),
+        },
+        results.get("retries") or [],
+    )
+    if harness_diag["has_issues"]:
+        blocks.append(("h", 2, "Harness diagnostics"))
+        items: list[str] = []
+        for arm, data in sorted(harness_diag["denials"].items()):
+            items.append(denial_sentence(arm, data))
+        if harness_diag["model_mismatches"]:
+            mismatches = sorted({
+                f"{item['configured']} served as {', '.join(item['served'])} "
+                f"({item['arm']} · {item['task_id']})"
+                for item in harness_diag["model_mismatches"]
+            })
+            items.append("Model mismatch: " + "; ".join(mismatches))
+        if harness_diag["unrecognized"]:
+            flagged = sorted({
+                model
+                for item in harness_diag["unrecognized"]
+                for model in item["models"]
+            })
+            items.append(
+                "Unrecognized by the Claude CLI: "
+                + ", ".join(f"`{model}`" for model in flagged)
+            )
+        retries = harness_diag["retries"]
+        if retries.get("count"):
+            arms = ", ".join(
+                f"{arm} {count}"
+                for arm, count in sorted((retries.get("by_arm") or {}).items())
+            )
+            cost = (
+                f"; preserved cost ${retries['cost']:.2f}"
+                if retries.get("cost") is not None
+                else ""
+            )
+            items.append(
+                f"Rate-limit retries: {retries['count']} event(s) ({arms}){cost}. "
+                "Retried attempts are excluded from paired decisions."
+            )
+        if items:
+            blocks.append(("ul", items))
+
     pricing = results.get("pricing") or {}
     if pricing and (control_runs or treatment_runs):
         currency = str(pricing.get("currency") or "USD")
+        tier_policy = str(results.get("tier_policy") or "na")
         priced_control, priced_treatment = _paired_metric_runs(
             control_runs, treatment_runs, "token_breakdown"
         )
-        c_api = _api_equivalent_summary(priced_control, pricing)
-        s_api = _api_equivalent_summary(priced_treatment, pricing)
+        c_api = _api_equivalent_summary(priced_control, pricing, tier_policy=tier_policy)
+        s_api = _api_equivalent_summary(priced_treatment, pricing, tier_policy=tier_policy)
         cost_change = None
         if c_api["cost"] is not None and s_api["cost"] is not None:
             cost_change = float(s_api["cost"]) - float(c_api["cost"])
+
+        def _api_cost(api: dict[str, Any]) -> str:
+            parts = []
+            if api["cost"] is not None:
+                parts.append(_fmt_money(api["cost"], currency))
+            if tier_policy == "upper_bound" and api["upper_bound_cost"] is not None:
+                parts.append(f"≤ {_fmt_money(api['upper_bound_cost'], currency)} (est.)")
+            return " + ".join(parts) if parts else "N/A"
 
         def _api_row(arm: str, api: dict[str, Any]) -> list[Cell]:
             t = api["totals"]
@@ -1052,7 +1110,7 @@ def build_report_blocks(
                     [_fmt_tokens(t[field]) for field, _ in _API_TOKEN_FIELDS]
                     if api["eligible_runs"] else ["N/A"] * len(_API_TOKEN_FIELDS)
                 ),
-                _fmt_money(api["cost"], currency),
+                _api_cost(api),
             ]
 
         diff_row: list[Cell] = [f"Change ({label} − {control_label})"]
@@ -1083,16 +1141,39 @@ def build_report_blocks(
             )
         )
         rates = pricing.get("rates") or {}
+
+        def _rate_text(rate: dict[str, Any]) -> str:
+            tiers = rate.get("tiers")
+            if isinstance(tiers, list) and tiers:
+                parts = []
+                for tier in tiers:
+                    limit = tier.get("max_prompt_tokens")
+                    label = f"≤{int(limit):,}" if limit else "larger prompts"
+                    parts.append(
+                        f"{label}: input {_fmt_money(tier.get('input'), currency)}, "
+                        f"output {_fmt_money(tier.get('output'), currency)}, "
+                        f"cache read {_fmt_money(tier.get('cache_read'), currency)}, "
+                        f"cache write {_fmt_money(tier.get('cache_write'), currency)}"
+                    )
+                return "; ".join(parts)
+            return (
+                f"input {_fmt_money(rate.get('input'), currency)}, "
+                f"output {_fmt_money(rate.get('output'), currency)}, "
+                f"cache read {_fmt_money(rate.get('cache_read'), currency)}, "
+                f"cache write {_fmt_money(rate.get('cache_write'), currency)}"
+            )
+
         rate_bits = "; ".join(
-            f"`{m}`: input {_fmt_money(r.get('input'), currency)}, "
-            f"output {_fmt_money(r.get('output'), currency)}, "
-            f"cache read {_fmt_money(r.get('cache_read'), currency)}, "
-            f"cache write {_fmt_money(r.get('cache_write'), currency)}"
+            f"`{m}`: {_rate_text(r)}"
+            + (
+                f" (from {r.get('source')}, checked {r.get('date')})"
+                if r.get("source") and r.get("date")
+                else ""
+            )
             for m, r in sorted(rates.items())
         )
         note = (
-            f"Rates in {currency} per 1M tokens from {pricing.get('source')} "
-            f"(checked {pricing.get('date')}). {rate_bits}. "
+            f"Rates in {currency} per 1M tokens. {rate_bits}. "
             "Each paired eligible run's recorded token counts × its model's rates, "
             "summed over matched pairs. Unpaired and failed attempts remain in "
             "Run details. "
@@ -1108,6 +1189,21 @@ def build_report_blocks(
                 f" No rates recorded for {', '.join(f'`{m}`' for m in unpriced)}: "
                 "those runs are excluded from the API-equivalent cost."
             )
+        unknown_basis = sorted(
+            set(_api_equivalent_summary(control_runs, pricing)["unknown_basis"])
+            | set(_api_equivalent_summary(treatment_runs, pricing)["unknown_basis"])
+        )
+        if unknown_basis:
+            if tier_policy == "upper_bound":
+                note += (
+                    " Tiered prompts with no per-request usage are shown as labelled "
+                    "upper-bound estimates and are excluded from the decision cost."
+                )
+            else:
+                note += (
+                    " Tiered prompts with no per-request usage are N/A for the decision; "
+                    "set `tier_policy: upper_bound` only for a labelled planning estimate."
+                )
         blocks.append(("p", note))
 
     if control_runs:

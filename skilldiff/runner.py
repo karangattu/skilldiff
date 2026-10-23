@@ -15,7 +15,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -29,6 +29,7 @@ from skilldiff.config import (
 )
 from skilldiff.conversations import Conversation
 from skilldiff.preflight import codex_env, protected_read_paths
+from skilldiff.pricing import one_call_cost_estimate
 from skilldiff.processes import OwnedDescendants
 from skilldiff.telemetry import redact_secrets
 
@@ -74,6 +75,9 @@ class RunResult:
     unrecognized_models: Optional[list[str]] = None
     session_id: Optional[str] = None
     reported_total_tokens: Optional[int] = None
+    # Claude per-request usage in stream order. Tiered pricing uses each request's
+    # own prompt size; the result event only gives session totals.
+    request_usage: Optional[list[dict[str, int]]] = None
 
 
 @dataclass
@@ -84,6 +88,43 @@ class ExecResult:
     duration: float
     timed_out: bool = False
     cleanup_error: Optional[str] = None
+
+
+@dataclass
+class ClaudeModelProbe:
+    """What one authenticated call established about the configured model."""
+
+    configured: str
+    ok: bool
+    detail: str
+    served_models: list[str] = field(default_factory=list)
+    unrecognized_models: list[str] = field(default_factory=list)
+    budget_failure: bool = False
+    # Harness-reported cost for the one probe call, when available.
+    cost: Optional[float] = None
+
+    @property
+    def mismatch(self) -> bool:
+        return bool(self.served_models) and self.configured not in self.served_models
+
+    @property
+    def extra_served(self) -> list[str]:
+        return [model for model in self.served_models if model != self.configured]
+
+
+@dataclass
+class ClaudeCommandProbe:
+    """Whether named Bash shapes ran under the configured Claude permissions."""
+
+    ok: bool
+    denials: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+    detail: str = ""
+
+    @property
+    def inconclusive(self) -> bool:
+        return bool(self.missing)
 
 
 # Variables that tie a process to the agent session it runs in. When skilldiff is
@@ -839,6 +880,16 @@ def claude_scratch_dirs(temp_dir: Optional[Path] = None) -> list[str]:
     return list(dict.fromkeys(dirs))
 
 
+def claude_effective_permission_mode(claude_cfg: ClaudeConfig) -> Optional[str]:
+    """The permission mode a profile selects without overriding an explicit choice."""
+    if (
+        getattr(claude_cfg, "profile", None) == "eval"
+        and not getattr(claude_cfg, "permission_mode_explicit", False)
+    ):
+        return "bypassPermissions"
+    return claude_cfg.permission_mode
+
+
 def claude_sandbox_settings(
     claude_cfg: ClaudeConfig,
     isolation: str = "local",
@@ -851,6 +902,9 @@ def claude_sandbox_settings(
     scratch directories, and reaches only ``allowed_domains``. Grader, solution, and
     skill sources are unreadable and unwritable to commands. The sandbox cannot start
     inside another one, so external isolation replaces it.
+
+    ``profile: eval`` keeps that OS boundary and adds localhost binding for app
+    servers. It does not allow unsandboxed commands.
     """
     if not claude_cfg.sandbox or isolation in EXTERNAL_ISOLATION:
         return None
@@ -868,8 +922,18 @@ def claude_sandbox_settings(
         "allowUnsandboxedCommands": False,
         "filesystem": filesystem,
     }
-    if claude_cfg.allowed_domains:
-        sandbox["network"] = {"allowedDomains": list(claude_cfg.allowed_domains)}
+    eval_profile = getattr(claude_cfg, "profile", None) == "eval"
+    domains = list(claude_cfg.allowed_domains)
+    if eval_profile:
+        for host in ("localhost", "127.0.0.1", "[::1]"):
+            if host not in domains:
+                domains.append(host)
+    if domains or eval_profile:
+        network: dict[str, Any] = {"allowedDomains": domains}
+        if eval_profile:
+            # App servers must bind and connect on loopback.
+            network["allowLocalBinding"] = True
+        sandbox["network"] = network
     return {
         "permissions": {"additionalDirectories": scratch_dirs},
         "sandbox": sandbox,
@@ -1736,22 +1800,24 @@ class AgentRunner:
         return result
 
     def probe_claude_auth(
-        self, model: str, claude_cfg: ClaudeConfig, timeout: float = 90
-    ) -> tuple[bool, str, list[str]]:
-        """Make one tiny authenticated call so expired credentials fail before a run.
-
-        Returns (ok, detail, notes). Uses a single turn, no tools, and a small budget
-        cap. `notes` are warnings about the model the harness actually served.
-        """
+        self,
+        model: str,
+        claude_cfg: ClaudeConfig,
+        pricing: Optional[dict[str, Any]] = None,
+        timeout: float = 90,
+    ) -> ClaudeModelProbe:
+        """Make one tiny authenticated call so bad models and logins fail early."""
         import dataclasses
 
-        # The budget is enforced against the CLI's own cost figure, which can exceed
-        # list price for models it does not recognize. A cap near the real cost of
-        # one call makes the probe fail for budget reasons, not auth reasons.
+        estimated = one_call_cost_estimate(pricing or {}, model)
+        # The CLI enforces its cap against its own cost figure, which can exceed
+        # list price for models it does not recognize. Size the cap from the rate
+        # table instead of a fixed guess, with a small floor for very cheap models.
+        probe_budget = max(0.25, (estimated or 0.0) * 4.0)
         probe_cfg = dataclasses.replace(
             claude_cfg,
             max_turns=1,
-            max_budget_usd=0.25,
+            max_budget_usd=round(probe_budget, 4),
             allowed_tools=[],
             effort=None,
             permission_mode=None,
@@ -1760,53 +1826,130 @@ class AgentRunner:
             result = self._run_claude(
                 "Reply with the single word OK.", Path(tmp), model, probe_cfg, timeout=timeout
             )
-        notes: list[str] = []
-        served = result.served_models or []
-        if served and model not in served:
-            notes.append(
-                f"model '{model}' was served as {', '.join(served)}. Pin the full model ID "
-                "in models: so the configured name, pricing rates, and reports refer to "
-                "the model that ran."
-            )
-        if result.unrecognized_models:
-            notes.append(
-                f"the Claude CLI does not recognize {', '.join(result.unrecognized_models)}. "
-                "Its harness-reported cost may not match list prices; use "
-                "cost_basis: api-equivalent with recorded rates."
-            )
-        if result.status == "ok" and not result.error:
-            return True, "authenticated call succeeded", notes
-        detail = (result.error or result.status or "unknown failure").strip().splitlines()
-        return False, (detail[0] if detail else "unknown failure")[:300], notes
+        detail = "authenticated call succeeded"
+        ok = result.status == "ok" and not result.error
+        if not ok:
+            lines = (result.error or result.status or "unknown failure").strip().splitlines()
+            detail = (lines[0] if lines else "unknown failure")[:300]
+        budget_failure = any(
+            token in detail.lower()
+            for token in ("max_budget", "budget", "spend")
+        )
+        return ClaudeModelProbe(
+            configured=model,
+            ok=ok,
+            detail=detail,
+            served_models=list(result.served_models or []),
+            unrecognized_models=list(result.unrecognized_models or []),
+            budget_failure=budget_failure,
+            cost=result.cost,
+        )
 
-    def probe_claude_sandbox_canary(
-        self, model: str, claude_cfg: ClaudeConfig, timeout: float = 180
-    ) -> tuple[bool, list[str], bool]:
-        """Run each command shape from `_CANARY_COMMANDS` once and report refusals.
-
-        Returns (ok, denials, inconclusive). `inconclusive` is True when the agent
-        ran fewer command shapes than were requested, so a clean result proves little.
-        """
+    def probe_claude_commands(
+        self,
+        model: str,
+        claude_cfg: ClaudeConfig,
+        cwd: Path,
+        commands: list[str],
+        pricing: Optional[dict[str, Any]] = None,
+        timeout: float = 180,
+    ) -> ClaudeCommandProbe:
+        """Run exact Bash shapes through Claude and report refusals or omissions."""
+        if not commands:
+            return ClaudeCommandProbe(ok=True)
         import dataclasses
 
+        estimated = one_call_cost_estimate(pricing or {}, model) or 0.0
         probe_cfg = dataclasses.replace(
             claude_cfg,
-            max_turns=len(_CANARY_COMMANDS) + 4,
-            max_budget_usd=0.25,
+            max_turns=len(commands) + 4,
+            max_budget_usd=round(max(0.25, estimated * (len(commands) + 2)), 4),
             effort=None,
         )
         prompt = (
             "Run each of these commands as its own Bash tool call, in order, exactly as "
-            "written. Do not combine them:\n"
-            + "\n".join(f"{i}. {cmd}" for i, cmd in enumerate(_CANARY_COMMANDS, 1))
+            "written. Do not edit, quote, combine, or replace them:\n"
+            + "\n\n".join(f"{i}.\n{cmd}" for i, cmd in enumerate(commands, 1))
         )
+        result = self._run_claude(prompt, cwd, model, probe_cfg, timeout=timeout)
+        parsed = parse_claude_output(result.transcript.split("STDOUT:\n", 1)[-1]
+                                     .split("\n\nSTDERR:", 1)[0], [])
+        denials = list(result.permission_denials or [])
+        missing: list[str] = []
+        failed: list[str] = []
+        tool_uses = parsed.get("tool_uses") or []
+        tool_results = parsed.get("tool_results") or {}
+        for command in commands:
+            expected = _normalize_command(command)
+            matches = [
+                use for use in tool_uses
+                if str(use.get("name") or "").lower() in {"bash", "shell"}
+                and expected in _normalize_command(
+                    str((use.get("input") or {}).get("command") or "")
+                )
+            ]
+            if not matches:
+                missing.append(command.splitlines()[0][:120])
+                continue
+            for use in matches:
+                tool_id = str(use.get("id") or "")
+                tool_result = tool_results.get(tool_id) or {}
+                if tool_result.get("is_error"):
+                    failed.append(
+                        f"{command.splitlines()[0][:80]}: "
+                        f"{str(tool_result.get('content') or '')[:160]}"
+                    )
+        ok = (
+            result.status == "ok"
+            and not result.error
+            and not denials
+            and not missing
+            and not failed
+        )
+        detail = result.error or ""
+        if not detail and failed:
+            detail = failed[0]
+        if not detail and missing:
+            detail = "the agent did not run: " + "; ".join(missing[:3])
+        return ClaudeCommandProbe(
+            ok=ok,
+            denials=denials,
+            missing=missing,
+            failed=failed,
+            detail=str(detail)[:500],
+        )
+
+    def probe_claude_sandbox_canary(
+        self,
+        model: str,
+        claude_cfg: ClaudeConfig,
+        pricing: Optional[dict[str, Any]] = None,
+        timeout: float = 180,
+    ) -> ClaudeCommandProbe:
+        """Run the command shapes the configured profile must permit."""
+        commands = list(_CANARY_COMMANDS)
+        if getattr(claude_cfg, "profile", None) == "eval":
+            commands.extend(_EVAL_CANARY_COMMANDS)
         with tempfile.TemporaryDirectory(prefix="skilldiff-canary-probe-") as tmp:
-            result = self._run_claude(
-                prompt, Path(tmp), model, probe_cfg, timeout=timeout
+            cwd = Path(tmp)
+            if getattr(claude_cfg, "profile", None) == "eval":
+                # Real eval workspaces already have a git repository; the sandbox
+                # protects .git creation, so seed one before the sandboxed commands.
+                try:
+                    subprocess.run(
+                        ["git", "init", "-q", str(cwd)],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    return ClaudeCommandProbe(
+                        ok=False,
+                        detail=f"could not prepare the canary git repository: {exc}",
+                    )
+            return self.probe_claude_commands(
+                model, claude_cfg, cwd, commands, pricing=pricing, timeout=timeout
             )
-        denials = result.permission_denials or []
-        ran = result.tool_calls or 0
-        return result.status == "ok", denials, ran < len(_CANARY_COMMANDS)
 
     def claude_command(
         self,
@@ -1817,6 +1960,15 @@ class AgentRunner:
         protected_paths: Optional[list[str]] = None,
         temp_dir: Optional[Path] = None,
     ) -> list[str]:
+        if (
+            getattr(claude_cfg, "profile", None) == "eval"
+            and not claude_cfg.sandbox
+            and isolation == "local"
+        ):
+            raise ValueError(
+                "claude.profile: eval requires claude.sandbox: true; "
+                "sandbox: false would expose grader and skill sources"
+            )
         cmd = [
             claude_cfg.bin_path or self.claude_bin,
             "-p",
@@ -1835,7 +1987,7 @@ class AgentRunner:
         )
         if settings:
             cmd.extend(["--settings", json.dumps(settings)])
-        permission_mode = claude_cfg.permission_mode
+        permission_mode = claude_effective_permission_mode(claude_cfg)
         if (
             claude_cfg.sandbox
             and isolation in EXTERNAL_ISOLATION
@@ -1929,6 +2081,7 @@ class AgentRunner:
             unrecognized_models=claude_unrecognized_models(execution.stderr),
             session_id=parsed["session_id"],
             reported_total_tokens=parsed["reported_total_tokens"],
+            request_usage=parsed["request_usage"],
         )
         return _finalize_status(result, execution)
 
@@ -2305,11 +2458,37 @@ _CANARY_COMMANDS = (
     "python3 -c \"print('canary')\"",
     "VAR='test'; echo \"$VAR\"",
     "echo \"quoted string test\"",
-    "python3 -c \"import time; time.sleep(0.2)\" & PID=$!; wait $PID; echo \"done $?\"",
     "echo ok > \"$(echo canary-out.txt)\"",
     "cd . && git --version",
     "echo {a,b}\"c\"",
 )
+
+# App evaluations also need managed background launch and localhost. These run
+# only with claude.profile: eval, which keeps the OS sandbox on.
+_EVAL_CANARY_COMMANDS = (
+    "python3 -c \"import time; print('bg'); time.sleep(0.2)\" & PID=$!; "
+    "wait $PID; echo \"done $?\"",
+    """python3 - <<'PY'
+import socket
+server = socket.socket()
+server.bind(("127.0.0.1", 0))
+server.listen(1)
+port = server.getsockname()[1]
+client = socket.create_connection(("127.0.0.1", port), timeout=2)
+conn, _ = server.accept()
+conn.sendall(b"ok")
+print(client.recv(2).decode())
+conn.close(); client.close(); server.close()
+PY""",
+    "printf 'canary\\n' > tracked.txt; git add tracked.txt; "
+    "git -c user.email=canary@example.invalid -c user.name=canary "
+    "commit -qm canary; git status --porcelain",
+)
+
+
+def _normalize_command(value: str) -> str:
+    return " ".join(str(value or "").split())
+
 
 # Marker the Claude CLI writes to stderr for a model ID it does not recognize,
 # followed by a JSON payload naming the model.
@@ -2352,11 +2531,16 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
         "served_models": None,
         "session_id": None,
         "reported_total_tokens": None,
+        "request_usage": None,
+        "tool_uses": [],
+        "tool_results": {},
     }
     last_text: Optional[str] = None
     saw_result = False
     usage_snapshots = []
     turn_counts = []
+    request_usage: list[dict[str, int]] = []
+    seen_message_ids: set[str] = set()
     # Skill evidence is only a hit once the call succeeded. A tool_use without a
     # matching tool_result is unconfirmed, not a hit.
     pending_hits: dict[str, str] = {}
@@ -2392,7 +2576,29 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
         elif event_type == "assistant":
             if parsed["tool_calls"] is None:
                 parsed["tool_calls"] = 0
-            content = (event.get("message") or {}).get("content")
+            message = event.get("message") or {}
+            usage = message.get("usage") if isinstance(message, dict) else None
+            if isinstance(usage, dict):
+                message_id = str(message.get("id") or "")
+                if not message_id or message_id not in seen_message_ids:
+                    if message_id:
+                        seen_message_ids.add(message_id)
+                    input_tokens = count(usage.get("input_tokens"))
+                    output_tokens = count(usage.get("output_tokens"))
+                    if input_tokens is not None and output_tokens is not None:
+                        request_usage.append(
+                            {
+                                "input_tokens": input_tokens,
+                                "output_tokens": output_tokens,
+                                "cache_read_tokens": count(
+                                    usage.get("cache_read_input_tokens")
+                                ) or 0,
+                                "cache_creation_tokens": count(
+                                    usage.get("cache_creation_input_tokens")
+                                ) or 0,
+                            }
+                        )
+            content = message.get("content") if isinstance(message, dict) else None
             if not isinstance(content, list):
                 continue
             for block in content:
@@ -2403,6 +2609,13 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                 elif block.get("type") == "tool_use":
                     parsed["tool_calls"] += 1
                     tool_input = block.get("input") or {}
+                    parsed["tool_uses"].append(
+                        {
+                            "id": str(block.get("id") or ""),
+                            "name": str(block.get("name") or ""),
+                            "input": tool_input if isinstance(tool_input, dict) else {},
+                        }
+                    )
                     if not isinstance(tool_input, dict):
                         parsed["is_error"] = True
                         parsed["error"] = "Malformed Claude tool input"
@@ -2425,6 +2638,10 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                 if not isinstance(block, dict) or block.get("type") != "tool_result":
                     continue
                 tool_use_id = str(block.get("tool_use_id") or "")
+                parsed["tool_results"][tool_use_id] = {
+                    "is_error": bool(block.get("is_error")),
+                    "content": block.get("content"),
+                }
                 evidence = pending_hits.pop(tool_use_id, None)
                 if evidence is None:
                     continue
@@ -2531,6 +2748,7 @@ def parse_claude_output(stdout: str, skill_names: list[str]) -> dict[str, Any]:
         parsed[target] = (sum(values) if values and all(v is not None for v in values) else None)
     parsed["num_turns"] = (sum(turn_counts) if turn_counts and
                            all(v is not None for v in turn_counts) else None)
+    parsed["request_usage"] = request_usage or None
     return parsed
 
 

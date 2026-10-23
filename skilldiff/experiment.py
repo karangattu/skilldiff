@@ -460,6 +460,8 @@ class ExperimentRunner:
             "failure_policy": dict(getattr(self.config, "failure_policy", {}) or {}),
             "pricing": dict(getattr(self.config, "pricing", {}) or {}),
             "cost_basis": self.config.cost_basis,
+            "pricing_unpriced": list(getattr(self.config, "pricing_unpriced", []) or []),
+            "tier_policy": getattr(self.config, "tier_policy", "na"),
             "seed": self._seed,
             "claude": asdict(self.config.claude),
             "codex": asdict(self.config.codex),
@@ -578,6 +580,9 @@ class ExperimentRunner:
                     "container_image", "container_install", "pricing"):
             if prev_exp.get(key) != getattr(self.config, key):
                 reasons.append(f"{key} changed")
+        for key, default in (("pricing_unpriced", []), ("tier_policy", "na")):
+            if prev_exp.get(key, default) != getattr(self.config, key):
+                reasons.append(f"{key} changed")
         # The instruction the agent gets changes what a run measures.
         prev_invocation = prev_exp.get("skill_invocation", "implicit")
         if prev_invocation != getattr(self.config, "skill_invocation", "implicit"):
@@ -619,6 +624,8 @@ class ExperimentRunner:
         current_harness = asdict(getattr(self.config, harness))
         previous_harness = prev_exp.get(harness) or {}
         for key in sorted(set(current_harness) | set(previous_harness)):
+            if key == "permission_mode_explicit":
+                continue
             if current_harness.get(key) != previous_harness.get(key):
                 reasons.append(f"{harness}.{key} changed")
         if self.config.seed is not None and self.config.seed != prev_exp.get("seed"):
@@ -1300,7 +1307,8 @@ class ExperimentRunner:
             "skill_a", "skill_b", "skill_comparison", "comparison", "skill_names",
             "timestamp", "run_dir", "models", "tasks", "task_categories", "task_details",
             "tasks_count", "runs_per_arm", "seed", "failure_policy", "settings",
-            "thresholds", "pricing", "cost_basis", "provenance", "context_tax", "retries",
+            "thresholds", "pricing", "cost_basis", "pricing_unpriced", "tier_policy",
+            "provenance", "context_tax", "retries",
             "skill_invocation", "skill_invocation_prompt",
         ):
             if key in old_results:

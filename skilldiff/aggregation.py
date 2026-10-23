@@ -105,6 +105,7 @@ def _run_warnings(
     is_skill_comparison: bool = False,
     is_pr: bool = False,
     baseline_runs: list[dict[str, Any]] | None = None,
+    retry_history: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     warnings: list[str] = []
     for arm_name, runs in (("control", control_runs), (treatment_label, treatment_runs)):
@@ -167,6 +168,45 @@ def _run_warnings(
             " For native filesystem errors, check the task's `runtime_probe` and precise "
             "`read_paths` before interpreting scores or efficiency; do not expose the "
             "whole home directory to work around a missing runtime."
+        )
+
+    all_runs = [*control_runs, *treatment_runs, *(baseline_runs or [])]
+    mismatched = [
+        r for r in all_runs
+        if r.get("served_models")
+        and str(r.get("model") or "") not in {str(model) for model in r["served_models"]}
+    ]
+    if mismatched:
+        pairs = sorted({
+            f"{r.get('model')} served as {', '.join(str(m) for m in r['served_models'])}"
+            for r in mismatched
+        })
+        warnings.append(
+            f"Configured models were served as different IDs in {len(mismatched)} run(s): "
+            + "; ".join(pairs)
+            + ". Pricing and reports would attribute usage to the wrong model; pin the full "
+            "served model ID in `models:` and rerun."
+        )
+    unrecognized = [
+        r for r in all_runs if r.get("unrecognized_models")
+    ]
+    if unrecognized:
+        models = sorted({str(m) for r in unrecognized for m in r["unrecognized_models"]})
+        warnings.append(
+            f"The Claude CLI does not recognize {', '.join(models)} in "
+            f"{len(unrecognized)} run(s). Harness-reported cost may not match list prices; "
+            "use a pinned model with API-equivalent cost."
+        )
+    retries = [
+        entry for entry in (retry_history or [])
+        if isinstance(entry, dict) and entry.get("status") == "rate_limit"
+    ]
+    if retries:
+        arms = Counter(str(entry.get("arm") or "unknown") for entry in retries)
+        warnings.append(
+            f"Rate-limit retries: {len(retries)} retry event(s) ("
+            + ", ".join(f"{arm}: {count}" for arm, count in sorted(arms.items()))
+            + "). Retried attempts keep their own cost and are excluded from paired decisions."
         )
 
     if is_skill_comparison:
@@ -469,6 +509,7 @@ def aggregate_results(
             is_skill_comparison=bool(config.is_skill_comparison),
             is_pr=bool(comparison),
             baseline_runs=raw_baseline_runs,
+            retry_history=retry_history,
         )
     )
     if interrupted:
@@ -607,6 +648,8 @@ def aggregate_results(
         "thresholds": dict(getattr(config, "thresholds", {}) or {}),
         "pricing": dict(getattr(config, "pricing", {}) or {}),
         "cost_basis": config.cost_basis,
+        "pricing_unpriced": list(getattr(config, "pricing_unpriced", []) or []),
+        "tier_policy": getattr(config, "tier_policy", "na"),
         "provenance": provenance,
         "by_model": by_model,
         "by_category": by_category,

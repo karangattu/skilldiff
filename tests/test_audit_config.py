@@ -20,7 +20,7 @@ def experiment_file(tmp_path: Path, changes: dict | None = None) -> Path:
     tasks.mkdir(exist_ok=True)
     (tasks / "one.yaml").write_text("id: one\nprompt: Do it\n")
     data = {
-        "name": "strict-inputs", "skill": "./skill", "models": ["m"],
+        "name": "strict-inputs", "skill": "./skill", "models": ["claude-sonnet-5-5"],
         "tasks": ["./tasks/*.yaml"],
     }
     data.update(changes or {})
@@ -263,7 +263,7 @@ def test_check_requires_a_usable_grade_for_each_broken_fixture(
     monkeypatch.setattr("skilldiff.cli.Grader", bounded_grader)
     monkeypatch.setenv("CLAUDE_BIN", "/bin/echo")
     monkeypatch.delenv("SKILLDIFF_MOCK_RUNNER", raising=False)
-    assert cmd_check(Namespace(config=str(config), no_grade=False)) == expected_exit
+    assert cmd_check(Namespace(config=str(config), no_grade=False, no_probe=True)) == expected_exit
     output = capsys.readouterr().out
     if expected_exit:
         assert "grader validation grader-broken" in output
@@ -337,7 +337,7 @@ def test_check_versions_image_binary_and_grades_inside_container(
                         lambda *args: ["skill installed at user level"])
     monkeypatch.setattr("skilldiff.cli.find_harness_inheritance",
                         lambda *args: ["host instructions that are not mounted"])
-    assert cmd_check(Namespace(config=str(config), no_grade=False)) == 0
+    assert cmd_check(Namespace(config=str(config), no_grade=False, no_probe=True)) == 0
     output = capsys.readouterr().out
     assert "image-agent 9.9.9" in output
     assert "untouched fixture scores 0%" in output
@@ -375,7 +375,7 @@ def test_check_rejects_unsupported_container_auth_before_runtime(
         "harness": harness, "isolation": "docker",
         harness: {"auth": harness_auth, "bin_path": "/image/bin/agent"},
     })
-    assert cmd_check(Namespace(config=str(config), no_grade=True)) == 1
+    assert cmd_check(Namespace(config=str(config), no_grade=True, no_probe=True)) == 1
     assert "api_key" in capsys.readouterr().out
     assert not log.exists()
 

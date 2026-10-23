@@ -73,7 +73,10 @@ all judge those same runs.
 
 Reports include per-arm hit rates, load counts, and concrete next steps for
 improving a skill's description, plus JSON for agent analysis, Markdown for
-summaries, and HTML for optional viewing. See
+summaries, and HTML for optional viewing. Claude subscription runs default to
+API-equivalent cost from a built-in rate table; pin a full model ID such as
+`claude-sonnet-5-5` or `claude-haiku-5-5` so the price and the served model stay
+the ones you chose. Bare family names such as `sonnet` fail config loading. See
 [reports and outputs](docs/reference.md#reports-and-outputs) for the full format.
 
 The prompt never names the skill by default, so adoption measures **discovery**:
@@ -223,7 +226,7 @@ and known-broken solutions per task.
 | `skilldiff diagnose` | Explain failures: skill not triggering, regressions, denied tools |
 | `skilldiff regrade` | Re-grade a finished run after a grader fix, without new sessions |
 | `skilldiff compare` | Compare two runs |
-| `skilldiff lint` | Lint a `SKILL.md` before you spend anything |
+| `skilldiff lint` | Lint a `SKILL.md` before you spend anything; `--prompts PATH` checks trigger coverage |
 
 </details>
 
@@ -276,14 +279,20 @@ defaults avoid prompts and give both arms the same permissions:
 | Harness | Default | To allow network |
 |---|---|---|
 | `claude` | `sandbox: true`: Bash runs in Claude's own sandbox without prompts; writes stay in the workspace | `allowed_domains: ["pypi.org"]` |
+| `claude` + `profile: eval` | sandbox stays on; commands inside it are auto-approved and localhost binding is allowed | add app hosts to `allowed_domains` |
 | `codex` | `sandbox: workspace-write`, no prompts | `network_access: true` |
 | `opencode` | `dangerously_skip_permissions: true` (passes `--auto`) | already allowed |
 | `antigravity` | `dangerously_skip_permissions: true` | already allowed |
 
-`skilldiff check` prints what sessions may do. Reports and `skilldiff diagnose` count
-denied tool calls per arm for all four harnesses (including Codex sandbox blocks), so
-a broken permission setup cannot pass as a low score. To block reads outside the workspace as well, use
-`isolation: docker`/`podman`, or `isolation: macos` for Claude and Codex.
+`claude.profile: eval` is opt-in for app evaluations. It never allows unsandboxed
+commands, so graders and skill sources stay unreadable. `skilldiff check` prints
+what sessions may do and runs a profile-aware sandbox canary; any refused or
+skipped command shape fails the check. For local Claude runs it also runs each
+task's `runtime_probe` through Claude's Bash tool. Reports and `skilldiff
+diagnose` count denied tool calls per arm for all four harnesses (including
+Codex sandbox blocks), so a broken permission setup cannot pass as a low score.
+To block reads outside the workspace as well, use `isolation: docker`/`podman`,
+or `isolation: macos` for Claude and Codex.
 
 Native macOS setup handles uv Python aliases, shell heredocs, Git configuration,
 and temporary pytest collection without opening host skill or grader contents.

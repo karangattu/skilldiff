@@ -279,19 +279,18 @@ def test_probe_claude_auth_success_and_failure(tmp_path, monkeypatch):
     )
     runner = AgentRunner()
     ok_cfg = ClaudeConfig(bin_path=str(ok))
-    assert runner.probe_claude_auth("sonnet", ok_cfg, timeout=20) == (
-        True,
-        "authenticated call succeeded",
-        [],
-    )
+    probe = runner.probe_claude_auth("claude-sonnet-5-5", ok_cfg, timeout=20)
+    assert probe.ok is True
+    assert probe.detail == "authenticated call succeeded"
     bad = _fake_claude(
         tmp_path,
         'echo \'{"type":"result","subtype":"error","is_error":true,'
         '"result":"Failed to authenticate: OAuth session expired"}\'; exit 1',
     )
-    success, detail, _notes = runner.probe_claude_auth(
-        "sonnet", ClaudeConfig(bin_path=str(bad)), 20)
-    assert success is False and "OAuth session expired" in detail
+    failure = runner.probe_claude_auth(
+        "claude-sonnet-5-5", ClaudeConfig(bin_path=str(bad)), timeout=20
+    )
+    assert failure.ok is False and "OAuth session expired" in failure.detail
 
 
 def test_check_fails_on_expired_login_and_skips_with_no_probe(
@@ -328,7 +327,7 @@ def test_run_reports_runtime_errors_without_a_traceback(tmp_path, monkeypatch, c
         raise RuntimeError("Harness 'claude' could not run any session: Failed to authenticate")
 
     monkeypatch.setattr(ExperimentRunner, "run", boom)
-    assert cmd_run(Args(config="skilldiff.yaml")) == 1
+    assert cmd_run(Args(config="skilldiff.yaml", no_probe=True)) == 1
     err = capsys.readouterr().err
     assert "Experiment error: Harness 'claude' could not run" in err
 
@@ -362,7 +361,10 @@ def _scaffold_validation(tmp_path: Path, good: list[str], forbidden: list[str] |
     (tmp_path / "tasks" / "t.yaml").write_text(yaml.safe_dump(task))
     (tmp_path / "skilldiff.yaml").write_text(
         yaml.safe_dump(
-            {"name": "e", "skill": "./skill", "models": ["sonnet"], "tasks": ["./tasks/*.yaml"]}
+            {
+                "name": "e", "skill": "./skill",
+                "models": ["claude-sonnet-5-5"], "tasks": ["./tasks/*.yaml"],
+            }
         )
     )
 
@@ -414,7 +416,7 @@ def _mock_run(tmp_path: Path, monkeypatch, capsys):
     data.pop("validation", None)
     task.write_text(yaml.safe_dump(data))
     (tmp_path / "skilldiff.yaml").write_text(
-        "name: regrade-exp\nskill: ./skills/changelog-style\nmodels:\n  - sonnet\n"
+        "name: regrade-exp\nskill: ./skills/changelog-style\nmodels:\n  - claude-sonnet-5-5\n"
         "tasks:\n  - ./tasks/*.yaml\nruns: 1\n"
     )
     assert cmd_run(Args(config="skilldiff.yaml", runs=1)) == 0
@@ -452,7 +454,8 @@ def test_regrade_rescored_runs_from_saved_diffs(tmp_path, monkeypatch, capsys):
     assert results["regrades"][0]["runs_changed"] == 2
     assert any("Regraded 2 run(s)" in w for w in results["warnings"])
     run_dir = sorted((tmp_path / "runs").iterdir())[-1]
-    record = json.loads((run_dir / "sonnet/changelog-entry/treatment/001/run.json").read_text())
+    record_path = run_dir / "claude-sonnet-5-5/changelog-entry/treatment/001/run.json"
+    record = json.loads(record_path.read_text())
     assert record["score"] == 0.0
     assert record["regrade_history"][0]["score"] == 1.0
     assert "Regraded 2 run(s)" in (run_dir / "report.md").read_text()
@@ -464,7 +467,7 @@ def test_regrade_keeps_run_when_diff_cannot_be_rebuilt(tmp_path, monkeypatch, ca
     _mock_run(tmp_path, monkeypatch, capsys)
     run_dir = sorted((tmp_path / "runs").iterdir())[-1]
     for arm in ("control", "treatment"):
-        patch = run_dir / "sonnet/changelog-entry" / arm / "001" / "diff.patch"
+        patch = run_dir / "claude-sonnet-5-5/changelog-entry" / arm / "001" / "diff.patch"
         patch.write_text("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n")
     assert cmd_regrade(Args(run_dir=None, config="skilldiff.yaml", task=None, dry_run=True)) == 0
     captured = capsys.readouterr()

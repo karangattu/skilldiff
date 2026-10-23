@@ -30,6 +30,12 @@ from skilldiff.grader import Grader
 from skilldiff.host_exposure import host_exposure_warnings
 from skilldiff.persistence import atomic_json, read_json, run_lock
 from skilldiff.preflight import host_sandbox_fix, host_sandbox_problems
+from skilldiff.pricing import (
+    MODEL_ALIASES,
+    is_bare_family_alias,
+    merge_pricing,
+    one_call_cost_estimate,
+)
 from skilldiff.reporter import (
     _paired_comparison_metrics,
     build_decision_context,
@@ -44,6 +50,7 @@ from skilldiff.runner import (
     AgentRunner,
     auth_login_hint,
     cached_which,
+    claude_effective_permission_mode,
     claude_sandbox_settings,
     codex_sandbox_args,
     looks_like_auth_error,
@@ -55,14 +62,15 @@ from skilldiff.stats import analysis_run, paired_comparison
 from skilldiff.workspace import Workspace
 
 DEFAULT_MODELS = {
-    "claude": "sonnet",
+    "claude": "claude-sonnet-5-5",
     "codex": "gpt-5-codex",
     "opencode": "deepseek-v4-pro",
     "antigravity": "gemini-3.8-flash-medium",
 }
 
 HARNESS_BLOCKS = {
-    "claude": """claude:
+    "claude": """cost_basis: api-equivalent  # built-in rates; add pricing: only to override them
+claude:
   auth: subscription        # or api_key (uses ANTHROPIC_API_KEY)
   effort: high
   max_turns: 30
@@ -70,6 +78,8 @@ HARNESS_BLOCKS = {
   permission_mode: acceptEdits
   isolate: true             # use project/local settings; runtime discovery checks skills
   sandbox: true             # Bash runs in Claude's sandbox without prompts, inside the workspace
+  # profile: eval           # opt-in app eval: auto-approves commands INSIDE the sandbox and
+  #                         # allows localhost binding; unsandboxed commands stay disabled
   allowed_domains: []       # hosts commands may reach, e.g. ["pypi.org", "*.npmjs.org"]
   allowed_tools: []         # e.g. ["Bash(my-cli *)"] when not using the sandbox
 """,
@@ -86,6 +96,30 @@ HARNESS_BLOCKS = {
   dangerously_skip_permissions: true  # print mode otherwise soft-denies tools that ask
 """,
 }
+
+# Opt-in app-evaluation template. The profile keeps Claude's OS sandbox and
+# auto-approves commands inside it; it never allows unsandboxed commands.
+CLAUDE_EVAL_HARNESS_BLOCK = """cost_basis: api-equivalent  # built-in rates; pricing: overrides
+claude:
+  auth: subscription
+  effort: high
+  max_turns: 30
+  max_budget_usd: 2.00
+  permission_mode: acceptEdits
+  isolate: true
+  sandbox: true
+  # Opt-in: auto-approves commands inside the sandbox and allows localhost binding
+  # for app servers. Graders and skill sources stay unreadable to commands.
+  profile: eval
+  allowed_domains: [localhost]  # add pypi.org, *.npmjs.org, etc. when tasks install
+  allowed_tools: []
+
+thresholds:
+  acceptable_score_regression_pp: 5
+  required_cost_reduction_pct: 10
+  required_token_reduction_pct: 20
+  meaningful_score_gain_pp: 5
+"""
 
 EXPERIMENT_YAML = """name: {name}
 
@@ -126,22 +160,22 @@ parallel: 1                 # pairs to run at once
 #   required_token_reduction_pct: 20    # session-token saving (compression)
 #   meaningful_score_gain_pp: 5         # gain needed to call an improvement useful
 
-# API-equivalent cost basis (optional but recommended on subscription auth).
-# Look the rates up on the provider's own pricing page BEFORE the run and
-# record them here with source and date; the saved run then reproduces the
-# estimate and the report shows the API-equivalent cost per arm. Rates are
-# per 1M tokens for each model listed under `models`:
-# cost_basis: api-equivalent  # use recorded rates in the decision (default: harness)
+# API-equivalent cost basis. Claude subscription runs default to API-equivalent
+# cost using built-in rates keyed by full model ID, so no `pricing:` block is
+# needed. Add one only to override the built-in table or price another provider.
+# Haiku 5.5 tiers use per-request usage; without it, decision cost is N/A unless
+# `tier_policy: upper_bound` asks for a labelled planning estimate.
+# cost_basis: api-equivalent
 # pricing:
 #   source: https://www.anthropic.com/pricing
-#   date: "2026-09-27"
+#   date: "2026-10-19"
 #   currency: USD
 #   rates:
 #     {model}:
-#       input: 3.00
-#       output: 15.00
-#       cache_read: 0.30
-#       cache_write: 3.75
+#       input: 2.00
+#       output: 10.00
+#       cache_read: 0.10
+#       cache_write: 2.50
 
 {harness_block}"""
 
@@ -177,18 +211,19 @@ parallel: 1
 #   required_token_reduction_pct: 20    # with at least 20% fewer session tokens
 #   required_cost_reduction_pct: 10
 
-# API-equivalent cost basis: record provider rates before the run (per 1M
-# tokens, with source and date) so regenerated reports reproduce the estimate:
-# cost_basis: api-equivalent  # use recorded rates in the decision (default: harness)
+# API-equivalent cost basis. Claude subscription runs default to API-equivalent
+# cost using built-in rates keyed by full model ID. Add `pricing:` only to
+# override the built-in table or price another provider:
+# cost_basis: api-equivalent
 # pricing:
 #   source: https://www.anthropic.com/pricing
-#   date: "2026-09-27"
+#   date: "2026-10-19"
 #   rates:
 #     {model}:
-#       input: 3.00
-#       output: 15.00
-#       cache_read: 0.30
-#       cache_write: 3.75
+#       input: 2.00
+#       output: 10.00
+#       cache_read: 0.10
+#       cache_write: 2.50
 
 {harness_block}"""
 
@@ -349,6 +384,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     root = Path(getattr(args, "dir", None) or ".")
     force = bool(getattr(args, "force", False))
     harness = getattr(args, "harness", None) or "claude"
+    template = getattr(args, "template", None)
+    if template == "claude-eval":
+        if getattr(args, "harness", None) not in (None, "claude"):
+            print("--template claude-eval requires --harness claude.", file=sys.stderr)
+            return 1
+        harness = "claude"
     skill_arg: Optional[str] = getattr(args, "skill", None)
     skill_a_arg: Optional[str] = getattr(args, "skill_a", None)
     skill_b_arg: Optional[str] = getattr(args, "skill_b", None)
@@ -365,6 +406,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         return 1
 
     pr_number = getattr(args, "pr", None)
+    if template and (skill_a_arg or skill_b_arg or pr_number is not None):
+        print(
+            "--template claude-eval supports the single-skill or demo scaffold.",
+            file=sys.stderr,
+        )
+        return 1
     if pr_number is not None:
         if (
             skill_arg
@@ -415,29 +462,57 @@ def cmd_init(args: argparse.Namespace) -> int:
         if not skill_value.startswith("."):
             skill_value = f"./{skill_value}"
         name = f"{skill_path.name}-eval"
-        files = {
-            root / "tasks" / "my-first-task.yaml": CUSTOM_TASK_YAML,
-            root / "tasks" / "heldout" / "my-held-out-task.yaml": _nested_task(
-                CUSTOM_TASK_YAML, "my-held-out-task"
-            ),
-            root / "graders" / "my_first_task.py": CUSTOM_GRADER,
-        }
+        if template == "claude-eval":
+            files = {
+                root / "tasks" / "dev" / "my-first-task.yaml": _nested_task(
+                    CUSTOM_TASK_YAML, "my-first-task"
+                ),
+                root / "tasks" / "heldout" / "my-held-out-task.yaml": _nested_task(
+                    CUSTOM_TASK_YAML, "my-held-out-task"
+                ),
+                root / "graders" / "my_first_task.py": CUSTOM_GRADER,
+            }
+        else:
+            files = {
+                root / "tasks" / "my-first-task.yaml": CUSTOM_TASK_YAML,
+                root / "tasks" / "heldout" / "my-held-out-task.yaml": _nested_task(
+                    CUSTOM_TASK_YAML, "my-held-out-task"
+                ),
+                root / "graders" / "my_first_task.py": CUSTOM_GRADER,
+            }
     else:
         skill_value = "./skills/changelog-style"
         name = "changelog-style-demo"
-        files = {
-            root / "skills" / "changelog-style" / "SKILL.md": DEMO_SKILL_MD,
-            root / "tasks" / "changelog-entry.yaml": DEMO_TASK_YAML,
-            root / "fixtures" / "changelog" / "CHANGELOG.md": DEMO_CHANGELOG,
-            root / "graders" / "changelog_entry.py": DEMO_GRADER,
-        }
+        if template == "claude-eval":
+            files = {
+                root / "skills" / "changelog-style" / "SKILL.md": DEMO_SKILL_MD,
+                root / "tasks" / "dev" / "changelog-entry.yaml": _nested_task(
+                    DEMO_TASK_YAML, "changelog-entry"
+                ),
+                root / "tasks" / "heldout" / "changelog-entry-heldout.yaml": _nested_task(
+                    DEMO_TASK_YAML, "changelog-entry-heldout"
+                ),
+                root / "fixtures" / "changelog" / "CHANGELOG.md": DEMO_CHANGELOG,
+                root / "graders" / "changelog_entry.py": DEMO_GRADER,
+            }
+        else:
+            files = {
+                root / "skills" / "changelog-style" / "SKILL.md": DEMO_SKILL_MD,
+                root / "tasks" / "changelog-entry.yaml": DEMO_TASK_YAML,
+                root / "fixtures" / "changelog" / "CHANGELOG.md": DEMO_CHANGELOG,
+                root / "graders" / "changelog_entry.py": DEMO_GRADER,
+            }
 
     config_text = EXPERIMENT_YAML.format(
         name=name,
         skill=skill_value,
         harness=harness,
         model=DEFAULT_MODELS[harness],
-        harness_block=HARNESS_BLOCKS[harness],
+        harness_block=(
+            CLAUDE_EVAL_HARNESS_BLOCK
+            if template == "claude-eval"
+            else HARNESS_BLOCKS[harness]
+        ),
         skill_invocation_block=SKILL_INVOCATION_BLOCKS[
             getattr(args, "skill_invocation", None) or "implicit"
         ],
@@ -446,6 +521,13 @@ def cmd_init(args: argparse.Namespace) -> int:
         ci = args.container_install
         val = ci[0] if len(ci) == 1 else ci
         config_text += f"\n{yaml.safe_dump({'container_install': val})}\n"
+    if harness == "claude":
+        config_text = config_text.replace(
+            f"  - {DEFAULT_MODELS['claude']}\n",
+            f"  - {DEFAULT_MODELS['claude']}\n"
+            "  # - claude-haiku-5-5   # pin a full ID if you switch models\n",
+            1,
+        )
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text(config_text, encoding="utf-8")
     created.append(config_file)
@@ -458,6 +540,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     print("Initialized skilldiff experiment:")
     for path in created:
         print(f"  - {path}")
+    if template == "claude-eval":
+        print(
+            "Note: claude.profile: eval keeps Claude's OS sandbox but auto-approves "
+            "commands inside it and allows localhost binding. It is opt-in; the canary "
+            "must pass before a run."
+        )
     if skill_arg:
         print(
             "Warning: graders/my_first_task.py is a placeholder template that fails until replaced."
@@ -537,6 +625,13 @@ def _init_skill_ab(
         ci = args.container_install
         val = ci[0] if len(ci) == 1 else ci
         text += f"\n{yaml.safe_dump({'container_install': val})}\n"
+    if harness == "claude":
+        text = text.replace(
+            f"  - {DEFAULT_MODELS['claude']}\n",
+            f"  - {DEFAULT_MODELS['claude']}\n"
+            "  # - claude-haiku-5-5   # pin a full ID if you switch models\n",
+            1,
+        )
     (root / "skilldiff.yaml").parent.mkdir(parents=True, exist_ok=True)
     (root / "skilldiff.yaml").write_text(text, encoding="utf-8")
     _write(root / "tasks" / "my-first-task.yaml", CUSTOM_TASK_YAML, force)
@@ -589,6 +684,13 @@ def _init_pr(args: argparse.Namespace, root: Path, force: bool, harness: str) ->
         ci = args.container_install
         config["container_install"] = ci[0] if len(ci) == 1 else ci
     text = yaml.safe_dump(config, sort_keys=False) + "\n" + HARNESS_BLOCKS[harness]
+    if harness == "claude":
+        text = text.replace(
+            f"- {DEFAULT_MODELS['claude']}\n",
+            f"- {DEFAULT_MODELS['claude']}\n"
+            "# - claude-haiku-5-5   # pin a full ID if you switch models\n",
+            1,
+        )
     _write(root / "skilldiff.yaml", text, force)
     task_template = """id: my-first-task
 # Both arms start from pr.repo at their respective revisions. Do not set task.repo.
@@ -650,22 +752,37 @@ def permission_summary(cfg: ExperimentConfig) -> list[tuple[str, str]]:
     lines: list[tuple[str, str]] = []
     if harness == "claude":
         claude = cfg.claude
+        profile = getattr(claude, "profile", None)
+        effective_mode = claude_effective_permission_mode(claude)
         if claude_sandbox_settings(claude, isolation):
-            network = (", ".join(claude.allowed_domains) if claude.allowed_domains
+            hosts = list(claude.allowed_domains)
+            if profile == "eval":
+                for host in ("localhost", "127.0.0.1", "[::1]"):
+                    if host not in hosts:
+                        hosts.append(host)
+            network = (", ".join(hosts) if hosts
                        else "none (set claude.allowed_domains)")
             lines.append(("ok", "claude permissions: Bash runs in Claude's sandbox without "
                                 "prompts; writes stay in the workspace; graders and skill "
                                 f"sources are unreadable to commands; network hosts: {network}"))
+            if profile == "eval":
+                lines.append(("warn", "claude.profile: eval keeps the sandbox but auto-approves "
+                                      "commands inside it and allows localhost binding; "
+                                      "unsandboxed commands stay disabled. The canary must pass "
+                                      "before a run."))
         elif (
             claude.sandbox
             and isolation in EXTERNAL_ISOLATION
-            and claude.permission_mode in PROMPTING_MODES
+            and effective_mode in PROMPTING_MODES
         ):
             boundary = "macOS" if isolation == "macos" else isolation
             lines.append(("ok", f"claude permissions: bypassPermissions inside the {boundary} "
                                 "isolation boundary"))
-        elif claude.permission_mode in PROMPTING_MODES and not claude.allowed_tools:
-            lines.append(("warn", f"claude permission_mode {claude.permission_mode} without "
+            if profile == "eval":
+                lines.append(("warn", "claude.profile: eval is redundant inside external "
+                                      "isolation; the outer boundary already bypasses prompts"))
+        elif effective_mode in PROMPTING_MODES and not claude.allowed_tools:
+            lines.append(("warn", f"claude permission_mode {effective_mode} without "
                                   "claude.sandbox or allowed_tools: headless sessions deny Bash "
                                   "commands, so agents cannot run code or tests"
                           + ("; inside a container use permission_mode: bypassPermissions"
@@ -730,6 +847,14 @@ def cmd_check(args: argparse.Namespace) -> int:
         f"configuration loads: {len(cfg.models)} model(s), {len(tasks)} task(s), "
         f"{cfg.runs} run(s) per arm"
     )
+    if cfg.cost_basis == "api-equivalent" and cfg.pricing_unpriced and not (
+        cfg.pr and getattr(cfg.pr, "mode", "agent") == "correctness"
+    ):
+        fail(
+            "cost_basis: api-equivalent has no rates for "
+            + ", ".join(f"'{model}'" for model in cfg.pricing_unpriced)
+            + ". Pin a full Claude model ID with built-in rates or add pricing.rates."
+        )
     image_id = None
     if cfg.isolation in {"docker", "podman"}:
         try:
@@ -903,42 +1028,125 @@ def cmd_check(args: argparse.Namespace) -> int:
         if (cfg.isolation == "local" and cfg.claude.auth == "api_key"
                 and not os.environ.get("ANTHROPIC_API_KEY")):
             fail("claude.auth is api_key but ANTHROPIC_API_KEY is not set")
-        if cfg.claude.permission_mode == "bypassPermissions" and cfg.isolation == "local":
+        if (
+            claude_effective_permission_mode(cfg.claude) == "bypassPermissions"
+            and cfg.isolation == "local"
+            and cfg.claude.profile != "eval"
+        ):
             warn("bypassPermissions lets agents run any command outside the workspace")
         if (
             resolved
             and capabilities_ok
             and not sandboxed
             and cfg.isolation == "local"
+            and not (cfg.pr and getattr(cfg.pr, "mode", "agent") == "correctness")
             and not getattr(args, "no_probe", False)
             and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
         ):
-            probe_ok, detail, model_notes = runner.probe_claude_auth(cfg.models[0], cfg.claude)
-            if probe_ok:
-                ok(f"claude auth probe: {detail}")
-                for note in model_notes:
-                    warn(f"claude model: {note}")
-                if claude_sandbox_settings(cfg.claude, cfg.isolation):
-                    canary_ok, denied, inconclusive = runner.probe_claude_sandbox_canary(
-                        cfg.models[0], cfg.claude
-                    )
-                    if inconclusive:
-                        warn("claude sandbox canary: the agent did not run every command "
-                             "shape, so the result is inconclusive")
-                    if denied:
-                        warn(
-                            f"claude sandbox canary: {len(denied)} command shape(s) denied "
-                            f"({'; '.join(denied)})"
+            for model in cfg.models:
+                probe = runner.probe_claude_auth(model, cfg.claude, pricing=cfg.pricing)
+                if not probe.ok:
+                    if probe.budget_failure:
+                        estimate = one_call_cost_estimate(cfg.pricing, model)
+                        suggested = max(
+                            float(cfg.claude.max_budget_usd or 0),
+                            (estimate or 0.25) * 4,
                         )
-                    elif canary_ok and not inconclusive:
-                        ok("claude sandbox canary: representative command shapes permitted")
-            elif looks_like_auth_error(detail):
-                fail(
-                    f"claude auth probe failed ({detail}). "
-                    f"{auth_login_hint('claude')} and rerun `skilldiff check`."
+                        fail(
+                            f"claude auth probe hit its budget cap for {model} "
+                            f"({probe.detail}). Raise claude.max_budget_usd to at least "
+                            f"${suggested:.2f} and rerun `skilldiff check`."
+                        )
+                    elif looks_like_auth_error(probe.detail):
+                        fail(
+                            f"claude auth probe failed ({probe.detail}). "
+                            f"{auth_login_hint('claude')} and rerun `skilldiff check`."
+                        )
+                    else:
+                        fail(f"claude auth probe failed for {model}: {probe.detail}")
+                    continue
+                ok(f"claude auth probe: {model} authenticated")
+                if probe.cost is not None:
+                    print(
+                        f"        harness cost for this call: ${probe.cost:.4f}",
+                        flush=True,
+                    )
+                observed = max(
+                    one_call_cost_estimate(cfg.pricing, model) or 0.0,
+                    float(probe.cost or 0.0),
                 )
-            else:
-                warn(f"claude auth probe could not confirm a working session: {detail}")
+                if (
+                    observed
+                    and cfg.claude.max_budget_usd is not None
+                    and cfg.claude.max_budget_usd < observed * 4
+                ):
+                    fail(
+                        f"claude.max_budget_usd is ${cfg.claude.max_budget_usd:.2f}, "
+                        f"below four times the observed ${observed:.2f} cost of one "
+                        f"call for {model}. Raise it to at least ${observed * 4:.2f}."
+                    )
+                    continue
+                if probe.mismatch:
+                    fail(
+                        f"claude model: configured '{model}' was served as "
+                        f"{', '.join(probe.served_models)}. Pin the full model ID the "
+                        "harness actually serves."
+                    )
+                    continue
+                if not probe.served_models:
+                    warn(
+                        f"claude model: the harness did not report which model served "
+                        f"{model}; the served-model check is unverified."
+                    )
+                if probe.extra_served:
+                    warn(
+                        f"claude model: {model} also served "
+                        f"{', '.join(probe.extra_served)}; reports attribute usage to the "
+                        "configured model."
+                    )
+                if probe.unrecognized_models:
+                    if cfg.cost_basis == "harness":
+                        fail(
+                            "claude model: the CLI does not recognize "
+                            f"{', '.join(probe.unrecognized_models)} and cost_basis is "
+                            "harness. Harness cost is unreliable for this model; use "
+                            "cost_basis: api-equivalent with a pinned model or rates."
+                        )
+                    else:
+                        warn(
+                            "claude model: the CLI does not recognize "
+                            f"{', '.join(probe.unrecognized_models)}; API-equivalent cost "
+                            "uses the configured rates."
+                        )
+                canary = runner.probe_claude_sandbox_canary(
+                    model, cfg.claude, pricing=cfg.pricing
+                )
+                canary_problems = []
+                if canary.denials:
+                    canary_problems.append(
+                        f"{len(canary.denials)} command shape(s) denied "
+                        f"({'; '.join(canary.denials)})"
+                    )
+                if canary.missing:
+                    canary_problems.append(
+                        f"{len(canary.missing)} shape(s) not run "
+                        f"({'; '.join(canary.missing)})"
+                    )
+                if canary.failed:
+                    canary_problems.append(
+                        f"{len(canary.failed)} shape(s) failed "
+                        f"({'; '.join(canary.failed)})"
+                    )
+                if canary_problems or not canary.ok:
+                    fail(
+                        "claude sandbox canary: "
+                        + ("; ".join(canary_problems) or canary.detail or "unknown failure")
+                    )
+                else:
+                    ok(
+                        "claude sandbox canary: representative command shapes permitted"
+                        + (" (including eval app shapes)" if cfg.claude.profile == "eval" else "")
+                    )
 
     installs = [] if image_id else find_user_level_installs(cfg.skill_names, cfg.harness)
     if installs:
@@ -1012,9 +1220,41 @@ def cmd_check(args: argparse.Namespace) -> int:
                         probe_ws.setup()
                         expected = ([read_skill_name(path) or path.name
                                      for path in probe_ws.skill_dirs] if installed else [])
-                        AgentRunner().preflight(probe_ws.root, cfg, expected,
-                                                runtime_probe=task.runtime_probe)
+                        runner.preflight(probe_ws.root, cfg, expected,
+                                         runtime_probe=task.runtime_probe)
                         ok(f"task {task.id}: {arm} workspace discovery/runtime preflight passed")
+                        if (
+                            arm == "treatment"
+                            and cfg.harness == "claude"
+                            and cfg.isolation == "local"
+                            and not (cfg.pr and getattr(cfg.pr, "mode", "agent") == "correctness")
+                            and task.runtime_probe
+                            and not getattr(args, "no_probe", False)
+                            and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
+                        ):
+                            command_probe = runner.probe_claude_commands(
+                                cfg.models[0],
+                                cfg.claude,
+                                probe_ws.root,
+                                [task.runtime_probe],
+                                pricing=cfg.pricing,
+                            )
+                            if not command_probe.ok:
+                                details = (
+                                    command_probe.denials
+                                    or command_probe.missing
+                                    or command_probe.failed
+                                    or [command_probe.detail]
+                                )
+                                fail(
+                                    f"task {task.id}: runtime_probe refused or did not run "
+                                    f"under Claude's sandbox ({'; '.join(details[:3])})"
+                                )
+                            else:
+                                ok(
+                                    f"task {task.id}: runtime_probe runs under "
+                                    "Claude's sandbox"
+                                )
                     except Exception as exc:
                         fail(f"task {task.id}: {arm} preflight: {exc}")
         # Isolation: escaping symlinks and .git history must never enter workspaces.
@@ -1276,6 +1516,24 @@ def cmd_run(args: argparse.Namespace) -> int:
         if getattr(args, "model", None) is not None:
             validate_string_list(args.model, "model", nonempty=True)
             exp_config.models = list(args.model)
+        if exp_config.harness == "claude":
+            for model in exp_config.models:
+                if is_bare_family_alias(str(model)):
+                    raise ValueError(
+                        f"model '{model}' is a bare family alias. Pin the full model ID "
+                        f"'{MODEL_ALIASES[str(model).strip().lower()]}' instead."
+                    )
+        resolved_pricing, unpriced = merge_pricing(
+            exp_config.pricing, exp_config.models, exp_config.harness
+        )
+        exp_config.pricing = resolved_pricing
+        exp_config.pricing_unpriced = unpriced
+        if exp_config.cost_basis == "api-equivalent" and unpriced:
+            raise ValueError(
+                "cost_basis: api-equivalent has no rates for "
+                + ", ".join(f"'{model}'" for model in unpriced)
+                + ". Pin a full Claude model ID with built-in rates or add pricing.rates."
+            )
         if getattr(args, "seed", None) is not None:
             validate_integer(args.seed, "seed")
             exp_config.seed = args.seed
@@ -1344,6 +1602,66 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"Running '{exp_config.name}' with {exp_config.harness}: {sessions_txt}", flush=True)
     if resume:
         print("Resume enabled: completed pairs reuse only when input hashes match.", flush=True)
+    if (
+        not resume
+        and not is_correctness
+        and exp_config.harness == "claude"
+        and exp_config.isolation == "local"
+        and not getattr(args, "no_probe", False)
+        and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
+    ):
+        try:
+            for model in exp_config.models:
+                probe = runner.agent_runner.probe_claude_auth(
+                    model, exp_config.claude, pricing=exp_config.pricing
+                )
+                if not probe.ok:
+                    if probe.budget_failure:
+                        raise RuntimeError(
+                            f"Claude preflight hit its budget cap for {model} "
+                            f"({probe.detail}). Raise claude.max_budget_usd."
+                        )
+                    raise RuntimeError(
+                        f"Claude preflight failed for {model}: {probe.detail}"
+                    )
+                observed = max(
+                    one_call_cost_estimate(exp_config.pricing, model) or 0.0,
+                    float(probe.cost or 0.0),
+                )
+                if (
+                    observed
+                    and exp_config.claude.max_budget_usd is not None
+                    and exp_config.claude.max_budget_usd < observed * 4
+                ):
+                    raise RuntimeError(
+                        f"claude.max_budget_usd is ${exp_config.claude.max_budget_usd:.2f}, "
+                        f"below four times the observed ${observed:.2f} cost of one call "
+                        f"for {model}. Raise it to at least ${observed * 4:.2f}."
+                    )
+                if probe.mismatch:
+                    raise RuntimeError(
+                        f"Claude served '{model}' as {', '.join(probe.served_models)}. "
+                        "Pin the full model ID the harness actually serves."
+                    )
+                if probe.unrecognized_models and exp_config.cost_basis == "harness":
+                    raise RuntimeError(
+                        "Claude does not recognize "
+                        f"{', '.join(probe.unrecognized_models)}; harness cost is "
+                        "unreliable. Use cost_basis: api-equivalent."
+                    )
+                canary = runner.agent_runner.probe_claude_sandbox_canary(
+                    model, exp_config.claude, pricing=exp_config.pricing
+                )
+                if not canary.ok:
+                    details = canary.denials or canary.missing or canary.failed
+                    raise RuntimeError(
+                        "Claude sandbox preflight failed: "
+                        + ("; ".join(details[:3]) or canary.detail)
+                    )
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            print(f"Preflight error: {exc}", file=sys.stderr)
+            return 1
+        print("Claude model and sandbox preflight passed.", flush=True)
     try:
         results = runner.run(resume=resume)
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -1543,10 +1861,16 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
 
 def cmd_lint(args: argparse.Namespace) -> int:
-    from skilldiff.linter import lint_skill
+    from skilldiff.linter import lint_prompt_coverage, lint_skill
 
     target = Path(args.skill_dir or ".").resolve()
     res = lint_skill(target)
+    coverage = None
+    prompts_path = getattr(args, "prompts", None)
+    if prompts_path:
+        coverage = lint_prompt_coverage(target, Path(prompts_path))
+        res.warnings.extend(coverage.get("warnings") or [])
+        res.stats["prompt_coverage"] = coverage.get("stats") or {}
     if getattr(args, "json", False):
         print(
             json.dumps(
@@ -1555,6 +1879,7 @@ def cmd_lint(args: argparse.Namespace) -> int:
                     "errors": res.errors,
                     "warnings": res.warnings,
                     "stats": res.stats,
+                    "prompt_coverage": coverage.get("tasks") if coverage else None,
                 },
                 indent=2,
             )
@@ -1568,6 +1893,14 @@ def cmd_lint(args: argparse.Namespace) -> int:
             f"  {stats.get('words', 0)} words · "
             f"~{stats.get('estimated_tokens', 0)} tokens · "
             f"{stats.get('characters', 0)} chars"
+        )
+    prompt_stats = stats.get("prompt_coverage") or {}
+    if prompt_stats:
+        average = prompt_stats.get("average_coverage")
+        average_txt = f"{average:.0%}" if average is not None else "N/A"
+        print(
+            f"  prompt trigger coverage: {prompt_stats.get('tasks', 0)} task prompt(s), "
+            f"{prompt_stats.get('uncovered', 0)} possible gap(s), average {average_txt}"
         )
 
     if res.errors:
@@ -1620,6 +1953,8 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     print(f"  Agent failures: {len(report.get('agent_failures', []))}")
     print(f"  Grader failures: {len(report.get('grader_failures', []))}")
     print(f"  Permission denials: {len(report.get('permission_denied', []))} session(s)")
+    retries = report.get("rate_limit_retries") or {}
+    print(f"  Rate-limit retries: {retries.get('count', 0)} event(s)")
     under = report.get("under_triggered", [])
     over = report.get("over_triggered", [])
     regs = report.get("regressions", [])
@@ -1866,6 +2201,32 @@ def _format_results(results: dict) -> str:
                 "Next actions:\n"
                 + "\n".join(f"  - {action['advice']}" for action in actions)
             )
+    from skilldiff.harness_diagnostics import (
+        denial_sentence,
+        summarize_harness_diagnostics,
+    )
+
+    harness_diag = summarize_harness_diagnostics(
+        runs_by_arm, results.get("retries") or []
+    )
+    if harness_diag["has_issues"]:
+        lines = []
+        for arm, data in sorted(harness_diag["denials"].items()):
+            lines.append("  - " + denial_sentence(arm, data))
+        if harness_diag["model_mismatches"]:
+            lines.append(
+                "  - Model mismatch: "
+                + "; ".join(
+                    f"{item['configured']} served as {', '.join(item['served'])}"
+                    for item in harness_diag["model_mismatches"][:5]
+                )
+            )
+        if harness_diag["retries"].get("count"):
+            lines.append(
+                f"  - Rate-limit retries: {harness_diag['retries']['count']} event(s)"
+            )
+        if lines:
+            sections.append("Harness diagnostics:\n" + "\n".join(lines))
     evaluation_table = render_evaluation_table(results)
     if evaluation_table:
         sections.append(evaluation_table)
@@ -1899,6 +2260,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--preset",
         choices=["skill", "pr", "revision", "compression"],
         help="Named preset configuring arms and decision criteria",
+    )
+    init_parser.add_argument(
+        "--template",
+        choices=["claude-eval"],
+        help="Scaffold an opt-in Claude app-evaluation template",
     )
     init_parser.add_argument(
         "--skill-invocation",
@@ -2003,6 +2369,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--resume-from", help="Resume a specific run directory (strict hash check)"
     )
+    run_parser.add_argument(
+        "--no-probe",
+        action="store_true",
+        help="Skip Claude model and sandbox probes before the first paid session",
+    )
     run_parser.add_argument("--seed", type=int, help="Override the randomization seed")
     run_parser.add_argument("--max-turns", type=int, help="Override max turns per session")
     run_parser.add_argument(
@@ -2078,6 +2449,10 @@ def build_parser() -> argparse.ArgumentParser:
         "lint", help="Static linter for SKILL.md: frontmatter, triggers, links, and length"
     )
     lint_parser.add_argument("skill_dir", nargs="?", default=".", help="Path to skill directory")
+    lint_parser.add_argument(
+        "--prompts",
+        help="Task file, directory, or glob; report description coverage before a run",
+    )
     lint_parser.add_argument("--json", action="store_true", help="Output lint report as JSON")
     lint_parser.set_defaults(func=cmd_lint)
 

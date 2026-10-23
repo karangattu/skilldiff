@@ -38,13 +38,13 @@ def test_load_experiment_valid(tmp_path: Path):
     exp_file = tmp_path / "skilldiff.yaml"
     exp_file.write_text(
         "name: test-exp\nskill: ./skills/test-skill\n"
-        "models:\n  - sonnet\ntasks:\n  - ./tasks/*.yaml\nruns: 2\n"
+        "models:\n  - claude-sonnet-5-5\ntasks:\n  - ./tasks/*.yaml\nruns: 2\n"
     )
 
     exp_cfg, tasks = load_experiment(exp_file)
     assert exp_cfg.name == "test-exp"
     assert exp_cfg.skill == skill_dir.resolve()
-    assert exp_cfg.models == ["sonnet"]
+    assert exp_cfg.models == ["claude-sonnet-5-5"]
     assert exp_cfg.runs == 2
     assert exp_cfg.claude.auth == "subscription"
     assert len(tasks) == 1
@@ -62,7 +62,7 @@ def test_load_experiment_missing_skill_md(tmp_path: Path):
     exp_file = tmp_path / "skilldiff.yaml"
     exp_file.write_text(
         "name: test-exp\nskill: ./skills/empty-skill\n"
-        "models:\n  - sonnet\ntasks:\n  - ./tasks/*.yaml\n"
+        "models:\n  - claude-sonnet-5-5\ntasks:\n  - ./tasks/*.yaml\n"
     )
 
     with pytest.raises(FileNotFoundError, match="SKILL.md"):
@@ -77,7 +77,7 @@ def test_load_experiment_no_tasks(tmp_path: Path):
     exp_file = tmp_path / "skilldiff.yaml"
     exp_file.write_text(
         "name: test-exp\nskill: ./skills/test-skill\n"
-        "models:\n  - sonnet\ntasks:\n  - ./nonexistent/*.yaml\n"
+        "models:\n  - claude-sonnet-5-5\ntasks:\n  - ./nonexistent/*.yaml\n"
     )
 
     with pytest.raises(ValueError, match="No task files matched"):
@@ -95,7 +95,7 @@ def test_load_experiment_reads_claude_permissions(tmp_path: Path):
     exp_file.write_text(
         "name: test\n"
         "skill: ./skill\n"
-        "models:\n  - sonnet\n"
+        "models:\n  - claude-sonnet-5-5\n"
         "tasks:\n  - ./tasks/*.yaml\n"
         "claude:\n"
         "  auth: api_key\n"
@@ -122,7 +122,7 @@ def test_load_experiment_rejects_unknown_claude_auth(tmp_path: Path):
     exp_file.write_text(
         "name: test\n"
         "skill: ./skill\n"
-        "models:\n  - sonnet\n"
+        "models:\n  - claude-sonnet-5-5\n"
         "tasks:\n  - ./tasks/*.yaml\n"
         "claude:\n"
         "  auth: surprise\n"
@@ -139,7 +139,7 @@ def _pricing_yaml() -> str:
         '  date: "2026-09-27"\n'
         "  currency: USD\n"
         "  rates:\n"
-        "    sonnet:\n"
+        "    claude-sonnet-5-5:\n"
         "      input: 3.0\n"
         "      output: 15.0\n"
         "      cache_read: 0.3\n"
@@ -158,7 +158,7 @@ def test_load_experiment_pricing_block(tmp_path: Path):
     exp_file.write_text(
         "name: test\n"
         "skill: ./skill\n"
-        "models:\n  - sonnet\n"
+        "models:\n  - claude-sonnet-5-5\n"
         "tasks:\n  - ./tasks/*.yaml\n" + _pricing_yaml()
     )
 
@@ -166,8 +166,8 @@ def test_load_experiment_pricing_block(tmp_path: Path):
     assert exp_cfg.pricing["source"] == "https://example.com/pricing"
     assert exp_cfg.pricing["date"] == "2026-09-27"
     assert exp_cfg.pricing["currency"] == "USD"
-    assert exp_cfg.pricing["rates"]["sonnet"]["input"] == 3.0
-    assert exp_cfg.pricing["rates"]["sonnet"]["cache_write"] == 3.75
+    assert exp_cfg.pricing["rates"]["claude-sonnet-5-5"]["input"] == 3.0
+    assert exp_cfg.pricing["rates"]["claude-sonnet-5-5"]["cache_write"] == 3.75
 
 
 def test_parse_pricing_requires_provenance_and_complete_rates():
@@ -260,12 +260,12 @@ def _scaffold(tmp_path: Path) -> Path:
     return tmp_path / "skilldiff.yaml"
 
 
-_BASE = "name: test\nskill: ./skill\nmodels:\n  - sonnet\ntasks:\n  - ./tasks/*.yaml\n"
+_BASE = "name: test\nskill: ./skill\nmodels:\n  - claude-sonnet-5-5\ntasks:\n  - ./tasks/*.yaml\n"
 
 
 def test_load_experiment_rejects_unknown_top_level_key(tmp_path: Path):
     exp_file = _scaffold(tmp_path)
-    exp_file.write_text(_BASE + "modles:\n  - sonnet\n")
+    exp_file.write_text(_BASE + "modles:\n  - claude-sonnet-5-5\n")
 
     with pytest.raises(ValueError, match="Unknown key") as excinfo:
         load_experiment(exp_file)

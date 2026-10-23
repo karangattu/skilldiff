@@ -51,13 +51,19 @@ runs before it can judge an arm; fewer measured runs is thin evidence, reported
 as such. An arm whose adoption could not be measured — the harness saw a skill
 call but no result for it — also blocks a SHIP. An arm the harness never reported
 adoption for is a gap in the evidence, not a failure, and does not block a
-decision. When the
-config records `pricing:` rates (per 1M tokens, with source and date), reports
-also reproduce an **API-equivalent cost** table from the saved token breakdown.
-Set `cost_basis: api-equivalent` before the run to use that estimate in the
-closing decision and saved cost aggregates as well. The default is `harness`; old results
-without a recorded basis keep their original interpretation. Missing usage
-or model rates remain `N/A`, and the original harness cost stays in `run.json`.
+decision. The config can record `pricing:` rates (per 1M tokens, with source and date), but
+Claude models use a built-in rate table keyed by full model ID. Reports
+reproduce an **API-equivalent cost** table from the saved token breakdown. On
+subscription auth, `cost_basis: api-equivalent` is the default; API-key runs keep
+the harness cost unless `api-equivalent` is set explicitly. Old results without a
+recorded basis keep their original interpretation. Missing usage or model rates
+remain `N/A`, and the original harness cost stays in `run.json`.
+
+Haiku 5.5 is priced by prompt size (up to and over 100K tokens). Exact tiering
+uses per-request usage recorded from Claude's stream. A tiered run without that
+usage is `N/A` for the decision by default; `tier_policy: upper_bound` adds a
+labelled planning estimate that the SHIP/DO NOT SHIP calculation ignores.
+
 A **Skill context tax** table estimates the frozen skill's text footprint and
 the overhead if that text is carried on every turn. File size and estimated
 tokens are separate from measured harness token use; this table does not measure
@@ -69,7 +75,9 @@ Planned tasks with grader failures do not satisfy the task-coverage safeguard.
 
 A complete small evaluation lives in [`examples/csv-totals`](../examples/csv-totals):
 a skill, dev and held-out tasks, fixtures, a deterministic grader, and a
-committed sample report. Copy it as a starting point.
+committed sample report. Copy it as a starting point. The reusable
+[`examples/py-shiny-troubleshooting`](../examples/py-shiny-troubleshooting)
+pack adds a 6-task static-troubleshooting set.
 
 ## Example result
 
@@ -89,7 +97,7 @@ How to read the table:
 - If the interval includes zero, the result can be noise.
 - `N/A` means the value is unknown, not zero.
 - `n=X/Y` shows how many pairs gave a value.
-- Cost is the harness-reported price. On subscription auth the real spend is $0 at the margin. Record provider rates in `skilldiff.yaml` (`pricing:` with source, date, and per-model rates per 1M tokens) before the run; the report then prices the saved token breakdown itself, and regenerating the report reproduces the estimate.
+- Cost is the harness-reported price. On subscription auth the real spend is $0 at the margin, so Claude subscription runs default to API-equivalent cost. Full model IDs use the built-in table; add `pricing:` rates only to override them or to price another provider. Regenerating the report prices the saved token breakdown again.
 - If Codex omits `cache_write_input_tokens`, skilldiff calculates totals and API-equivalent cost from reported input, cache-read, and output counts; any unreported cache-write usage is excluded.
 
 ### Tips for clear results
@@ -151,7 +159,7 @@ discovery.
 
 ## Experiment files
 
-**What each folder holds:** `skilldiff.yaml` holds name, skill path, harness, models, tasks, run count, seed, thresholds, failure policy, skill invocation mode, and optional `pricing:` rates (source, date, per-1M-token prices) for reproducible API-equivalent costs. `tasks/` holds one YAML file per task with an id, a prompt (or `prompts:` for a multi-turn script), a category, an optional `split: dev|held-out`, an optional `skill_invocation:` override, optional path assertions (`allowed_paths`, `forbidden_paths`), and optional `validation: {good, broken}`. `fixtures/` holds the small test projects, copied fresh for each run without `.git` history and with escaping symlinks rejected. `graders/` holds the scripts that score the work.
+**What each folder holds:** `skilldiff.yaml` holds name, skill path, harness, models, tasks, run count, seed, thresholds, failure policy, skill invocation mode, and optional `pricing:` overrides for API-equivalent costs (Claude full model IDs already have built-in rates). `tasks/` holds one YAML file per task with an id, a prompt (or `prompts:` for a multi-turn script), a category, an optional `split: dev|held-out`, an optional `skill_invocation:` override, optional path assertions (`allowed_paths`, `forbidden_paths`), and optional `validation: {good, broken}`. `fixtures/` holds the small test projects, copied fresh for each run without `.git` history and with escaping symlinks rejected. `graders/` holds the scripts that score the work.
 
 Every key listed there is checked when the config loads: an unknown or misspelled key (in the experiment file, a nested block such as `claude:` or `thresholds:`, a task file, or a `grader:`) fails `skilldiff check` and `skilldiff run` immediately, naming the closest matching key, instead of being ignored while the run uses defaults you never chose.
 
@@ -496,23 +504,23 @@ Keep the entire run directory, including `inputs/`, for recovery. A small siblin
 
 | Command | What it does |
 |---|---|
-| `skilldiff init [--skill PATH] [--harness H] [--dir D]` | Make a demo or a template for your skill |
+| `skilldiff init [--skill PATH] [--harness H] [--dir D]` | Make a demo or a template for your skill; `--template claude-eval` adds profile, pinned model, cost basis, and split layout |
 | `skilldiff init --skill-a A --skill-b B [--include-baseline] [--preset revision\|compression] [--dir D]` | Make a skill A/B test with paired results |
 | `skilldiff init --pr N --repo PATH [--base REF] [--pr-mode M] [--pr-pair P]` | Make a PR test from local refs |
-| `skilldiff check [-c CONFIG] [--no-probe] [--no-grade] [--scan-home]` | Check config, CLI, skill exposure, and graders; optionally scan HOME for copies. `--no-probe` skips the Claude login call; `--no-grade` skips graders. |
-| `skilldiff run [-c CONFIG] [--runs N] [--split dev\|held-out] [-j N] [-m MODEL] [-t TASK] [--resume \| --resume-from DIR] [--seed N]` | Run the test (resume reuses pairs only when hashes match) |
+| `skilldiff check [-c CONFIG] [--no-probe] [--no-grade] [--scan-home]` | Check config, CLI, skill exposure, model and sandbox preflight, and graders; `--no-probe` skips paid Claude probes |
+| `skilldiff run [-c CONFIG] [--runs N] [--split dev\|held-out] [-j N] [-m MODEL] [-t TASK] [--resume \| --resume-from DIR] [--seed N] [--no-probe]` | Run the test (resume reuses pairs only when hashes match; `--no-probe` skips Claude model/canary preflight) |
 | `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run |
 | `skilldiff report [RUN_DIR]` | Rebuild reports for a run |
 | `skilldiff regrade [RUN_DIR] [-c CONFIG] [-t TASK] [--dry-run]` | Re-run the current graders on a finished run without any agent session |
 | `skilldiff compare RUN_A RUN_B [--json] [--strict]` | Compare two runs |
-| `skilldiff lint [SKILL_DIR] [--json]` | Lint SKILL.md frontmatter, trigger keywords, and length |
+| `skilldiff lint [SKILL_DIR] [--prompts PATH] [--json]` | Lint SKILL.md frontmatter, trigger keywords, and length; optionally compare the description with task prompts |
 | `skilldiff diagnose [RUN_DIR] [--json]` | Diagnose failure modes, regressions, and adoption gaps |
 
 `regrade` is for grader fixes after the fact. It rebuilds each arm's final files from the run's frozen fixture plus the saved `diff.patch`, grades them with the current graders, and rewrites scores, aggregates, and reports. Each regraded record keeps its earlier grade under `regrade_history`, `results.json` gains a `regrades` entry, and the report shows a warning that the run was regraded, so the change stays auditable. Use `--dry-run` to see which scores would change first. A pair whose diff cannot be rebuilt (binary or excluded files) keeps its original grade and is reported as skipped. PR experiments are not supported.
 
 `lint` checks a `SKILL.md` before you spend anything: required frontmatter, naming rules, description length and broad phrasing, unclosed code fences, and broken relative links, with an estimated token count. `diagnose` reads a finished run and names what went wrong: a skill that never triggered or triggered only partially on intended tasks, one that triggered on irrelevant tasks, a skill that loaded without changing outcomes, regressions, blast-radius violations, agent failures, permission denials, and token bloat without score gains, each with a suggested fix. Its JSON includes per-arm `skill_usage` and structured `next_actions` for improving the hit rate, plus `adoption_basis` naming the runs it judged. `diagnose` and `results.json` use the same decision basis as the report, so they reach the same adoption verdict.
 
-Claude Code. The default uses your subscription. SkillDiff removes `ANTHROPIC_API_KEY` from each run. To bill through the API, set `auth: api_key` and export the key. `sandbox: true` (default) runs Bash inside Claude Code's own sandbox, so commands need no approval but write only to the workspace and cannot read grader or skill sources. Set `allowed_domains` for hosts commands may reach. With `sandbox: false`, use `permission_mode` plus `allowed_tools`. `isolate: true` selects project/local settings. It does not guarantee that global skills, plugins, or instructions are absent; runtime skill discovery is checked separately. SkillDiff preserves subscription credentials and does not use `--bare`.
+Claude Code. The default uses your subscription and `claude-sonnet-5-5`. SkillDiff removes `ANTHROPIC_API_KEY` from each run. To bill through the API, set `auth: api_key` and export the key. `sandbox: true` (default) runs Bash inside Claude Code's own sandbox, so commands need no approval but write only to the workspace and cannot read grader or skill sources. Set `allowed_domains` for hosts commands may reach. For app evaluations that need background launch and localhost, set `profile: eval`; it is opt-in, keeps the sandbox, and never allows unsandboxed commands. With `sandbox: false`, use `permission_mode` plus `allowed_tools`. `isolate: true` selects project/local settings. It does not guarantee that global skills, plugins, or instructions are absent; runtime skill discovery is checked separately. SkillDiff preserves subscription credentials and does not use `--bare`.
 
 Codex. The default uses stored login and removes `OPENAI_API_KEY`. Sandboxing is `sandbox: workspace-write` (or `dangerously_bypass_approvals_and_sandbox`). Network is off unless `network_access: true`. Single-turn sessions require `--ephemeral`; multi-turn threads require the app-server ephemeral interface. Required capabilities are checked before model execution.
 
@@ -520,9 +528,27 @@ OpenCode. The default `service: go` uses your Go subscription. Sign in with `ope
 
 Antigravity. Short names expand to full models. `gemini-3.8` becomes `gemini-3.8-flash-medium`. Permissions are `dangerously_skip_permissions`.
 
-Every harness records the tool calls it refused as `permission_denials` on each run: Claude's `permission_denials` result field, Codex sandbox violations and exec-policy rejections from its stderr log, plus filesystem errors inside failed command results (labeled `shell (sandbox: filesystem)`, `shell (exec policy)`, or `shell (filesystem: Operation not permitted)`), OpenCode's auto-rejected permission requests, and Antigravity's soft-denied tools (`denied_actions`). Reports warn per arm and `diagnose` lists the sessions, so a denied tool cannot pass as a low score. For Claude, each denial also carries the sandbox's stated reason (for example `Bash (Quoted text in this command can't be checked before it runs)`), taken from the `permission_denied` events, so `diagnose` can group refusals by cause.
+Every harness records the tool calls it refused as `permission_denials` on each run: Claude's `permission_denials` result field, Codex sandbox violations and exec-policy rejections from its stderr log, plus filesystem errors inside failed command results (labeled `shell (sandbox: filesystem)`, `shell (exec policy)`, or `shell (filesystem: Operation not permitted)`), OpenCode's auto-rejected permission requests, and Antigravity's soft-denied tools (`denied_actions`). The main report has a **Harness diagnostics** section with denial reasons, configured-versus-served models, unrecognized model IDs, and rate-limit retries; `diagnose` uses the same summary. A denied tool or model mismatch cannot pass as a low score; fix it and rerun before attributing the result to the skill.
 
-Claude runs also record `served_models`, the model IDs the harness reports serving. When a `models:` alias such as `haiku` is served as a different model, `diagnose` flags it and `skilldiff check` warns, so pricing and reports do not credit the usage to the configured name. Runs whose model the Claude CLI does not recognize are recorded as `unrecognized_models`; their harness-reported cost may not match list prices, so use `cost_basis: api-equivalent`. The `check` sandbox canary runs every Bash shape that the sandbox has refused in practice, and reports itself inconclusive when the agent skips any of them.
+Claude models must be pinned with full IDs such as `claude-sonnet-5-5` or
+`claude-haiku-5-5`. Bare family names (`sonnet`, `haiku`, `opus`) fail config
+loading because they can resolve to a different model than the one you priced.
+`skilldiff check` probes every configured model and fails when the harness serves
+a different model or when `cost_basis: harness` is used for an unrecognized one.
+Runs record the exact `served_models`.
+
+`claude.profile: eval` is an opt-in app-evaluation profile. It keeps Claude's OS
+sandbox on, auto-approves commands inside it, and sets
+`sandbox.network.allowLocalBinding: true` so app servers can use localhost.
+`allowUnsandboxedCommands` stays false, and grader/skill sources stay unreadable.
+Do not replace it with `sandbox: false`: that would expose the grader and skill
+sources and contaminate the control arm. `check` runs a profile-aware canary that
+must pass before a run, and it runs each task's `runtime_probe` through Claude's
+Bash tool when the task needs one.
+
+`skilldiff lint SKILL_DIR --prompts tasks/` compares task prompts with the skill
+description and warns about prompt terms the description never mentions. It is a
+cheap pre-run check for symptom-style prompts that may not trigger.
 
 Sign in with each CLI's normal login before you run. Each harness accepts `bin_path` and `extra_args`. You can also set `CLAUDE_BIN`, `CODEX_BIN`, `OPENCODE_BIN`, or `AGY_BIN`.
 

@@ -15,6 +15,7 @@ from skilldiff.adoption import (
     skill_arm_names,
     task_invocation_overrides,
 )
+from skilldiff.harness_diagnostics import denial_sentence, summarize_harness_diagnostics
 from skilldiff.scope import is_blast_violation
 from skilldiff.stats import METRICS, analysis_run, pair_runs, usable_agent_run
 
@@ -210,6 +211,7 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
                     identity | ({"skill_file_reads": file_reads} if file_reads else {})
                 )
 
+    harness = summarize_harness_diagnostics(arms, data.get("retries"))
     pairs = pair_runs(control_runs, treatment_runs)
     usable_score_pairs = 0
     unknown_token_pairs = 0
@@ -286,9 +288,15 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         if c_denials != t_denials and (c_denials > 0 or t_denials > 0):
             asymmetry = " (uneven across arms — confound)"
         pattern_str = f"; denied patterns: {', '.join(patterns)}" if patterns else ""
+        detail_str = "; ".join(
+            denial_sentence(arm, value)
+            for arm, value in sorted((harness.get("denials") or {}).items())
+        )
+        detail_part = f" {detail_str}." if detail_str else ""
         recommendations.append(
             f"Permission denials: the harness refused tool calls ({', '.join(tools)}) in "
-            f"{len(permission_denied)} session(s) ({arm_counts}{asymmetry}){pattern_str}. "
+            f"{len(permission_denied)} session(s) ({arm_counts}{asymmetry}){pattern_str}."
+            f"{detail_part} "
             "Headless sessions cannot answer prompts and sandboxed commands fail, so those "
             "agents worked without the tools. Fix the harness permissions (see `skilldiff check`) "
             "before blaming the agent or the skill."
@@ -309,6 +317,16 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
             f"Unrecognized models: the Claude CLI does not recognize {', '.join(unknown)} "
             f"({len(unrecognized_model_runs)} session(s)). Its harness-reported cost may not "
             "match list prices; use `cost_basis: api-equivalent` with recorded rates."
+        )
+    retries = harness.get("retries") or {}
+    if retries.get("count"):
+        arms_txt = ", ".join(
+            f"{arm}: {count}" for arm, count in sorted((retries.get("by_arm") or {}).items())
+        )
+        recommendations.append(
+            f"Rate-limit retries: {retries['count']} retry event(s) ({arms_txt}). "
+            "Retried attempts keep their own cost and are excluded from paired decisions; "
+            "if they cluster under parallel arms, lower `parallel`."
         )
     planned_pairs = _planned_pairs(data)
     expected_keys = _planned_keys(data)
@@ -485,6 +503,8 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         "agent_failures": agent_failures,
         "grader_failures": grader_failures,
         "permission_denied": permission_denied,
+        "harness_diagnostics": harness,
+        "rate_limit_retries": retries,
         "model_alias_mismatches": model_alias_mismatches,
         "unrecognized_model_runs": unrecognized_model_runs,
         "token_bloat_tasks": token_bloat_tasks,

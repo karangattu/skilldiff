@@ -1,8 +1,8 @@
-import math
 import statistics
 from typing import Any, Optional
 
 from skilldiff.adoption import adoption_eligible
+from skilldiff.pricing import price_run, rate_entry
 from skilldiff.stats import pair_runs, usable_agent_run
 
 
@@ -382,10 +382,27 @@ def _skill_usage(metrics: dict[str, Any]) -> str:
 def _cost_basis_note(results: dict[str, Any]) -> str:
     pricing = results.get("pricing") or {}
     if results.get("cost_basis") == "api-equivalent":
+        builtin = (
+            " Built-in Claude rates were used where no `pricing:` entry was given."
+            if pricing.get("builtin") else ""
+        )
+        source = (
+            "the built-in Claude rate table"
+            if pricing.get("builtin")
+            else str(pricing.get("source") or "recorded rates")
+        )
+        checked = (
+            "with per-model dates in the cost section"
+            if pricing.get("builtin")
+            else f"checked {pricing.get('date')}"
+        )
         return ("Decision cost basis: API-equivalent cost, calculated from recorded usage "
-                f"and rates from {pricing.get('source')} (checked {pricing.get('date')}). "
-                "This estimates API spend; it is not subscription billing. Missing usage "
-                "or model rates remain N/A. Saved harness cost is unchanged. "
+                f"and rates from {source} ({checked}). "
+                f"This estimates API spend; it is not subscription billing. Missing usage "
+                "or model rates remain N/A. Saved harness cost is unchanged."
+                f"{builtin} Tiered prompts without per-request usage stay N/A for the "
+                "decision unless `tier_policy: upper_bound` asks for a labelled planning "
+                "estimate. "
                 "For Codex, omitted cache-write usage is treated as zero; "
                 "the estimate excludes any unreported cache writes.")
     if pricing:
@@ -424,6 +441,8 @@ def _fmt_money(val: Any, currency: str = "USD") -> str:
         v = float(val)
     except (TypeError, ValueError):
         return "N/A"
+    if v != 0 and abs(v) < 0.01:
+        return "<$0.01" if currency == "USD" else f"<0.01 {currency}"
     return f"${v:.2f}" if currency == "USD" else f"{v:.2f} {currency}"
 
 
@@ -442,31 +461,34 @@ def _fmt_money_diff(val: Any, currency: str = "USD") -> str:
 def decision_cost_runs(runs: list[dict[str, Any]], results: dict[str, Any]) -> list[dict[str, Any]]:
     if results.get("cost_basis", "harness") != "api-equivalent":
         return runs
-    rates = (results.get("pricing") or {}).get("rates") or {}
+    pricing = results.get("pricing") or {}
     normalized = []
     for run in runs:
         record = dict(run)
         record["harness_cost"] = run.get("harness_cost", run.get("cost"))
         record["cost"] = None
-        model_rates = rates.get(str(run.get("model", ""))) or {}
-        usage = [run.get(field) for field, _ in _API_TOKEN_FIELDS]
-        if all(isinstance(value, (int, float)) and not isinstance(value, bool)
-               and math.isfinite(value) and value >= 0 for value in usage):
-            if all(key in model_rates for _, key in _API_TOKEN_FIELDS):
-                record["cost"] = sum(run[field] * model_rates[key]
-                                     for field, key in _API_TOKEN_FIELDS) / 1_000_000
+        entry = rate_entry(pricing, str(run.get("model", "")))
+        if entry:
+            # Decisions never use a tiered upper-bound planning estimate.
+            priced = price_run(entry, run, tier_policy="na")
+            record["cost"] = priced["cost"]
+            record["cost_basis_detail"] = priced["basis"]
         normalized.append(record)
     return normalized
 
 
 def _api_equivalent_summary(
-    runs: list[dict[str, Any]], pricing: dict[str, Any]
+    runs: list[dict[str, Any]],
+    pricing: dict[str, Any],
+    tier_policy: str = "na",
 ) -> dict[str, Any]:
-    rates = (pricing or {}).get("rates") or {}
     totals = {field: 0 for field, _ in _API_TOKEN_FIELDS}
     cost = 0.0
+    upper_bound = 0.0
     priced_runs = 0
+    upper_bound_runs = 0
     eligible_runs = 0
+    unknown_basis: set[str] = set()
     unpriced: set[str] = set()
     for run in runs or []:
         if not usable_agent_run(run):
@@ -480,19 +502,28 @@ def _api_equivalent_summary(
                 tokens[field] = 0
             totals[field] += tokens[field]
         model = str(run.get("model", ""))
-        model_rates = rates.get(model)
-        if not model_rates:
+        entry = rate_entry(pricing, model)
+        if not entry:
             if any(tokens.values()):
                 unpriced.add(model or "(missing model)")
             continue
-        priced_runs += 1
-        cost += sum(
-            tokens[field] * model_rates[rate_key] for field, rate_key in _API_TOKEN_FIELDS
-        ) / 1_000_000.0
+        priced = price_run(entry, run, tier_policy=tier_policy)
+        if priced["cost"] is None:
+            unknown_basis.add(model or "(missing model)")
+            continue
+        if priced["basis"] == "upper_bound":
+            upper_bound_runs += 1
+            upper_bound += float(priced["cost"])
+        else:
+            priced_runs += 1
+            cost += float(priced["cost"])
     return {
         "totals": totals,
         "cost": cost if priced_runs else None,
         "priced_runs": priced_runs,
+        "upper_bound_cost": upper_bound if upper_bound_runs else None,
+        "upper_bound_runs": upper_bound_runs,
         "eligible_runs": eligible_runs,
+        "unknown_basis": sorted(unknown_basis),
         "unpriced": sorted(unpriced),
     }

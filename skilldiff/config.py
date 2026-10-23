@@ -8,6 +8,13 @@ from typing import Any, Optional
 import yaml
 
 from skilldiff.invocation import EXPLICIT, INVOCATION_MODES, template_names_skill
+from skilldiff.pricing import (
+    MODEL_ALIASES,
+    PRICING_ENTRY_KEYS,
+    PRICING_TIER_KEYS,
+    is_bare_family_alias,
+    merge_pricing,
+)
 
 # Keys skilldiff actually reads from each block. Anything else is a typo or a
 # key borrowed from another tool; reject it at load time instead of silently
@@ -40,6 +47,7 @@ EXPERIMENT_KEYS = frozenset(
         "on_failure",  # alias of failure_policy
         "pricing",
         "cost_basis",
+        "tier_policy",
         "isolation",
         "container_image",
         "container_install",
@@ -65,6 +73,7 @@ CLAUDE_KEYS = frozenset(
         "bin_path",
         "extra_args",
         "read_paths",
+        "profile",
     }
 )
 CODEX_KEYS = frozenset(
@@ -236,6 +245,8 @@ def validate_experiment_values(data: dict[str, Any]) -> None:
         validate_enum(data["isolation"], "isolation", {"local", "docker", "podman", "macos"})
     if "cost_basis" in data:
         validate_enum(data["cost_basis"], "cost_basis", {"harness", "api-equivalent"})
+    if "tier_policy" in data:
+        validate_enum(data["tier_policy"], "tier_policy", {"na", "upper_bound"})
     for block in ("claude", "codex", "opencode", "antigravity", "agy"):
         values = data.get(block) or {}
         for key in ("bin_path", "variant", "provider"):
@@ -260,6 +271,7 @@ def validate_experiment_values(data: dict[str, Any]) -> None:
         ("effort", {"low", "medium", "high", "xhigh", "max"}),
         ("permission_mode", {"acceptEdits", "bypassPermissions", "default", "manual", "dontAsk",
                              "plan", "auto"}),
+        ("profile", {"eval"}),
     ):
         if key in claude:
             validate_enum(claude[key], f"claude.{key}", choices, nullable=True)
@@ -342,7 +354,13 @@ class ClaudeConfig:
     max_turns: Optional[int] = 30
     max_budget_usd: Optional[float] = 2.0
     permission_mode: Optional[str] = "acceptEdits"
+    # True when permission_mode came from the config file rather than the profile
+    # default. profile: eval selects bypassPermissions unless the user chose a mode.
+    permission_mode_explicit: bool = False
     allowed_tools: list[str] = field(default_factory=list)
+    # Opt-in evaluation profile. eval keeps Claude's OS sandbox and auto-approves
+    # commands inside it, so app and test commands do not stop at headless prompts.
+    profile: Optional[str] = None
     # Select project/local settings. Global skill/plugin availability still needs
     # runtime discovery checks; this does not establish filesystem isolation.
     isolate: bool = True
@@ -489,13 +507,22 @@ class ExperimentConfig:
     failure_policy: dict[str, str] = field(default_factory=dict)
     # Optional API-equivalent cost basis (all optional but validated):
     #   {source, date, currency, rates: {model: {input, output, cache_read,
-    #   cache_write}}} with rates per 1M tokens. Saved with the run so
+    #   cache_write}}} with rates per 1M tokens. Claude models without a user
+    #   entry are filled from the built-in table. Saved with the run so
     #   regenerated reports reproduce the estimate without re-looking-up prices.
     pricing: dict[str, Any] = field(default_factory=dict)
     isolation: str = "local"
     container_image: Optional[str] = None
     container_install: bool | str | list[str] | None = None
     cost_basis: str = "harness"
+    # Models with no rate entry. check/run fail before spending when the basis is
+    # api-equivalent, instead of silently falling back to harness cost.
+    pricing_unpriced: list[str] = field(default_factory=list)
+    # True when cost_basis came from the harness/auth default rather than YAML.
+    cost_basis_implicit: bool = False
+    # Tiered models without per-request usage are N/A for decisions by default.
+    # "upper_bound" shows a labelled planning estimate that decisions still ignore.
+    tier_policy: str = "na"
     env: dict[str, str] = field(default_factory=dict)
     max_turns: Optional[int] = None
     max_tool_budget: Optional[int] = None
@@ -691,6 +718,73 @@ def parse_task_split(value: Any, task_path: Optional[Path], task_id: str) -> str
 PRICING_RATE_KEYS = ("input", "output", "cache_read", "cache_write")
 
 
+def _parse_rate_values(entry: dict[str, Any], context: str) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for key in PRICING_RATE_KEYS:
+        if key not in entry or entry[key] is None:
+            raise ValueError(
+                f"{context} must include '{key}' (rate per 1M tokens)"
+            )
+        try:
+            validate_number(entry[key], f"{context}.{key}")
+        except ValueError as exc:
+            raise ValueError(f"{exc} (rate per 1M tokens)") from exc
+        out[key] = float(entry[key])
+    return out
+
+
+def _parse_price_entry(model: str, entry: Any) -> dict[str, Any]:
+    context = f"pricing.rates.{model}"
+    if not isinstance(entry, dict):
+        raise ValueError(f"{context} must be a mapping of token rates")
+    reject_unknown_keys(entry, PRICING_ENTRY_KEYS, f"{context} block")
+    if "tiers" not in entry:
+        return _parse_rate_values(entry, context)
+
+    tiers_raw = entry["tiers"]
+    flat_keys = [key for key in PRICING_RATE_KEYS if key in entry]
+    if flat_keys:
+        raise ValueError(
+            f"{context} must use either flat rates or 'tiers', not both "
+            f"(found {', '.join(flat_keys)})"
+        )
+    if not isinstance(tiers_raw, list) or not tiers_raw:
+        raise ValueError(f"{context}.tiers must be a non-empty list")
+    tiers: list[dict[str, Any]] = []
+    previous = 0
+    saw_open_ended = False
+    for index, tier in enumerate(tiers_raw):
+        tier_context = f"{context}.tiers[{index}]"
+        if not isinstance(tier, dict):
+            raise ValueError(f"{tier_context} must be a mapping")
+        reject_unknown_keys(tier, PRICING_TIER_KEYS, f"{tier_context} block")
+        rates = _parse_rate_values(tier, tier_context)
+        if "max_prompt_tokens" in tier:
+            if saw_open_ended:
+                raise ValueError(f"{tier_context} cannot follow an open-ended tier")
+            maximum = tier["max_prompt_tokens"]
+            validate_integer(maximum, f"{tier_context}.max_prompt_tokens", positive=True)
+            if maximum <= previous:
+                raise ValueError(
+                    f"{tier_context}.max_prompt_tokens must be greater than {previous}"
+                )
+            previous = int(maximum)
+            rates["max_prompt_tokens"] = previous
+        else:
+            saw_open_ended = True
+            if index != len(tiers_raw) - 1:
+                raise ValueError(
+                    f"{tier_context} without max_prompt_tokens must be the last tier"
+                )
+        tiers.append(rates)
+    if not saw_open_ended:
+        raise ValueError(
+            f"{context}.tiers must end with an open-ended tier "
+            "(no max_prompt_tokens) so every prompt size is priced"
+        )
+    return {"tiers": tiers}
+
+
 def parse_pricing(data: Any) -> dict[str, Any]:
     """Validate the optional `pricing` block (API-equivalent cost basis).
 
@@ -703,11 +797,25 @@ def parse_pricing(data: Any) -> dict[str, Any]:
           date: "2026-09-27"
           currency: USD
           rates:
-            claude-sonnet-5:
-              input: 3.00
-              output: 15.00
-              cache_read: 0.30
-              cache_write: 3.75
+            claude-sonnet-5-5:
+              input: 2.00
+              output: 10.00
+              cache_read: 0.10
+              cache_write: 2.50
+
+    A model priced by prompt size uses `tiers` instead. The final tier has no
+    `max_prompt_tokens` and covers larger prompts:
+            claude-haiku-5-5:
+              tiers:
+                - max_prompt_tokens: 100000
+                  input: 0.10
+                  output: 0.50
+                  cache_read: 0.01
+                  cache_write: 0.125
+                - input: 0.50
+                  output: 2.50
+                  cache_read: 0.05
+                  cache_write: 0.625
     """
     if data is None:
         return {}
@@ -729,25 +837,9 @@ def parse_pricing(data: Any) -> dict[str, Any]:
             "pricing.rates must map model names to per-1M-token rates "
             "(input, output, cache_read, cache_write)"
         )
-    rates: dict[str, dict[str, float]] = {}
+    rates: dict[str, dict[str, Any]] = {}
     for model, entry in rates_raw.items():
-        if not isinstance(entry, dict):
-            raise ValueError(f"pricing.rates.{model} must be a mapping of token rates")
-        reject_unknown_keys(
-            entry, frozenset(PRICING_RATE_KEYS), f"pricing.rates.{model} block"
-        )
-        out: dict[str, float] = {}
-        for key in PRICING_RATE_KEYS:
-            if key not in entry or entry[key] is None:
-                raise ValueError(
-                    f"pricing.rates.{model} must include '{key}' (rate per 1M tokens)"
-                )
-            try:
-                validate_number(entry[key], f"pricing.rates.{model}.{key}")
-            except ValueError as exc:
-                raise ValueError(f"{exc} (rate per 1M tokens)") from exc
-            out[key] = float(entry[key])
-        rates[str(model)] = out
+        rates[str(model)] = _parse_price_entry(str(model), entry)
     return {"source": source, "date": date, "currency": currency, "rates": rates}
 
 
@@ -881,10 +973,8 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     reject_unknown_keys(data, EXPERIMENT_KEYS, f"experiment config {experiment_path}")
     reject_unknown_block_keys(data)
     validate_experiment_values(data)
-    pricing = parse_pricing(data.get("pricing"))
-    cost_basis = data.get("cost_basis", "harness")
-    if cost_basis == "api-equivalent" and not pricing:
-        raise ValueError("cost_basis: api-equivalent requires recorded pricing rates")
+    user_pricing = parse_pricing(data.get("pricing"))
+    cost_basis_raw = data.get("cost_basis")
 
     name = data.get("name")
     if not name:
@@ -955,6 +1045,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     models = data.get("models")
     if not models or not isinstance(models, list):
         raise ValueError("Experiment config must specify a non-empty list of 'models'")
+    validate_string_list(models, "models", nonempty=True)
 
     task_patterns = data.get("tasks", [])
     if not task_patterns or not isinstance(task_patterns, list):
@@ -981,6 +1072,14 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         raise ValueError(
             f"Invalid harness '{harness}'. Must be one of: {', '.join(sorted(valid_harnesses))}"
         )
+    if harness == "claude":
+        for model in models:
+            if is_bare_family_alias(str(model)):
+                replacement = MODEL_ALIASES[str(model).strip().lower()]
+                raise ValueError(
+                    f"models: '{model}' is a bare family alias. Pin the full model ID "
+                    f"'{replacement}' instead; aliases can resolve to a different model."
+                )
 
     claude_data = data.get("claude") or {}
     auth = str(claude_data.get("auth", "subscription"))
@@ -993,10 +1092,12 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         max_turns=claude_data.get("max_turns", 30),
         max_budget_usd=float(budget_val) if budget_val is not None else 2.0,
         permission_mode=claude_data.get("permission_mode", "acceptEdits"),
+        permission_mode_explicit="permission_mode" in claude_data,
         allowed_tools=claude_data.get("allowed_tools", []),
         isolate=claude_data.get("isolate", True),
         sandbox=claude_data.get("sandbox", True),
         allowed_domains=claude_data.get("allowed_domains", []),
+        profile=claude_data.get("profile"),
         bin_path=claude_data.get("bin_path"),
         extra_args=claude_data.get("extra_args", []),
         read_paths=[str((experiment_path.parent / Path(p).expanduser()).resolve())
@@ -1108,6 +1209,41 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     max_tool_budget = data.get("max_tool_budget")
     terminate_on_ceiling = bool(data.get("terminate_on_ceiling", False))
 
+    if claude_cfg.profile == "eval" and isolation == "local" and not claude_cfg.sandbox:
+        raise ValueError(
+            "claude.profile: eval requires claude.sandbox: true; disable the profile "
+            "instead of exposing grader and skill sources to the agent"
+        )
+
+    pricing, unpriced = merge_pricing(user_pricing, models, harness)
+    implicit_basis = cost_basis_raw is None
+    if implicit_basis:
+        # Subscription Claude spend is $0 at the margin, so harness cost is not a
+        # decision cost. PR correctness runs have no agent sessions or cost decision.
+        correctness_only = bool(pr is not None and pr.mode == "correctness")
+        cost_basis = (
+            "api-equivalent"
+            if harness == "claude" and auth == "subscription" and not correctness_only
+            else "harness"
+        )
+    else:
+        cost_basis = str(cost_basis_raw).strip().lower()
+    if cost_basis == "api-equivalent" and not implicit_basis:
+        if not pricing:
+            raise ValueError(
+                "cost_basis: api-equivalent requires recorded pricing rates or a "
+                "Claude model in the built-in rate table"
+            )
+        if unpriced:
+            raise ValueError(
+                "cost_basis: api-equivalent has no rates for "
+                + ", ".join(f"'{model}'" for model in unpriced)
+                + ". Add a pricing.rates entry or pin a full model ID with built-in rates."
+            )
+    tier_policy = str(data.get("tier_policy", "na") or "na").strip().lower()
+    if tier_policy not in {"na", "upper_bound"}:
+        raise ValueError("tier_policy must be 'na' or 'upper_bound'")
+
     skill_invocation = str(data.get("skill_invocation") or "implicit").strip().lower()
     if skill_invocation not in INVOCATION_MODES:
         raise ValueError("skill_invocation must be 'implicit' or 'explicit'")
@@ -1142,6 +1278,9 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         thresholds=thresholds,
         pricing=pricing,
         cost_basis=cost_basis,
+        pricing_unpriced=list(unpriced),
+        cost_basis_implicit=implicit_basis,
+        tier_policy=tier_policy,
         isolation=isolation,
         container_image=container_image,
         container_install=container_install,

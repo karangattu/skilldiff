@@ -8,21 +8,30 @@ This project uses semantic versioning.
 
 ### Added
 
+- Claude runs use a built-in rate table keyed by full model ID, with source and checked date. `claude-sonnet-5-5`, `claude-haiku-5-5`, and `claude-opus-5-5` need no `pricing:` block; user rates override the table.
+- `pricing.rates` accepts `tiers` for prompt-size pricing. Haiku 5.5 uses its up-to-100K and over-100K rates. Claude runs record per-request usage so each request is priced at its own tier; without that usage, tiered decision cost is `N/A` unless `tier_policy: upper_bound` asks for a labelled planning estimate.
+- Claude subscription runs default to `cost_basis: api-equivalent`; API-key and other-harness runs keep `harness`.
+- `claude.profile: eval` is an opt-in app-evaluation profile. It keeps Claude's OS sandbox on, auto-approves commands inside it, and allows localhost binding; unsandboxed commands stay disabled.
+- `skilldiff init --template claude-eval` scaffolds pinned models, API-equivalent cost, the eval profile, thresholds, and `tasks/dev` + `tasks/heldout`.
+- `skilldiff lint --prompts PATH` reports task prompts that share little distinctive language with the skill description.
+- The report has a **Harness diagnostics** section with denial reasons, served models, unrecognized models, and rate-limit retries. `diagnose` uses the same summary.
 - Claude denials name the sandbox's stated reason. The `permission_denied` events carry it, and it was previously dropped, so `diagnose` could only list tool names. A denial now reads like `Bash (Quoted text in this command can't be checked before it runs)`.
 - Claude runs record `served_models` (the model IDs the harness reports serving) and `unrecognized_models` (IDs the Claude CLI flags as unknown on stderr). `results.json` and `diagnose --json` expose both.
-- `skilldiff check` warns when a configured `models:` name is served as a different model, such as `haiku` resolving to Haiku 4.5, and when the Claude CLI does not recognize the configured model.
-- `skilldiff diagnose` recommends pinning a full model ID for an alias mismatch, and recommends `cost_basis: api-equivalent` for unrecognized models.
+- `skilldiff check` fails when a configured full model ID is served as a different model, and bare family names such as `haiku` fail config loading with the replacement ID. The Claude CLI not recognizing a model also fails when `cost_basis: harness` is selected.
+- `skilldiff diagnose` recommends pinning a full model ID for a served-model mismatch, and recommends `cost_basis: api-equivalent` for unrecognized models.
 
 ### Fixed
 
-- The sandbox canary runs the Bash shapes the sandbox refuses in practice: a backgrounded command followed by `$!`, command substitution in a redirect, `cd` before `git`, and brace expansion next to a quote. The old canary ran only benign commands and reported the sandbox as permitting everything while real runs were refused. It now runs up to 12 turns with a $0.25 budget (previously 2 turns and $0.10), and it warns when the agent skips a shape, which makes the result inconclusive.
-- The auth probe budget is $0.25, up from $0.05. The budget is enforced against the CLI's own cost figure, which can exceed list price for models it does not recognize. A $0.05 cap ended the probe with `error_max_budget_usd`, which `check` reported as an unconfirmed auth session.
-- The `check` warning for denied canary shapes joins reasons with `; `, since reasons can contain commas.
+- The sandbox canary runs the Bash shapes the sandbox refuses in practice: quoted text, a variable, command substitution in a redirect, `cd` before `git`, and brace expansion next to a quote. `claude.profile: eval` adds managed background launch, localhost binding, and git commits. Any refusal or skipped shape now fails `check`.
+- The auth probe and canary budgets scale from the built-in rate table instead of a fixed guess. `check` fails when `max_budget_usd` is below four times the observed cost of one probe call, and a probe that hits its cap is distinguished from an auth failure.
+- The `check` failure for denied canary shapes joins reasons with `; `, since reasons can contain commas.
 
 ### Changed
 
+- Claude scaffolds pin `claude-sonnet-5-5`; `skilldiff init` no longer writes the `sonnet` alias. Bare family aliases fail config loading instead of resolving silently.
+- `run` verifies Claude model and canary preflight before the first paid session; `run --no-probe` skips it.
 - The progress line reports `harness-reported spend`, not `spent`. The figure is the CLI's own cost, which can be far above the API-equivalent cost for unrecognized models.
-- `probe_claude_auth` returns `(ok, detail, notes)` and `probe_claude_sandbox_canary` returns `(ok, denials, inconclusive)`. These are internal runner APIs.
+- `probe_claude_auth` returns a structured model probe and `probe_claude_sandbox_canary` returns a structured command probe. These are internal runner APIs.
 
 ## [0.26.0] - 2026-10-20
 

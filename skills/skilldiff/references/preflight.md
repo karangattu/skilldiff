@@ -99,11 +99,20 @@ When concurrency is omitted, real agent runs may use automatic workers.
 
 ## Trial evidence and cost decisions
 
-Choose `cost_basis: harness` (default) or `api-equivalent` before the run.
-API-equivalent decisions require recorded `pricing:` rates and measured token
-categories; missing usage or rates stay unknown. Never change the basis after
-seeing results to improve the verdict. Historical results with no basis retain
-harness cost, and saved harness telemetry is not overwritten.
+Claude subscription runs default to `cost_basis: api-equivalent`; API-key and
+other-harness runs default to `harness`. Full Claude model IDs use the built-in
+rate table, so no `pricing:` block is needed. Add `pricing:` rates only to
+override the table or price another provider. API-equivalent decisions require
+measured token categories; missing usage or rates stay unknown. Tiered Haiku
+prompts without per-request usage are `N/A` for the decision unless
+`tier_policy: upper_bound` asks for a labelled planning estimate, which the
+decision ignores. Never change the basis after seeing results to improve the
+verdict. Historical results with no basis retain harness cost, and saved harness
+telemetry is not overwritten.
+
+`check` sizes the auth probe and canary budgets from the rate table, and fails
+when `claude.max_budget_usd` is below four times the observed cost of one probe
+call. That prevents a cap sized from a guess from ending the real run early.
 
 Each returned arm immediately publishes telemetry, response, transcript, and
 diff before its partner or grader finishes. Interrupted arms have explicit
@@ -130,9 +139,18 @@ harness failures; SkillDiff does not silently retry them or give them zero score
 | Harness | Default | When the tasks need the network |
 |---|---|---|
 | `claude` | `sandbox: true`: Bash runs in Claude's own sandbox without prompts | `allowed_domains: ["pypi.org", ...]` |
+| `claude` + `profile: eval` | sandbox stays on; commands inside it are auto-approved and localhost binding is allowed | add app hosts to `allowed_domains` |
 | `codex` | `sandbox: workspace-write`, no prompts | `network_access: true` |
 | `opencode` | `dangerously_skip_permissions: true` (passes `--auto`) | already allowed |
 | `antigravity` | `dangerously_skip_permissions: true` | already allowed |
+
+`claude.profile: eval` is opt-in. It does not disable filesystem isolation and
+keeps `allowUnsandboxedCommands: false`. Commands that the sandbox can validate
+run without a headless prompt, which is what app servers, background launches,
+and git workflows need. `check` runs a profile-aware canary and fails on any
+refused or skipped shape. For local Claude runs it also runs each task's
+`runtime_probe` through Claude's Bash tool; a probe that cannot run is a failure,
+not a warning.
 
 Claude's sandbox keeps commands, but not its Read tool, away from grader and skill
 sources. OpenCode and Antigravity do not confine commands. Use `isolation: docker`/`podman`
@@ -154,10 +172,12 @@ Variables that tie a process to that agent's session are removed from every chil
 
 ## Native CLI contract
 
-`check --no-probe` skips paid Claude authentication probes but still validates
-versions, commands, and structured formats without credentials. `run` performs
-these checks in every arm's selected execution boundary before the first paid
-session. No legacy flag-removal retry is allowed. Codex discovery checks the
+`check --no-probe` skips paid Claude authentication, model, canary, and task
+probe calls but still validates versions, commands, and structured formats
+without credentials. `run` performs its model and canary preflight before the
+first paid session unless `--no-probe` is passed, and each arm's workspace
+preflight runs in its selected execution boundary. No legacy flag-removal retry
+is allowed. Codex discovery checks the
 actual app-server skill list; Claude initialization reports target availability.
 AGY native global and plugin directories are scanned as advisory exposure only.
 OpenCode `--standalone` selects a private server, not a clean configuration profile.
@@ -183,8 +203,11 @@ use `codex app-server` instead of `exec`.
   `skilldiff run -c skill-eval/skilldiff.yaml` with your shell tool's background
   option, check its progress output now and then, and read `skilldiff results` when
   it ends.
-- For Claude, `check` makes one tiny authenticated call (`--no-probe` skips it) to
-  catch an expired login.
+- For Claude, `check` makes one tiny authenticated call per configured model
+  (`--no-probe` skips it) to catch an expired login and a model mismatch. It also
+  runs the sandbox canary; any denied or skipped command shape fails the check.
+  `run` repeats the model and canary preflight before the first paid session
+  unless you pass `--no-probe`.
 - If `check` reports that the harness CLI is missing, or a smoke run fails with "Not
   logged in", ask the user to sign in with that harness's normal login (for example
   `claude auth login` or `opencode auth login`). Never ask for or handle their

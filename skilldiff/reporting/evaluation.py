@@ -287,7 +287,9 @@ def _evaluation_rows(
                 for r in token_group
             )
             token_metrics = calculate_metrics(token_group)
-            api = _api_equivalent_summary(token_group, pricing)
+            api = _api_equivalent_summary(
+                token_group, pricing, tier_policy=str(results.get("tier_policy") or "na")
+            )
             used, known = metrics["skill_used_count"], metrics["skill_known_count"]
             eligible_count = calculate_metrics(group_all)["total_count"]
             loaded = ("yes" if used else "no") if eligible_count == known == 1 else (
@@ -313,7 +315,14 @@ def _evaluation_rows(
                 "turns": total("num_turns", group),
                 "cost": (
                     api["cost"]
-                    if tokens_known and api["priced_runs"] == len(token_group) else None
+                    if tokens_known and api["priced_runs"] == len(token_group)
+                    else (
+                        api["upper_bound_cost"]
+                        if tokens_known
+                        and results.get("tier_policy") == "upper_bound"
+                        and api["upper_bound_runs"] == len(token_group)
+                        else None
+                    )
                 ),
             }
             values[arm] = v

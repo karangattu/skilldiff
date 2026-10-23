@@ -43,7 +43,7 @@ def pr_experiment(tmp_path):
     data = dict(
         name="pr-eval",
         pr=dict(repo="./repo", base="base", head="feature"),
-        models=["test"],
+        models=["claude-sonnet-5-5"],
         tasks=["task.yaml"],
         runs=2,
         parallel=2,
@@ -89,7 +89,7 @@ def test_pr_check_uses_control_revision(pr_experiment, monkeypatch, capsys, capa
 
     path, _, base, _ = pr_experiment
     monkeypatch.setenv("CLAUDE_BIN", "/bin/echo")
-    assert cmd_check(Namespace(config=str(path), no_grade=False)) == 0
+    assert cmd_check(Namespace(config=str(path), no_grade=False, no_probe=True)) == 0
     output = capsys.readouterr().out
     assert base in output
     assert "untouched fixture scores 0%" in output
@@ -338,25 +338,25 @@ def test_cli_check_pr_touched_skills_warnings_and_messages(
     cfg_correctness = {
         "name": "pr-test",
         "pr": {"repo": "./repo", "base": "base", "head": "feature", "mode": "correctness"},
-        "models": ["test"],
+        "models": ["claude-sonnet-5-5"],
         "tasks": ["task.yaml"],
     }
     cfg_path = tmp_path / "skilldiff.yaml"
     cfg_path.write_text(yaml.safe_dump(cfg_correctness))
 
-    assert cmd_check(Namespace(config=str(cfg_path), no_grade=True)) == 0
+    assert cmd_check(Namespace(config=str(cfg_path), no_grade=True, no_probe=True)) == 0
     out = capsys.readouterr().out
     assert "PR touches skill(s) skills/baz, but pr.mode is 'correctness'" in out
 
     cfg_agent = {
         "name": "pr-test",
         "pr": {"repo": "./repo", "base": "base", "head": "feature", "mode": "agent"},
-        "models": ["test"],
+        "models": ["claude-sonnet-5-5"],
         "tasks": ["task.yaml"],
     }
     cfg_path.write_text(yaml.safe_dump(cfg_agent))
 
-    assert cmd_check(Namespace(config=str(cfg_path), no_grade=True)) == 0
+    assert cmd_check(Namespace(config=str(cfg_path), no_grade=True, no_probe=True)) == 0
     out = capsys.readouterr().out
     assert "PR touches skill(s): skills/baz; installed into agent workspaces" in out
 

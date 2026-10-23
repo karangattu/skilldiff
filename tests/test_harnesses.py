@@ -42,7 +42,7 @@ def test_load_experiment_harness_defaults_and_detection(mock_exp_dir: Path):
         """name: test-exp
 skill: ./skills/sample-skill
 models:
-  - sonnet
+  - claude-sonnet-5-5
 tasks:
   - ./tasks/*.yaml
 """,

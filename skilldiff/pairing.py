@@ -356,6 +356,7 @@ def build_arm_record(
         "cache_creation_tokens": res.cache_creation_tokens,
         "output_tokens": res.output_tokens,
         "reported_total_tokens": res.reported_total_tokens,
+        "request_usage": res.request_usage,
         "session_id": res.session_id,
         "cli": preflight_reports.get(arm, {}).get("cli"),
         "num_turns": res.num_turns,
