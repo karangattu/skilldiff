@@ -2,6 +2,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 from skilldiff.release import extract_release_notes, get_pyproject_version, main
 
 
@@ -105,3 +107,18 @@ def test_cli_subprocess(tmp_path):
     assert res.returncode == 0
     expected = extract_release_notes((root / "CHANGELOG.md").read_text(encoding="utf-8"), version)
     assert res.stdout.strip() == expected
+
+
+def test_release_workflow_checks_out_requested_ref():
+    root = Path(__file__).resolve().parent.parent
+    workflow = yaml.safe_load(
+        (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    )
+    expected = "${{ github.event.inputs.tag || github.ref_name }}"
+    for job_name in ("test", "release"):
+        steps = workflow["jobs"][job_name]["steps"]
+        checkout = next(
+            step for step in steps
+            if str(step.get("uses", "")).startswith("actions/checkout")
+        )
+        assert checkout.get("with", {}).get("ref") == expected
