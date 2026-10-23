@@ -1001,6 +1001,7 @@ def auth_login_hint(harness: str) -> str:
         "claude": "Sign in with `claude auth login`",
         "codex": "Sign in with `codex login`",
         "opencode": "Sign in with `opencode auth login`",
+        "antigravity": "Sign in with `agy auth login` or `antigravity auth login`",
     }.get(harness, f"Sign in to the {harness} CLI")
 
 
@@ -1846,6 +1847,90 @@ class AgentRunner:
             served_models=list(result.served_models or []),
             unrecognized_models=list(result.unrecognized_models or []),
             budget_failure=budget_failure,
+            cost=result.cost,
+        )
+
+    def probe_codex_auth(
+        self,
+        model: str,
+        codex_cfg: CodexConfig,
+        timeout: float = 60,
+    ) -> ClaudeModelProbe:
+        with tempfile.TemporaryDirectory(prefix="skilldiff-codex-probe-") as tmp:
+            result = self._run_codex(
+                "Reply with the single word OK.", Path(tmp), model, codex_cfg, timeout=timeout
+            )
+        ok = result.status == "ok" and not result.error
+        detail = "authenticated call succeeded"
+        if not ok:
+            candidate = result.error or ""
+            if "STDERR:" in (result.transcript or ""):
+                stderr_part = (result.transcript or "").split("STDERR:", 1)[1].strip()
+                if stderr_part:
+                    candidate = stderr_part
+            lines = (candidate or result.status or "unknown failure").strip().splitlines()
+            detail = (lines[0] if lines else "unknown failure")[:300]
+        return ClaudeModelProbe(
+            configured=model,
+            ok=ok,
+            detail=detail,
+            served_models=[model] if ok else [],
+            cost=result.cost,
+        )
+
+    def probe_opencode_auth(
+        self,
+        model: str,
+        opencode_cfg: OpenCodeConfig,
+        timeout: float = 60,
+    ) -> ClaudeModelProbe:
+        with tempfile.TemporaryDirectory(prefix="skilldiff-opencode-probe-") as tmp:
+            result = self._run_opencode(
+                "Reply with the single word OK.", Path(tmp), model, opencode_cfg, timeout=timeout
+            )
+        ok = result.status == "ok" and not result.error
+        detail = "authenticated call succeeded"
+        if not ok:
+            candidate = result.error or ""
+            if "STDERR:" in (result.transcript or ""):
+                stderr_part = (result.transcript or "").split("STDERR:", 1)[1].strip()
+                if stderr_part:
+                    candidate = stderr_part
+            lines = (candidate or result.status or "unknown failure").strip().splitlines()
+            detail = (lines[0] if lines else "unknown failure")[:300]
+        return ClaudeModelProbe(
+            configured=model,
+            ok=ok,
+            detail=detail,
+            served_models=[model] if ok else [],
+            cost=result.cost,
+        )
+
+    def probe_antigravity_auth(
+        self,
+        model: str,
+        antigravity_cfg: AntigravityConfig,
+        timeout: float = 60,
+    ) -> ClaudeModelProbe:
+        with tempfile.TemporaryDirectory(prefix="skilldiff-agy-probe-") as tmp:
+            result = self._run_antigravity(
+                "Reply with the single word OK.", Path(tmp), model, antigravity_cfg, timeout=timeout
+            )
+        ok = result.status == "ok" and not result.error
+        detail = "authenticated call succeeded"
+        if not ok:
+            candidate = result.error or ""
+            if "STDERR:" in (result.transcript or ""):
+                stderr_part = (result.transcript or "").split("STDERR:", 1)[1].strip()
+                if stderr_part:
+                    candidate = stderr_part
+            lines = (candidate or result.status or "unknown failure").strip().splitlines()
+            detail = (lines[0] if lines else "unknown failure")[:300]
+        return ClaudeModelProbe(
+            configured=model,
+            ok=ok,
+            detail=detail,
+            served_models=[model] if ok else [],
             cost=result.cost,
         )
 

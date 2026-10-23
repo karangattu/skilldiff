@@ -1147,6 +1147,72 @@ def cmd_check(args: argparse.Namespace) -> int:
                         "claude sandbox canary: representative command shapes permitted"
                         + (" (including eval app shapes)" if cfg.claude.profile == "eval" else "")
                     )
+    elif cfg.harness == "codex":
+        if (
+            resolved
+            and capabilities_ok
+            and not sandboxed
+            and cfg.isolation == "local"
+            and not (cfg.pr and getattr(cfg.pr, "mode", "agent") == "correctness")
+            and not getattr(args, "no_probe", False)
+            and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
+        ):
+            for model in cfg.models:
+                probe = runner.probe_codex_auth(model, cfg.codex)
+                if not probe.ok:
+                    if looks_like_auth_error(probe.detail):
+                        fail(
+                            f"codex auth probe failed ({probe.detail}). "
+                            f"{auth_login_hint('codex')} and rerun `skilldiff check`."
+                        )
+                    else:
+                        fail(f"codex auth probe failed for {model}: {probe.detail}")
+                    continue
+                ok(f"codex auth probe: {model} authenticated")
+    elif cfg.harness == "opencode":
+        if (
+            resolved
+            and capabilities_ok
+            and not sandboxed
+            and cfg.isolation == "local"
+            and not (cfg.pr and getattr(cfg.pr, "mode", "agent") == "correctness")
+            and not getattr(args, "no_probe", False)
+            and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
+        ):
+            for model in cfg.models:
+                probe = runner.probe_opencode_auth(model, cfg.opencode)
+                if not probe.ok:
+                    if looks_like_auth_error(probe.detail):
+                        fail(
+                            f"opencode auth probe failed ({probe.detail}). "
+                            f"{auth_login_hint('opencode')} and rerun `skilldiff check`."
+                        )
+                    else:
+                        fail(f"opencode auth probe failed for {model}: {probe.detail}")
+                    continue
+                ok(f"opencode auth probe: {model} authenticated")
+    elif cfg.harness == "antigravity":
+        if (
+            resolved
+            and capabilities_ok
+            and not sandboxed
+            and cfg.isolation == "local"
+            and not (cfg.pr and getattr(cfg.pr, "mode", "agent") == "correctness")
+            and not getattr(args, "no_probe", False)
+            and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
+        ):
+            for model in cfg.models:
+                probe = runner.probe_antigravity_auth(model, cfg.antigravity)
+                if not probe.ok:
+                    if looks_like_auth_error(probe.detail):
+                        fail(
+                            f"antigravity auth probe failed ({probe.detail}). "
+                            f"{auth_login_hint('antigravity')} and rerun `skilldiff check`."
+                        )
+                    else:
+                        fail(f"antigravity auth probe failed for {model}: {probe.detail}")
+                    continue
+                ok(f"antigravity auth probe: {model} authenticated")
 
     installs = [] if image_id else find_user_level_installs(cfg.skill_names, cfg.harness)
     if installs:
@@ -1607,63 +1673,97 @@ def cmd_run(args: argparse.Namespace) -> int:
     if (
         not resume
         and not is_correctness
-        and exp_config.harness == "claude"
         and exp_config.isolation == "local"
         and not getattr(args, "no_probe", False)
         and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
     ):
-        try:
-            for model in exp_config.models:
-                probe = runner.agent_runner.probe_claude_auth(
-                    model, exp_config.claude, pricing=exp_config.pricing
-                )
-                if not probe.ok:
-                    if probe.budget_failure:
+        if exp_config.harness == "claude":
+            try:
+                for model in exp_config.models:
+                    probe = runner.agent_runner.probe_claude_auth(
+                        model, exp_config.claude, pricing=exp_config.pricing
+                    )
+                    if not probe.ok:
+                        if probe.budget_failure:
+                            raise RuntimeError(
+                                f"Claude preflight hit its budget cap for {model} "
+                                f"({probe.detail}). Raise claude.max_budget_usd."
+                            )
                         raise RuntimeError(
-                            f"Claude preflight hit its budget cap for {model} "
-                            f"({probe.detail}). Raise claude.max_budget_usd."
+                            f"Claude preflight failed for {model}: {probe.detail}"
                         )
-                    raise RuntimeError(
-                        f"Claude preflight failed for {model}: {probe.detail}"
+                    observed = max(
+                        one_call_cost_estimate(exp_config.pricing, model) or 0.0,
+                        float(probe.cost or 0.0),
                     )
-                observed = max(
-                    one_call_cost_estimate(exp_config.pricing, model) or 0.0,
-                    float(probe.cost or 0.0),
-                )
-                if (
-                    observed
-                    and exp_config.claude.max_budget_usd is not None
-                    and exp_config.claude.max_budget_usd < observed * 4
-                ):
-                    raise RuntimeError(
-                        f"claude.max_budget_usd is ${exp_config.claude.max_budget_usd:.2f}, "
-                        f"below four times the observed ${observed:.2f} cost of one call "
-                        f"for {model}. Raise it to at least ${observed * 4:.2f}."
+                    if (
+                        observed
+                        and exp_config.claude.max_budget_usd is not None
+                        and exp_config.claude.max_budget_usd < observed * 4
+                    ):
+                        raise RuntimeError(
+                            f"claude.max_budget_usd is ${exp_config.claude.max_budget_usd:.2f}, "
+                            f"below four times the observed ${observed:.2f} cost of one call "
+                            f"for {model}. Raise it to at least ${observed * 4:.2f}."
+                        )
+                    if probe.mismatch:
+                        raise RuntimeError(
+                            f"Claude served '{model}' as {', '.join(probe.served_models)}. "
+                            "Pin the full model ID the harness actually serves."
+                        )
+                    if probe.unrecognized_models and exp_config.cost_basis == "harness":
+                        raise RuntimeError(
+                            "Claude does not recognize "
+                            f"{', '.join(probe.unrecognized_models)}; harness cost is "
+                            "unreliable. Use cost_basis: api-equivalent."
+                        )
+                    canary = runner.agent_runner.probe_claude_sandbox_canary(
+                        model, exp_config.claude, pricing=exp_config.pricing
                     )
-                if probe.mismatch:
-                    raise RuntimeError(
-                        f"Claude served '{model}' as {', '.join(probe.served_models)}. "
-                        "Pin the full model ID the harness actually serves."
+                    if not canary.ok:
+                        details = canary.denials or canary.missing or canary.failed
+                        raise RuntimeError(
+                            "Claude sandbox preflight failed: "
+                            + ("; ".join(details[:3]) or canary.detail)
+                        )
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                print(f"Preflight error: {exc}", file=sys.stderr)
+                return 1
+            print("Claude model and sandbox preflight passed.", flush=True)
+        elif exp_config.harness == "codex":
+            try:
+                for model in exp_config.models:
+                    probe = runner.agent_runner.probe_codex_auth(model, exp_config.codex)
+                    if not probe.ok:
+                        raise RuntimeError(f"Codex preflight failed for {model}: {probe.detail}")
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                print(f"Preflight error: {exc}", file=sys.stderr)
+                return 1
+            print("Codex preflight passed.", flush=True)
+        elif exp_config.harness == "opencode":
+            try:
+                for model in exp_config.models:
+                    probe = runner.agent_runner.probe_opencode_auth(model, exp_config.opencode)
+                    if not probe.ok:
+                        raise RuntimeError(f"OpenCode preflight failed for {model}: {probe.detail}")
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                print(f"Preflight error: {exc}", file=sys.stderr)
+                return 1
+            print("OpenCode preflight passed.", flush=True)
+        elif exp_config.harness == "antigravity":
+            try:
+                for model in exp_config.models:
+                    probe = runner.agent_runner.probe_antigravity_auth(
+                        model, exp_config.antigravity
                     )
-                if probe.unrecognized_models and exp_config.cost_basis == "harness":
-                    raise RuntimeError(
-                        "Claude does not recognize "
-                        f"{', '.join(probe.unrecognized_models)}; harness cost is "
-                        "unreliable. Use cost_basis: api-equivalent."
-                    )
-                canary = runner.agent_runner.probe_claude_sandbox_canary(
-                    model, exp_config.claude, pricing=exp_config.pricing
-                )
-                if not canary.ok:
-                    details = canary.denials or canary.missing or canary.failed
-                    raise RuntimeError(
-                        "Claude sandbox preflight failed: "
-                        + ("; ".join(details[:3]) or canary.detail)
-                    )
-        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-            print(f"Preflight error: {exc}", file=sys.stderr)
-            return 1
-        print("Claude model and sandbox preflight passed.", flush=True)
+                    if not probe.ok:
+                        raise RuntimeError(
+                            f"Antigravity preflight failed for {model}: {probe.detail}"
+                        )
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                print(f"Preflight error: {exc}", file=sys.stderr)
+                return 1
+            print("Antigravity preflight passed.", flush=True)
     try:
         run_kwargs = {"retry_failed": retry_failed} if retry_failed else {}
         results = runner.run(resume=resume, **run_kwargs)

@@ -975,3 +975,87 @@ def test_opencode_isolation_env_vars(tmp_path: Path):
     assert env.get("OPENCODE_DISABLE_AUTOUPDATE") == "true"
     assert "OPENCODE_CONFIG_DIR" in env
 
+
+def test_auth_login_hints():
+    from skilldiff.runner import auth_login_hint
+
+    assert "claude auth login" in auth_login_hint("claude")
+    assert "codex login" in auth_login_hint("codex")
+    assert "opencode auth login" in auth_login_hint("opencode")
+    assert "agy auth login" in auth_login_hint("antigravity")
+
+
+def test_probe_codex_auth_success_and_failure(tmp_path: Path):
+    runner = AgentRunner(codex_bin="codex-mock")
+    cfg = CodexConfig()
+
+    mock_ok = json.dumps(
+        {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 5}}
+    )
+    with patch.object(AgentRunner, "_exec") as mock_exec:
+        mock_exec.return_value = ExecResult(
+            stdout=mock_ok, stderr="", exit_code=0, duration=0.1
+        )
+        probe = runner.probe_codex_auth("o3-mini", cfg)
+        assert probe.ok is True
+        assert probe.configured == "o3-mini"
+
+        mock_exec.return_value = ExecResult(
+            stdout="", stderr="Error: Unauthorized", exit_code=1, duration=0.1
+        )
+        bad_probe = runner.probe_codex_auth("o3-mini", cfg)
+        assert bad_probe.ok is False
+        assert "Unauthorized" in bad_probe.detail
+
+
+def test_probe_opencode_auth_success_and_failure(tmp_path: Path):
+    runner = AgentRunner(opencode_bin="opencode-mock")
+    cfg = OpenCodeConfig()
+
+    mock_ok = '{"type":"step_finish","part":{"reason":"stop"}}\n'
+    with patch.object(AgentRunner, "opencode_run_flags", return_value=set()), patch.object(
+        AgentRunner, "_exec"
+    ) as mock_exec:
+        mock_exec.return_value = ExecResult(
+            stdout=mock_ok, stderr="", exit_code=0, duration=0.1
+        )
+        probe = runner.probe_opencode_auth("deepseek-v4-pro", cfg)
+        assert probe.ok is True
+
+        mock_exec.return_value = ExecResult(
+            stdout="", stderr="Failed to authenticate", exit_code=1, duration=0.1
+        )
+        bad_probe = runner.probe_opencode_auth("deepseek-v4-pro", cfg)
+        assert bad_probe.ok is False
+
+
+def test_probe_antigravity_auth_success_and_failure(tmp_path: Path):
+    runner = AgentRunner(antigravity_bin="agy-mock")
+    cfg = AntigravityConfig()
+
+    mock_ok = json.dumps(
+        {
+            "event": "result",
+            "result": {
+                "status": "SUCCESS",
+                "response": "OK",
+                "total_cost_usd": 0.001,
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+        }
+    )
+    with patch.object(AgentRunner, "_exec") as mock_exec:
+        mock_exec.return_value = ExecResult(
+            stdout=mock_ok, stderr="", exit_code=0, duration=0.1
+        )
+        probe = runner.probe_antigravity_auth("gemini-3.8-flash-medium", cfg)
+        assert probe.ok is True
+
+        mock_exec.return_value = ExecResult(
+            stdout="", stderr="Session token expired", exit_code=1, duration=0.1
+        )
+        bad_probe = runner.probe_antigravity_auth("gemini-3.8-flash-medium", cfg)
+        assert bad_probe.ok is False
+        assert "Session token expired" in bad_probe.detail
+
+
