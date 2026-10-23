@@ -6,6 +6,8 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-22
+
 ### Added
 
 - Claude runs use a built-in rate table keyed by full model ID, with source and checked date. `claude-sonnet-5-5`, `claude-haiku-5-5`, and `claude-opus-5-5` need no `pricing:` block; user rates override the table.
