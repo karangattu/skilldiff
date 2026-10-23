@@ -1236,7 +1236,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         if not pricing:
             raise ValueError(
                 "cost_basis: api-equivalent requires recorded pricing rates or a "
-                "Claude model in the built-in rate table"
+                "model with built-in rates"
             )
         if unpriced:
             raise ValueError(

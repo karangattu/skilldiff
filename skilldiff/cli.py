@@ -1665,7 +1665,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 1
         print("Claude model and sandbox preflight passed.", flush=True)
     try:
-        results = runner.run(resume=resume, retry_failed=retry_failed)
+        run_kwargs = {"retry_failed": retry_failed} if retry_failed else {}
+        results = runner.run(resume=resume, **run_kwargs)
     except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         print(f"Experiment error: {exc}", file=sys.stderr)
         return 1

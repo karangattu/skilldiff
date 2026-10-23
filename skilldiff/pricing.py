@@ -70,6 +70,45 @@ BUILTIN_CLAUDE_RATES: dict[str, dict[str, Any]] = {
     },
 }
 
+BUILTIN_HARNESS_RATES: dict[str, dict[str, Any]] = {
+    "gpt-5-codex": {
+        "source": "https://openai.com/api/pricing",
+        "date": "2026-10-01",
+        "currency": "USD",
+        "input": 2.50,
+        "output": 10.00,
+        "cache_read": 1.25,
+        "cache_write": 2.50,
+    },
+    "gemini-3.8-flash-medium": {
+        "source": "https://ai.google.dev/pricing",
+        "date": "2026-10-01",
+        "currency": "USD",
+        "input": 0.15,
+        "output": 0.60,
+        "cache_read": 0.0375,
+        "cache_write": 0.15,
+    },
+    "gemini-3.7-flash-medium": {
+        "source": "https://ai.google.dev/pricing",
+        "date": "2026-10-01",
+        "currency": "USD",
+        "input": 0.15,
+        "output": 0.60,
+        "cache_read": 0.0375,
+        "cache_write": 0.15,
+    },
+    "deepseek-v4-pro": {
+        "source": "https://api-docs.deepseek.com/quick_start/pricing",
+        "date": "2026-10-01",
+        "currency": "USD",
+        "input": 0.27,
+        "output": 1.10,
+        "cache_read": 0.07,
+        "cache_write": 0.27,
+    },
+}
+
 _DATE_SUFFIX = re.compile(r"-\d{8}$")
 
 
@@ -78,6 +117,9 @@ def normalize_model_id(model: str) -> str:
     value = str(model or "").strip()
     if value.lower() in MODEL_ALIASES:
         return MODEL_ALIASES[value.lower()]
+    for prefix in ("opencode-go/", "opencode/"):
+        if value.startswith(prefix):
+            value = value[len(prefix) :]
     return _DATE_SUFFIX.sub("", value)
 
 
@@ -86,7 +128,8 @@ def is_bare_family_alias(model: str) -> bool:
 
 
 def builtin_rate_entry(model: str) -> Optional[dict[str, Any]]:
-    entry = BUILTIN_CLAUDE_RATES.get(normalize_model_id(model))
+    norm = normalize_model_id(model)
+    entry = BUILTIN_CLAUDE_RATES.get(norm) or BUILTIN_HARNESS_RATES.get(norm)
     return dict(entry) if entry else None
 
 
@@ -130,7 +173,7 @@ def merge_pricing(
         if user_entry is None:
             # Also accept a canonical/base key for a dated snapshot.
             user_entry = user_rates.get(normalize_model_id(key))
-        builtin = builtin_rate_entry(key) if harness == "claude" else None
+        builtin = builtin_rate_entry(key)
         if user_entry is not None:
             resolved[key] = _with_metadata(
                 dict(user_entry),
@@ -154,8 +197,13 @@ def merge_pricing(
     if not resolved and not user_rates:
         return {}, unpriced
 
+    default_src = (
+        str(resolved[models[0]].get("source") or CLAUDE_PRICING_SOURCE)
+        if resolved and models and models[0] in resolved
+        else (CLAUDE_PRICING_SOURCE if used_builtin else "")
+    )
     out: dict[str, Any] = {
-        "source": source or (CLAUDE_PRICING_SOURCE if used_builtin else ""),
+        "source": source or default_src,
         "date": date or (
             max(str(entry.get("date") or "") for entry in resolved.values())
             if resolved

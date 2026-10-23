@@ -200,3 +200,29 @@ def test_explicit_api_equivalent_uses_the_builtin_table(tmp_path):
     assert cfg.cost_basis == "api-equivalent"
     assert cfg.pricing["builtin"] is True
     assert cfg.pricing_unpriced == []
+
+
+def test_builtin_rates_for_codex_antigravity_opencode():
+    for model in [
+        "gpt-5-codex",
+        "gemini-3.8-flash-medium",
+        "gemini-3.7-flash-medium",
+        "deepseek-v4-pro",
+        "opencode-go/deepseek-v4-pro",
+    ]:
+        entry = builtin_rate_entry(model)
+        assert entry is not None
+        assert "input" in entry and "output" in entry
+
+    pricing, unpriced = merge_pricing({}, ["gpt-5-codex"], "codex")
+    assert unpriced == []
+    assert pricing["builtin"] is True
+    assert "gpt-5-codex" in pricing["rates"]
+
+    pricing_open, unpriced_open = merge_pricing(
+        {}, ["opencode-go/deepseek-v4-pro"], "opencode"
+    )
+    assert unpriced_open == []
+    assert pricing_open["builtin"] is True
+    assert "opencode-go/deepseek-v4-pro" in pricing_open["rates"]
+
