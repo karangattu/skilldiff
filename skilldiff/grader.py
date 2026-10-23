@@ -254,6 +254,9 @@ class Grader:
                 prompt_file.write_text(judge_prompt, encoding="utf-8")
                 env = os.environ.copy()
                 env["SKILLDIFF_JUDGE_PROMPT_FILE"] = str(prompt_file)
+                env["SKILLDIFF_JUDGE_PROMPT"] = judge_prompt[:MAX_ENV_TEXT]
+                if self.config.model:
+                    env["SKILLDIFF_JUDGE_MODEL"] = str(self.config.model)
                 env["SKILLDIFF_RUBRIC"] = rubric
                 return self._run_command(cand, env)
 
@@ -512,10 +515,26 @@ class Grader:
 def _parse_grader_output(text: str) -> Optional[tuple[float, Optional[bool]]]:
     if not text:
         return None
+    data = None
     try:
-        data = json.loads(text)
+        data = json.loads(text.strip())
     except (json.JSONDecodeError, ValueError):
         data = None
+    if data is None:
+        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if fence_match:
+            try:
+                data = json.loads(fence_match.group(1))
+            except (json.JSONDecodeError, ValueError):
+                pass
+    if data is None:
+        first_brace = text.find("{")
+        last_brace = text.rfind("}")
+        if first_brace != -1 and last_brace > first_brace:
+            try:
+                data = json.loads(text[first_brace : last_brace + 1])
+            except (json.JSONDecodeError, ValueError):
+                pass
     if isinstance(data, dict) and ("score" in data or "success" in data):
         success = bool(data["success"]) if "success" in data else None
         if "score" in data:

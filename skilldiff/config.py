@@ -660,7 +660,10 @@ def parse_grader_config(
         if key in data:
             validate_string(data[key], f"{context}.{key}", nullable=True)
     if grader_type in {"llm", "rubric"} and not data.get("command"):
-        raise ValueError(f"{context}.command is required for an {grader_type} judge")
+        raise ValueError(
+            f"{context}.command is required for an {grader_type} judge "
+            "(specify an executable command or script that outputs JSON with score/success)"
+        )
     return GraderConfig(
         type=grader_type,
         command=data.get("command"),
