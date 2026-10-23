@@ -1207,3 +1207,68 @@ def _recommendation(
         f"(95% CI {ci}, {pairs_txt}). The interval includes zero, "
         "so the effect is not established. Add repetitions or harder tasks.",
     )
+
+
+def plain_english_verdict(rec_label: str, rec_reason: str) -> dict[str, str]:
+    label = rec_label.strip()
+    reason_lower = rec_reason.lower()
+
+    if label == "SHIP":
+        verdict = "Ready to Ship"
+        why = (
+            "The skill improved performance without causing regressions "
+            "or exceeding cost budgets."
+        )
+        action = "Merge and deploy the skill."
+    elif label == "DO NOT SHIP":
+        verdict = "Do Not Ship"
+        if "contamination" in reason_lower:
+            why = "Baseline contaminated: control runs loaded or accessed the skill."
+            action = "Ensure control runs are isolated and rerun."
+        elif "cost" in reason_lower:
+            why = "The skill exceeded your cost budget limit."
+            action = "Optimize skill size or remove verbose instructions to reduce tokens."
+        elif (
+            "regression" in reason_lower
+            or "reduced" in reason_lower
+            or "worse" in reason_lower
+        ):
+            why = "The skill decreased performance compared to running without the skill."
+            action = "Revise skill instructions to prevent the observed errors."
+        else:
+            why = "The skill failed required release criteria."
+            action = "Check failure details and adjust the skill."
+    else:
+        verdict = "Keep Testing (More Evidence Needed)"
+        if "ceiling" in reason_lower:
+            why = "Tasks are too easy (control already scores near 100%), so effect is unverified."
+            action = "Add harder tasks that require the skill's instructions."
+        elif "adoption" in reason_lower or "trigger" in reason_lower:
+            why = "The agent rarely or inconsistently loaded the skill during evaluation."
+            action = "Make the skill description in SKILL.md more specific to match task prompts."
+        elif (
+            "preliminary" in reason_lower
+            or "graded pairs" in reason_lower
+            or "one pair" in reason_lower
+        ):
+            why = "Not enough task runs yet to confirm whether score differences are real."
+            action = "Run more test repetitions (e.g. skilldiff run -r 5)."
+        else:
+            why = "Results are preliminary or inconclusive."
+            action = "Run more repetitions or inspect task graders."
+
+    return {
+        "verdict": verdict,
+        "why": why,
+        "action": action,
+    }
+
+
+def format_bottom_line(rec_label: str, rec_reason: str) -> str:
+    summary = plain_english_verdict(rec_label, rec_reason)
+    return (
+        f"Bottom Line:\n"
+        f"  - Verdict: {summary['verdict']}\n"
+        f"  - Why: {summary['why']}\n"
+        f"  - Next step: {summary['action']}"
+    )

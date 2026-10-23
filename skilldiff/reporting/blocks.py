@@ -63,6 +63,7 @@ from skilldiff.reporting.verdict import (
     build_decision_context,
     category_reading,
     dual_adoption_reading,
+    format_bottom_line,
     row_reading,
 )
 from skilldiff.stats import analysis_run, paired_comparison
@@ -390,6 +391,8 @@ def render_report_table(
             )
         lines.append("")
         lines.append(_strip_inline(f"Recommendation: {rec_label} — {rec_reason}"))
+        lines.append("")
+        lines.append(format_bottom_line(rec_label, rec_reason))
     return "\n".join(lines)
 
 

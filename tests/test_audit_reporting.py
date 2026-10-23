@@ -76,6 +76,36 @@ def test_held_out_decision_statistics_match_terminal_and_saved_report():
     assert "Both arms scored identically in all 6 graded pair(s)" in saved_decision
 
 
+def test_plain_english_verdict_and_bottom_line():
+    from skilldiff.reporting.verdict import format_bottom_line, plain_english_verdict
+
+    ship = plain_english_verdict("SHIP", "The skill improved task score by +20 pp")
+    assert ship["verdict"] == "Ready to Ship"
+    assert "Merge and deploy" in ship["action"]
+
+    no_ship = plain_english_verdict("DO NOT SHIP", "The skill reduced task score by 15 pp")
+    assert no_ship["verdict"] == "Do Not Ship"
+    assert "Revise skill instructions" in no_ship["action"]
+
+    needs_more = plain_english_verdict(
+        "NEEDS MORE RUNS", "only 4 graded pairs; preliminary"
+    )
+    assert needs_more["verdict"] == "Keep Testing (More Evidence Needed)"
+    assert "Run more test repetitions" in needs_more["action"]
+
+    ceiling = plain_english_verdict(
+        "NEEDS MORE RUNS", "Tasks at ceiling: control already scores 100%"
+    )
+    assert ceiling["verdict"] == "Keep Testing (More Evidence Needed)"
+    assert "Add harder tasks" in ceiling["action"]
+
+    formatted = format_bottom_line("SHIP", "The skill improved task score by +20 pp")
+    assert "Bottom Line:" in formatted
+    assert "Verdict: Ready to Ship" in formatted
+    assert "Next step: Merge and deploy" in formatted
+
+
+
 def test_report_export_builds_blocks_once(tmp_path, monkeypatch):
     from skilldiff import reporter
 

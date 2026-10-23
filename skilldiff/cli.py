@@ -2244,6 +2244,8 @@ def _format_results(results: dict[str, Any]) -> str:
             sections.append(decision["basis_note"])
         _, rec_label, rec_reason = decision["recommendation"]
         sections.append(f"Recommendation: {rec_label} — {rec_reason}")
+        from skilldiff.reporting.verdict import format_bottom_line
+        sections.append(format_bottom_line(rec_label, rec_reason))
 
     baseline_comps = results.get("baseline_comparisons") or {}
     for key, title in (
