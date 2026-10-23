@@ -146,6 +146,22 @@ def test_codex_cumulative_snapshots_are_not_added_repeatedly():
     assert result["reported_total_tokens"] == 73456
 
 
+def test_codex_snapshot_wins_over_turn_usage():
+    text = "\n".join(map(json.dumps, [
+        {"method": "thread/tokenUsage/updated", "params": {"tokenUsage": {"total": {
+            "inputTokens": 100, "cachedInputTokens": 10, "outputTokens": 20,
+            "totalTokens": 120,
+        }}}},
+        {"method": "turn/completed", "params": {"turn": {"status": "completed"}},
+         "usage": {"input_tokens": 100, "cached_input_tokens": 10, "output_tokens": 20}},
+    ]))
+    result = parse_codex(text, [])
+    assert result["input_tokens"] == 90
+    assert result["cache_read_tokens"] == 10
+    assert result["output_tokens"] == 20
+    assert result["reported_total_tokens"] == 120
+
+
 def test_agy_inconsistent_cache_keeps_reported_total_and_unknown_input():
     text = (Path(__file__).parent / "fixtures/cli/agy-cumulative.jsonl").read_text()
     result = parse_agy(text, [])

@@ -118,6 +118,7 @@ def parse_codex(stdout: str, skill_names: list[str]) -> dict[str, Any]:
     invoked = False
     invocations = 0
     complete = False
+    snapshot_seen = False
     skill_item_types = {
         "command_execution",
         "commandExecution",
@@ -140,6 +141,7 @@ def parse_codex(stdout: str, skill_names: list[str]) -> dict[str, Any]:
         if kind == "thread/tokenUsage/updated":
             snapshot = (params.get("tokenUsage") or {}).get("total")
             if isinstance(snapshot, dict):
+                snapshot_seen = True
                 usage = {"input_tokens": count(snapshot.get("inputTokens")),
                          "cached_input_tokens": count(snapshot.get("cachedInputTokens")),
                          "output_tokens": count(snapshot.get("outputTokens")),
@@ -153,7 +155,7 @@ def parse_codex(stdout: str, skill_names: list[str]) -> dict[str, Any]:
             else:
                 complete = True
                 turns += 1
-            if isinstance(event.get("usage"), dict):
+            if isinstance(event.get("usage"), dict) and not snapshot_seen:
                 # exec usage is per-turn; app-server snapshots above are cumulative.
                 current = event["usage"]
                 if usage is None:
