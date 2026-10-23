@@ -305,3 +305,37 @@ def test_run_pair_guarantees_workspace_cleanup(tmp_path: Path, monkeypatch):
     for ws_root in created_workspaces:
         assert not ws_root.exists()
 
+
+def test_default_safe_concurrency(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    from skilldiff.config import ClaudeConfig, ExperimentConfig, GraderConfig, TaskConfig
+    from skilldiff.experiment import ExperimentRunner
+    from skilldiff.runner import AgentRunner
+
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# S")
+
+    task_file = tmp_path / "task.yaml"
+    task_file.write_text("id: t_seq\nprompt: do it\n")
+    task = TaskConfig(
+        id="t_seq",
+        prompt="do it",
+        grader=GraderConfig(type="command", command="exit 0"),
+        source_path=task_file,
+    )
+    cfg = ExperimentConfig(
+        name="seq-test",
+        skill=skill_dir,
+        models=["m"],
+        tasks_patterns=["*.yaml"],
+        runs=1,
+        claude=ClaudeConfig(),
+    )
+    runner = ExperimentRunner(
+        cfg, [task], output_dir=tmp_path / "runs", agent_runner=AgentRunner()
+    )
+    results = runner.run()
+    assert results["settings"].get("arm_parallel") is not True
+
+

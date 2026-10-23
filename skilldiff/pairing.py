@@ -551,8 +551,8 @@ def run_pair(
                 )
         else:
             def _execute_arm(arm: str) -> tuple[str, RunResult, tuple[str, list[str]]]:
-                max_retries = 2
-                delay = 1.0
+                max_retries = 3
+                delay = 0.01 if os.environ.get("SKILLDIFF_MOCK_RUNNER") else 5.0
                 last_res: RunResult | None = None
                 for attempt in range(1, max_retries + 2):
                     runner._ensure_running()
@@ -677,8 +677,13 @@ def run_pair(
                             f"Rate limit for {model} · {task.id} · {arm} (attempt {attempt}); "
                             f"retrying in {delay:.1f}s..."
                         )
-                        time.sleep(delay + random.uniform(0.1, 0.4))
-                        delay *= 2.0
+                        jitter = (
+                            0.0
+                            if os.environ.get("SKILLDIFF_MOCK_RUNNER")
+                            else random.uniform(0.5, 1.5)
+                        )
+                        time.sleep(delay + jitter)
+                        delay = min(delay * 2.0, 30.0)
                         workspaces[arm].setup()
                         continue
 
@@ -732,21 +737,7 @@ def run_pair(
                 )
                 return arm, last_res, (immediate_diff, immediate_files)
 
-            is_real_agent = (
-                type(runner.agent_runner) is AgentRunner
-                and "run" not in runner.agent_runner.__dict__
-                and "_exec" not in runner.agent_runner.__dict__
-                and getattr(AgentRunner._exec, "__name__", "") == "_exec"
-                and not hasattr(AgentRunner._exec, "assert_called")
-                and not os.environ.get("SKILLDIFF_MOCK_RUNNER")
-            )
-            arm_parallel = bool(
-                getattr(runner.config, "arm_parallel", False)
-                or (
-                    is_real_agent
-                    and not getattr(runner.config, "_arm_parallel_explicit", False)
-                )
-            )
+            arm_parallel = bool(getattr(runner.config, "arm_parallel", False))
             active_arms = [arm for arm in order if arm in workspaces]
             if arm_parallel and len(active_arms) > 1:
                 with concurrent.futures.ThreadPoolExecutor(

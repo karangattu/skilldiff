@@ -975,7 +975,7 @@ class ExperimentRunner:
             and not getattr(self.config, "_parallel_explicit", False)
             and len(pairs) > 1
         ):
-            auto_workers = int(os.environ.get("SKILLDIFF_AUTO_PARALLEL", "3"))
+            auto_workers = int(os.environ.get("SKILLDIFF_AUTO_PARALLEL", "1"))
             effective_parallel = max(1, min(len(pairs), auto_workers))
 
         with tempfile.TemporaryDirectory(prefix="skilldiff-templates-") as tmpl_dir:
