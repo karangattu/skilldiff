@@ -1970,6 +1970,9 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     print(f"  Regressions:      {len(regs)} run(s)")
     print(f"  Blast violations: {len(blast)} run(s)")
     print(f"  Token bloat:      {len(bloat)} run(s)")
+    ceil = report.get("ceiling_tasks", [])
+    if ceil:
+        print(f"  Ceiling effect:   {len(ceil)} run(s)")
 
     usage = report.get("skill_usage") or {}
     if usage:

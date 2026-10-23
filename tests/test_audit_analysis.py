@@ -375,3 +375,44 @@ def test_diagnose_flags_over_reading_of_skill_reference_files(tmp_path):
     assert diag["over_triggered"][0]["task_id"] == "irrelevant_task"
     assert any("Over-triggering" in r for r in diag["recommendations"])
 
+
+def test_diagnose_flags_control_arm_ceiling_effect(tmp_path):
+    diag = diagnose(
+        tmp_path,
+        {
+            "runs_per_arm": 1,
+            "models": ["m"],
+            "tasks": ["intended_task"],
+            "task_details": [{"id": "intended_task", "category": "intended"}],
+            "runs": {
+                "control": [
+                    {
+                        "model": "m",
+                        "task_id": "intended_task",
+                        "repetition": 1,
+                        "arm": "control",
+                        "score": 1.0,
+                        "status": "ok",
+                        "grade_status": "graded",
+                    }
+                ],
+                "treatment": [
+                    {
+                        "model": "m",
+                        "task_id": "intended_task",
+                        "repetition": 1,
+                        "arm": "treatment",
+                        "score": 1.0,
+                        "status": "ok",
+                        "grade_status": "graded",
+                    }
+                ],
+            },
+        },
+    )
+    assert len(diag["ceiling_tasks"]) == 1
+    assert diag["ceiling_tasks"][0]["task_id"] == "intended_task"
+    assert any("Ceiling effect" in r for r in diag["recommendations"])
+    assert any("prompt leakage" in r for r in diag["recommendations"])
+
+

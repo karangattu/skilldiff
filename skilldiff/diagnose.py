@@ -138,6 +138,7 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
     model_alias_mismatches = []
     unrecognized_model_runs = []
     token_bloat_tasks = []
+    ceiling_tasks = []
     recommendations = []
     unknown_adoption_runs = 0
     is_pr = bool(data.get("comparison")) or data.get("preset") == "pr"
@@ -225,6 +226,16 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         t_score = _graded_score(t_analysis)
         if c_score is not None and t_score is not None:
             usable_score_pairs += 1
+        if c_score is not None and float(c_score) >= 1.0:
+            ceiling_tasks.append(
+                {
+                    "task_id": task_id,
+                    "model": model,
+                    "rep": rep,
+                    "control_score": c_score,
+                    "category": task_details.get(task_id, {}).get("category", "general"),
+                }
+            )
         if c_score is not None and t_score is not None and float(t_score) < float(c_score):
             regressions.append(
                 {
@@ -384,6 +395,24 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
             f"Efficiency coverage: token totals are unavailable for {unknown_token_pairs} "
             "matched pair(s); token bloat cannot be ruled out for those pairs."
         )
+    if ceiling_tasks:
+        intended_ceilings = sorted(
+            {c["task_id"] for c in ceiling_tasks if c.get("category") == "intended"}
+        )
+        other_ceilings = sorted(
+            {c["task_id"] for c in ceiling_tasks if c["task_id"] not in intended_ceilings}
+        )
+        parts = []
+        if intended_ceilings:
+            parts.append(
+                f"intended task(s) ({', '.join(intended_ceilings)}) scored 100% in control "
+                "without the skill, preventing measurement of skill impact. Likely cause: prompt "
+                "leakage (giving away root causes or solutions in the prompt) or base model "
+                "familiarity. Rewrite prompts to describe end-user symptoms only."
+            )
+        if other_ceilings:
+            parts.append(f"other task(s) at ceiling: {', '.join(other_ceilings)}.")
+        recommendations.append(f"Ceiling effect: {' '.join(parts)}")
     if data.get("valid") is False:
         recommendations.append(
             "Invalid evaluation: control or baseline contamination prevents a clean comparison."
@@ -512,5 +541,6 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         "model_alias_mismatches": model_alias_mismatches,
         "unrecognized_model_runs": unrecognized_model_runs,
         "token_bloat_tasks": token_bloat_tasks,
+        "ceiling_tasks": ceiling_tasks,
         "recommendations": recommendations,
     }
