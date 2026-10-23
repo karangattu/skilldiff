@@ -443,3 +443,13 @@ def test_mypy_configuration_in_pyproject():
     assert "mypy>=" in content
     assert "types-PyYAML>=" in content
 
+
+def test_python_version_support_in_pyproject():
+    root = Path(__file__).resolve().parents[1]
+    content = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'requires-python = ">=3.12"' in content
+    assert 'target-version = "py312"' in content
+    assert 'python_version = "3.12"' in content
+    assert '"Programming Language :: Python :: 3.12"' in content
+    assert '"Programming Language :: Python :: 3.15"' in content
+

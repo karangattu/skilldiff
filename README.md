@@ -21,7 +21,7 @@ Install the command and SkillDiff skill for this agent only.
 ```
 
 Your agent handles installation and uses your normal CLI login. If it needs a login
-or shell permission, it tells you the exact step. You need Python 3.10+, Git, and a
+or shell permission, it tells you the exact step. You need Python 3.12+, Git, and a
 signed-in agent CLI. See [manual setup](#manual-setup) if you prefer to install it yourself.
 
 ## Ask your agent
@@ -114,7 +114,7 @@ See [verified releases and limits](docs/compatibility.md#verification) before ru
 <details>
 <summary>Installation commands and updates</summary>
 
-You need Python 3.10+, Git, and a signed-in agent CLI (`claude`, `codex`, `opencode`, or `agy`).
+You need Python 3.12+, Git, and a signed-in agent CLI (`claude`, `codex`, `opencode`, or `agy`).
 
 **1. Install the `skilldiff` tool:**
 
