@@ -107,6 +107,78 @@ BUILTIN_CLAUDE_RATES: dict[str, dict[str, Any]] = {
 }
 
 BUILTIN_HARNESS_RATES: dict[str, dict[str, Any]] = {
+    "gpt-6.1-sol": {
+        "source": "https://openai.com/api/pricing",
+        "date": "2026-10-01",
+        "currency": "USD",
+        "input": 2.00,
+        "output": 10.00,
+        "cache_read": 0.10,
+        "cache_write": 2.50,
+    },
+    "gpt-6-luna": {
+        "source": "https://openai.com/api/pricing",
+        "date": "2026-10-01",
+        "currency": "USD",
+        "input": 0.10,
+        "output": 0.50,
+        "cache_read": 0.01,
+        "cache_write": 0.125,
+    },
+    "gpt-6-astra": {
+        "source": "https://openai.com/api/pricing",
+        "date": "2026-10-01",
+        "currency": "USD",
+        "input": 10.00,
+        "output": 50.00,
+        "cache_read": 1.00,
+        "cache_write": 12.50,
+    },
+    "gemini-3.8-flash": {
+        "source": "https://ai.google.dev/pricing",
+        "date": "2026-10-01",
+        "currency": "USD",
+        "input": 0.75,
+        "output": 3.75,
+        "cache_read": 0.075,
+        "cache_write": 0.50,
+    },
+    "gemini-3.7-flash": {
+        "source": "https://ai.google.dev/pricing",
+        "date": "2026-10-01",
+        "currency": "USD",
+        "input": 0.75,
+        "output": 3.75,
+        "cache_read": 0.075,
+        "cache_write": 0.50,
+    },
+    "gemini-4-argon": {
+        "source": "https://ai.google.dev/pricing",
+        "date": "2026-10-01",
+        "currency": "USD",
+        "input": 2.00,
+        "output": 10.00,
+        "cache_read": 0.20,
+        "cache_write": 2.00,
+    },
+    "deepseek-v4-pro": {
+        "source": "https://api-docs.deepseek.com/quick_start/pricing",
+        "date": "2026-10-01",
+        "currency": "USD",
+        "input": 0.66,
+        "output": 1.98,
+        "cache_read": 0.022,
+        "cache_write": 0.66,
+    },
+    "deepseek-flash": {
+        "source": "https://api-docs.deepseek.com/quick_start/pricing",
+        "date": "2026-10-01",
+        "currency": "USD",
+        "input": 0.15,
+        "output": 0.60,
+        "cache_read": 0.003,
+        "cache_write": 0.15,
+    },
     "gpt-4o": {
         "source": "https://openai.com/api/pricing",
         "date": "2026-10-01",
@@ -237,7 +309,19 @@ def normalize_model_id(model: str) -> str:
     for prefix in ("opencode-go/", "opencode/"):
         if value.startswith(prefix):
             value = value[len(prefix) :]
-    return _DATE_SUFFIX.sub("", value)
+    normalized = _DATE_SUFFIX.sub("", value)
+    aliases = {
+        "gpt-6": "gpt-6.1-sol",
+        "gpt-6-sol": "gpt-6.1-sol",
+        "gemini-3.8": "gemini-3.8-flash",
+        "gemini-3.8-flash-medium": "gemini-3.8-flash",
+        "gemini-3.7": "gemini-3.7-flash",
+        "gemini-3.7-flash-medium": "gemini-3.7-flash",
+        "deepseek-pro": "deepseek-v4-pro",
+        "deepseek-v4": "deepseek-v4-pro",
+        "deepseek-v4.1-flash": "deepseek-flash",
+    }
+    return aliases.get(normalized.lower(), normalized)
 
 
 def is_bare_family_alias(model: str) -> bool:

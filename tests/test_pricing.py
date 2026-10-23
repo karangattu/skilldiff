@@ -204,32 +204,34 @@ def test_explicit_api_equivalent_uses_the_builtin_table(tmp_path):
 
 def test_builtin_rates_for_codex_antigravity_opencode():
     for model in [
-        "gpt-4o",
-        "gpt-4o-mini",
-        "o3-mini",
-        "o1",
-        "gemini-2.0-flash",
-        "gemini-1.5-pro",
-        "deepseek-chat",
-        "deepseek-reasoner",
-        "opencode-go/deepseek-chat",
-        "claude-3-5-sonnet",
-        "claude-3-5-haiku",
+        "gpt-6.1-sol",
+        "gpt-6-luna",
+        "gpt-6-astra",
+        "gpt-6",
+        "gemini-3.8-flash",
+        "gemini-3.8",
+        "gemini-3.8-flash-medium",
+        "gemini-3.7-flash",
+        "deepseek-v4-pro",
+        "deepseek-flash",
+        "opencode-go/deepseek-v4-pro",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
     ]:
         entry = builtin_rate_entry(model)
         assert entry is not None, f"Missing rate for {model}"
-        assert "input" in entry and "output" in entry
+        assert ("input" in entry or "tiers" in entry) and ("output" in entry or "tiers" in entry)
 
-    pricing, unpriced = merge_pricing({}, ["gpt-4o", "o3-mini"], "codex")
+    pricing, unpriced = merge_pricing({}, ["gpt-6.1-sol", "gpt-6-luna"], "codex")
     assert unpriced == []
     assert pricing["builtin"] is True
-    assert "gpt-4o" in pricing["rates"]
-    assert "o3-mini" in pricing["rates"]
+    assert "gpt-6.1-sol" in pricing["rates"]
+    assert "gpt-6-luna" in pricing["rates"]
 
     pricing_open, unpriced_open = merge_pricing(
-        {}, ["opencode-go/deepseek-chat"], "opencode"
+        {}, ["opencode-go/deepseek-v4-pro"], "opencode"
     )
     assert unpriced_open == []
     assert pricing_open["builtin"] is True
-    assert "opencode-go/deepseek-chat" in pricing_open["rates"]
+    assert "opencode-go/deepseek-v4-pro" in pricing_open["rates"]
 

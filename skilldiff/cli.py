@@ -63,9 +63,9 @@ from skilldiff.workspace import Workspace
 
 DEFAULT_MODELS = {
     "claude": "claude-sonnet-5-5",
-    "codex": "gpt-4o",
-    "opencode": "deepseek-chat",
-    "antigravity": "gemini-2.0-flash",
+    "codex": "gpt-6.1-sol",
+    "opencode": "deepseek-v4-pro",
+    "antigravity": "gemini-3.8-flash",
 }
 
 HARNESS_BLOCKS = {
