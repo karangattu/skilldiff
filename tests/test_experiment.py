@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -278,7 +279,7 @@ def test_tooling_and_cli_memoization(monkeypatch):
     from skilldiff.experiment import _cli_version
     from skilldiff.runner import PARENT_SESSION_VARS, cached_which, clean_parent_env
 
-    cached_which.cache_clear()
+    getattr(cached_which, "cache_clear")()
     _cli_version.cache_clear()
     clear_capabilities_cache()
 
@@ -287,7 +288,7 @@ def test_tooling_and_cli_memoization(monkeypatch):
         c1 = cached_which("python3")
         c2 = cached_which("python3")
         assert c1 == c2
-        assert cached_which.cache_info().hits >= 1
+        assert getattr(cached_which, "cache_info")().hits >= 1
 
         v1 = _cli_version(which_python)
         v2 = _cli_version(which_python)
@@ -333,7 +334,7 @@ def test_preflight_cache_and_parallel_grading_across_repetitions(tmp_path: Path,
     )
     task = TaskConfig(id="t1", prompt="p")
     runner = CountingAgentRunner()
-    cache = {}
+    cache: dict[tuple[Any, ...], dict[str, Any]] = {}
     probe_arm_preflights(
         {"control": ws_ctrl, "treatment": ws_treat},
         cfg,

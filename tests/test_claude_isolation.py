@@ -81,7 +81,7 @@ def test_probe_workspace_passes_claude_read_paths(tmp_path, capable_cli):
     calls = []
 
     class CaptureRunner(AgentRunner):
-        def _exec(self, cmd, cwd, env, timeout, **kwargs):
+        def _exec(self, cmd, cwd, env, timeout, **kwargs):  # type: ignore[override]
             calls.append((cmd, kwargs))
             return ExecResult("", "", 0, 0)
 

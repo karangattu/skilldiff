@@ -5,7 +5,7 @@ from typing import Any
 from skilldiff.reporting.table import _md_table
 
 
-def _render_markdown(title: str, blocks: list[tuple], flavor: str, date: str) -> str:
+def _render_markdown(title: str, blocks: list[tuple[Any, ...]], flavor: str, date: str) -> str:
     lines: list[str] = []
     if flavor == "quarto":
         lines.extend(

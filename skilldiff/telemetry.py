@@ -161,9 +161,13 @@ def parse_codex(stdout: str, skill_names: list[str]) -> dict[str, Any]:
                              ("input_tokens", "cached_input_tokens", "output_tokens")}
                 else:
                     for key in usage:
-                        value = count(current.get(key))
-                        usage[key] = (usage[key] + value if usage[key] is not None
-                                      and value is not None else None)
+                        current_value = count(current.get(key))
+                        existing = usage[key]
+                        usage[key] = (
+                            existing + current_value
+                            if existing is not None and current_value is not None
+                            else None
+                        )
         if kind in {"turn.failed", "error"} and not params.get("willRetry", False):
             error = str(event.get("error") or params.get("error") or "Codex failed")
         item = event.get("item") if kind == "item.completed" else (
@@ -341,7 +345,7 @@ def parse_opencode(stdout: str, skill_names: list[str]) -> dict[str, Any]:
 
 
 def parse_opencode_export(
-    data: dict[str, Any] | str, skill_names: list[str] = ()
+    data: dict[str, Any] | str, skill_names: list[str] = []
 ) -> dict[str, Any]:
     from skilldiff.runner import _skill_matches, detect_skill_reference
 
@@ -353,8 +357,10 @@ def parse_opencode_export(
     if not isinstance(data, dict):
         return {"error": "expected OpenCode session export object"}
 
-    info = data.get("info") if isinstance(data.get("info"), dict) else {}
-    messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+    info_raw = data.get("info")
+    info = info_raw if isinstance(info_raw, dict) else {}
+    messages_raw = data.get("messages")
+    messages = messages_raw if isinstance(messages_raw, list) else []
     session_id = info.get("id") or data.get("sessionID")
 
     last_user_idx = -1
@@ -398,7 +404,8 @@ def parse_opencode_export(
         if isinstance(tok, dict):
             inputs.append(count(tok.get("input")))
             outputs.append(count(tok.get("output")))
-            cache = tok.get("cache") if isinstance(tok.get("cache"), dict) else {}
+            cache_raw = tok.get("cache")
+            cache = cache_raw if isinstance(cache_raw, dict) else {}
             cache_reads.append(count(cache.get("read")))
             cache_writes.append(count(cache.get("write")))
         for c in m.get("content", []):
@@ -408,9 +415,11 @@ def parse_opencode_export(
                 texts.append(c["text"])
             elif c.get("type") == "tool":
                 tool_count += 1
-                state = c.get("state") if isinstance(c.get("state"), dict) else {}
+                state_raw = c.get("state")
+                state = state_raw if isinstance(state_raw, dict) else {}
                 if state.get("status") == "completed":
-                    t_input = state.get("input") if isinstance(state.get("input"), dict) else {}
+                    t_input_raw = state.get("input")
+                    t_input = t_input_raw if isinstance(t_input_raw, dict) else {}
                     t_name = c.get("name") or c.get("tool")
                     target_id = t_input.get("id") or t_input.get("skill")
                     target_path = str(t_input.get("filePath") or t_input.get("path") or "")

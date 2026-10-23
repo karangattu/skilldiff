@@ -6,6 +6,7 @@ between the two is what the SKILL.md description is worth.
 """
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,6 +17,7 @@ from skilldiff.invocation import (
     skill_reference,
     template_names_skill,
 )
+from skilldiff.runner import AgentRunner
 
 # --------------------------------------------------------------------- helpers
 
@@ -182,7 +184,7 @@ def _run_experiment(
     category: str = "intended",
     prompts: list[str] | None = None,
     **overrides,
-) -> dict:
+) -> dict[str, Any]:
     monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
     monkeypatch.setenv("SKILLDIFF_MOCK_RESPONSE", "Mocked")
     from skilldiff.config import ClaudeConfig, ExperimentConfig, GraderConfig, TaskConfig
@@ -315,19 +317,20 @@ def test_compare_reports_the_invocation_mode(tmp_path: Path, monkeypatch):
     assert "mixes obedience with discovery" in text
 
 
-class _RecordingRunner:
+class _RecordingRunner(AgentRunner):
     """Captures the prompt and the skill names each arm was run with."""
 
     def __init__(self) -> None:
-        self.calls: list[dict] = []
+        super().__init__()
+        self.calls: list[dict[str, Any]] = []
 
     def terminate_all(self) -> None:
         pass
 
-    def preflight(self, cwd, config, expected, runtime_probe=None):
+    def preflight(self, cwd, config, expected, runtime_probe=None):  # type: ignore[override]
         return {"ok": True}
 
-    def run(self, prompt, cwd, model, config, **kwargs):
+    def run(self, prompt, cwd, model, config, **kwargs):  # type: ignore[override]
         self.calls.append(
             {"prompt": prompt, "skill_names": kwargs.get("skill_names"), "cwd": cwd}
         )

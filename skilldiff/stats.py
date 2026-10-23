@@ -6,7 +6,7 @@ repetition. Differences are always skill minus control.
 
 import random
 import statistics
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 BOOTSTRAP_RESAMPLES = 2000
 BOOTSTRAP_SEED = 20260922
@@ -127,7 +127,7 @@ def _get_cost(run: dict[str, Any]) -> Optional[float]:
     if "cost" not in run or run.get("cost") is None:
         return None
     try:
-        return float(run.get("cost"))
+        return float(run["cost"])
     except (TypeError, ValueError):
         return None
 
@@ -138,7 +138,7 @@ def _get_duration(run: dict[str, Any]) -> Optional[float]:
     if "duration" not in run or run.get("duration") is None:
         return None
     try:
-        return float(run.get("duration"))
+        return float(run["duration"])
     except (TypeError, ValueError):
         return None
 
@@ -168,7 +168,7 @@ def _get_turns(run: dict[str, Any]) -> Optional[float]:
     if "num_turns" not in run or run.get("num_turns") is None:
         return None
     try:
-        return float(run.get("num_turns"))
+        return float(run["num_turns"])
     except (TypeError, ValueError):
         return None
 
@@ -179,7 +179,7 @@ def _get_tool_calls(run: dict[str, Any]) -> Optional[float]:
     if "tool_calls" not in run or run.get("tool_calls") is None:
         return None
     try:
-        return float(run.get("tool_calls"))
+        return float(run["tool_calls"])
     except (TypeError, ValueError):
         return None
 
@@ -200,8 +200,11 @@ def paired_comparison(
     pairs = pair_runs(control_runs, treatment_runs)
     result: dict[str, Any] = {"pairs": len(pairs)}
     for name, getter in METRICS.items():
-        valid = [(getter(c), getter(t)) for c, t in pairs]
-        valid = [(c, t) for c, t in valid if c is not None and t is not None]
+        raw_valid = [(getter(c), getter(t)) for c, t in pairs]
+        valid = cast(
+            list[tuple[float, float]],
+            [(c, t) for c, t in raw_valid if c is not None and t is not None],
+        )
         diffs = [t - c for c, t in valid]
         control_total = sum(c for c, _ in valid)
         ci = bootstrap_ci(diffs)
@@ -221,10 +224,13 @@ def paired_comparison(
                 relative_ci_high=relative_ci[1] if relative_ci else None,
             )
     # Wins/losses/ties use only pairs where both scores are known.
-    score_pairs = [
+    raw_score_pairs = [
         (METRICS["score"](c), METRICS["score"](t)) for c, t in pairs
     ]
-    score_pairs = [(c, t) for c, t in score_pairs if c is not None and t is not None]
+    score_pairs = cast(
+        list[tuple[float, float]],
+        [(c, t) for c, t in raw_score_pairs if c is not None and t is not None],
+    )
     score_diffs = [t - c for c, t in score_pairs]
     result["wins"] = sum(1 for d in score_diffs if d > 1e-9)
     result["losses"] = sum(1 for d in score_diffs if d < -1e-9)

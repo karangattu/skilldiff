@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 PRICING_RATE_KEYS = ("input", "output", "cache_read", "cache_write")
 PRICING_TIER_KEYS = frozenset({"max_prompt_tokens", *PRICING_RATE_KEYS})
@@ -177,7 +177,7 @@ def rate_entry(pricing: dict[str, Any], model: str) -> Optional[dict[str, Any]]:
     if entry is None:
         entry = rates.get(normalize_model_id(model))
     if entry is not None:
-        return entry
+        return cast(Optional[dict[str, Any]], entry)
     return builtin_rate_entry(model) if not rates else None
 
 
@@ -188,8 +188,8 @@ def tier_for_prompt(entry: dict[str, Any], prompt_tokens: int) -> dict[str, floa
     for tier in tiers:
         maximum = tier.get("max_prompt_tokens")
         if maximum is None or prompt_tokens <= int(maximum):
-            return tier
-    return tiers[-1]
+            return cast(dict[str, float], tier)
+    return cast(dict[str, float], tiers[-1])
 
 
 def prompt_tokens_for_usage(usage: dict[str, Any]) -> int:
@@ -266,7 +266,7 @@ def price_run(
 
     requests = run.get("request_usage")
     if isinstance(requests, list) and requests:
-        costs = []
+        costs: list[float] = []
         for request in requests:
             if not isinstance(request, dict) or not _finite_usage(request):
                 costs = []

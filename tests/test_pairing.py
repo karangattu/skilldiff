@@ -220,7 +220,7 @@ def test_run_pair_rate_limit_retry(tmp_path: Path, monkeypatch):
             status="ok",
         )
 
-    runner.agent_runner.run = mock_run
+    setattr(runner.agent_runner, "run", mock_run)
     pair = _Pair(model="haiku", task=task, repetition=1)
     ctrl, treat = run_pair(runner, pair, tmp_path / "run_root")
 
@@ -293,7 +293,7 @@ def test_run_pair_guarantees_workspace_cleanup(tmp_path: Path, monkeypatch):
         created_workspaces.append(cwd)
         raise RuntimeError("simulated failure during agent execution")
 
-    runner.agent_runner.run = mock_run
+    setattr(runner.agent_runner, "run", mock_run)
     pair = _Pair(model="m", task=task, repetition=1)
 
     import pytest

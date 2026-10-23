@@ -11,6 +11,7 @@ Use the uv project environment for all Python commands. From the repository root
 uv sync --frozen --extra dev
 uv run --frozen --extra dev python -m pytest
 uv run --frozen --extra dev ruff check skilldiff tests
+uv run --frozen --extra dev mypy
 ```
 
 Keep `--extra dev` on test and lint commands: these tools are optional development

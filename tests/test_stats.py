@@ -21,7 +21,9 @@ def test_pair_runs_matches_model_task_and_repetition():
 
 def test_bootstrap_ci_needs_two_values_and_brackets_mean():
     assert bootstrap_ci([0.5]) is None
-    lo, hi = bootstrap_ci([0.0, 0.5, 1.0, 0.5])
+    res = bootstrap_ci([0.0, 0.5, 1.0, 0.5])
+    assert res is not None
+    lo, hi = res
     assert lo <= 0.5 <= hi
 
 

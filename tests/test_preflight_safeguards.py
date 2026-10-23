@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -21,7 +22,7 @@ def test_validation_explains_missing_browser_instead_of_losing_feedback(tmp_path
     )
     report = validate_grader_against_directories(grader, tmp_path)
     assert report["verdict"] == "grader-broken"
-    assert "Missing Chromium executable" in report["untouched"]["feedback"]
+    assert "Missing Chromium executable" in cast(dict[str, Any], report["untouched"])["feedback"]
 
 
 def test_known_good_solution_must_obey_the_scope_given_to_agents(tmp_path):
@@ -44,11 +45,11 @@ def test_known_good_solution_must_obey_the_scope_given_to_agents(tmp_path):
     )
     report = validate_grader_against_directories(grader, fixture, good)
     assert report["verdict"] == "scope-conflict"
-    assert "warehouse.py" in " ".join(report["checks"])
+    assert "warehouse.py" in " ".join(cast(list[str], report["checks"]))
 
 
 def cost_results(basis, repetitions=1):
-    runs = {"control": [], "treatment": []}
+    runs: dict[str, list[dict[str, Any]]] = {"control": [], "treatment": []}
     for i in range(3):
         for arm, tokens in [("control", 1_000_000), ("treatment", 500_000)]:
             runs[arm].append(

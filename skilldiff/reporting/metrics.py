@@ -43,7 +43,7 @@ def _known_score(run: dict[str, Any]) -> Optional[float]:
     if "score" not in run or run.get("score") is None:
         return None
     try:
-        return float(run.get("score"))
+        return float(run["score"])
     except (TypeError, ValueError):
         return None
 
@@ -52,7 +52,7 @@ def _known_float(run: dict[str, Any], key: str) -> Optional[float]:
     if key not in run or run.get(key) is None:
         return None
     try:
-        return float(run.get(key))
+        return float(run[key])
     except (TypeError, ValueError):
         return None
 

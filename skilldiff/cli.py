@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, cast
 
 import yaml
 
@@ -660,7 +660,7 @@ def _init_pr(args: argparse.Namespace, root: Path, force: bool, harness: str) ->
     if pr_pair not in {"merge-base", "base-merge"}:
         print("--pr-pair must be 'merge-base' or 'base-merge'.", file=sys.stderr)
         return 1
-    config = {
+    config: dict[str, Any] = {
         "name": f"pr-{args.pr}-eval",
         # Preset pr: code without PR changes vs code with PR changes.
         "preset": "pr",
@@ -948,7 +948,7 @@ def cmd_check(args: argparse.Namespace) -> int:
             from skilldiff.experiment import collect_provenance as _prov
 
             prov = _prov(cfg, tasks)
-            roles = {}
+            roles: dict[str, list[str]] = {}
             for s in prov.get("skills") or []:
                 roles.setdefault(s.get("role"), []).append(s.get("hash"))
             if roles.get("skill_a") == roles.get("skill_b") and roles.get("skill_a"):
@@ -1211,7 +1211,7 @@ def cmd_check(args: argparse.Namespace) -> int:
                         cfg.harness,
                         source_commit=(comparison or {}).get(f"{arm}_commit"),
                         pr_touched_skills=(
-                            (comparison or {}).get("touched_skills")
+                            cast(list[str] | None, (comparison or {}).get("touched_skills"))
                             if (comparison and (comparison.get("mode") or "agent") == "agent")
                             else None
                         ),
@@ -1344,7 +1344,7 @@ def cmd_check(args: argparse.Namespace) -> int:
                     [cfg.skill_b] if cfg.is_skill_comparison and cfg.skill_b else None
                 ),
                 pr_touched_skills=(
-                    (comparison or {}).get("touched_skills")
+                    cast(list[str] | None, (comparison or {}).get("touched_skills"))
                     if (comparison and (comparison.get("mode") or "agent") == "agent")
                     else None
                 ),
@@ -1417,7 +1417,7 @@ def cmd_check(args: argparse.Namespace) -> int:
                     fail(
                         f"task {task.id}: grader validation {verdict} "
                         f"(log: {log / 'grader.json'}): "
-                        f"{'; '.join(report.get('checks', []))}"
+                        f"{'; '.join(cast(list[str], report.get('checks', [])))}"
                     )
                     continue
                 ok(
@@ -1778,7 +1778,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 def _format_score(score: object, status: object) -> str:
     if score is None:
         return f"N/A ({status})"
-    return f"{round(float(score) * 100)}%"
+    return f"{round(float(cast(Any, score)) * 100)}%"
 
 
 def cmd_regrade(args: argparse.Namespace) -> int:
@@ -2006,7 +2006,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_report_paths(results: dict) -> None:
+def _print_report_paths(results: dict[str, Any]) -> None:
     report = results.get("report", {}) or {}
     if report.get("html"):
         print(f"\nReport: {report['html']}")
@@ -2016,7 +2016,7 @@ def _print_report_paths(results: dict) -> None:
         print(f"\nQuarto report: {report['qmd']}")
 
 
-def _format_results(results: dict) -> str:
+def _format_results(results: dict[str, Any]) -> str:
     name = results.get("name", "experiment")
     by_model = results.get("by_model", {})
     models = results.get("models", [])
@@ -2034,7 +2034,7 @@ def _format_results(results: dict) -> str:
     control_runs = [analysis_run(r, agent_failure) for r in raw_runs.get("control") or []]
     treatment_runs = [analysis_run(r, agent_failure) for r in raw_runs.get("treatment") or []]
 
-    def comparable_source(model: str | None, fallback: dict) -> dict:
+    def comparable_source(model: str | None, fallback: dict[str, Any]) -> dict[str, Any]:
         if not (control_runs or treatment_runs):
             return fallback
         control = [r for r in control_runs if model is None or r.get("model") == model]

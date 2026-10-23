@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -707,7 +708,7 @@ def test_opencode_error_event_is_harness_failure(tmp_path: Path):
 
         assert res.status == "error"
         assert res.failure_kind == "harness_error"
-        assert "Failed to change directory" in res.error
+        assert res.error is not None and "Failed to change directory" in res.error
 
 
 def test_opencode_structured_skill_adoption(tmp_path: Path):
@@ -859,7 +860,7 @@ def test_parse_opencode_export_failure():
     from skilldiff.telemetry import parse_opencode_export
 
     assert "Malformed" in parse_opencode_export("{invalid json")["error"]
-    assert "expected" in parse_opencode_export([1, 2, 3])["error"]
+    assert "expected" in parse_opencode_export(cast(Any, [1, 2, 3]))["error"]
 
     failed_outcome = {
         "info": {"id": "ses_fail", "outcome": "failed"},
@@ -943,6 +944,7 @@ def test_opencode_runner_export_failure_preserves_error(tmp_path: Path):
         res = runner.run(prompt="p", cwd=tmp_path, model="m", config=cfg)
         assert res.status == "error"
         assert res.failure_kind == "harness_error"
+        assert res.error is not None
         assert "OpenCode exited without a terminal step_finish" in res.error
 
 

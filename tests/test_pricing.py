@@ -37,6 +37,7 @@ def _usage(input_tokens=0, output_tokens=0, cache_read=0, cache_write=0):
 
 def test_haiku_tiers_use_each_request_prompt_size():
     entry = builtin_rate_entry("claude-haiku-5-5")
+    assert entry is not None
     low = _usage(input_tokens=50_000, output_tokens=10_000)
     high = _usage(input_tokens=150_000, output_tokens=10_000)
     priced = price_run(entry, {**low, "request_usage": [low, high]})
@@ -49,6 +50,7 @@ def test_haiku_tiers_use_each_request_prompt_size():
 
 def test_tiered_run_without_request_usage_is_na_for_decisions():
     entry = builtin_rate_entry("claude-haiku-5-5")
+    assert entry is not None
     run = _usage(input_tokens=50_000, output_tokens=10_000)
     assert price_run(entry, run) == {"cost": None, "basis": "unknown"}
     upper = price_run(entry, run, tier_policy="upper_bound")
@@ -61,6 +63,7 @@ def test_tiered_run_without_request_usage_is_na_for_decisions():
 
 def test_flat_rates_price_aggregate_usage():
     entry = builtin_rate_entry("claude-sonnet-5-5")
+    assert entry is not None
     priced = price_run(entry, _usage(1_000_000, 100_000, 2_000_000, 0))
     assert priced["basis"] == "flat"
     assert priced["cost"] == pytest.approx(2.0 + 1.0 + 0.2)

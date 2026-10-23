@@ -5,6 +5,7 @@ import os
 import stat
 import sys
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -38,8 +39,8 @@ from skilldiff.runner import (
 )
 
 
-def _settings(cmd: list[str]) -> dict:
-    return json.loads(cmd[cmd.index("--settings") + 1])
+def _settings(cmd: list[str]) -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(cmd[cmd.index("--settings") + 1]))
 
 
 def test_claude_result_records_permission_denials():
@@ -95,7 +96,7 @@ def _claude_result(**changes):
         "prompt": "", "response": "", "transcript": "", "duration": 1.0, "cost": None,
         "input_tokens": None, "output_tokens": None, "tool_calls": 1, "exit_code": 0,
     }
-    return RunResult(**(base | changes))
+    return RunResult(**(base | changes))  # type: ignore[arg-type]
 
 
 def _command_transcript(commands, *, denials=None, failed=False):
@@ -238,6 +239,7 @@ def test_claude_runs_bash_in_its_own_sandbox_by_default(tmp_path):
     assert cmd[cmd.index("--permission-mode") + 1] == "acceptEdits"
 
     domains = claude_sandbox_settings(ClaudeConfig(allowed_domains=["pypi.org"]))
+    assert domains is not None
     assert domains["sandbox"]["network"] == {"allowedDomains": ["pypi.org"]}
     assert claude_sandbox_settings(ClaudeConfig(sandbox=False)) is None
 
@@ -529,6 +531,7 @@ def test_eval_profile_keeps_the_sandbox_and_adds_localhost(tmp_path):
     settings = claude_sandbox_settings(
         ClaudeConfig(profile="eval"), temp_dir=scratch
     )
+    assert settings is not None
     sandbox = settings["sandbox"]
     assert sandbox["enabled"]
     assert sandbox["allowUnsandboxedCommands"] is False

@@ -531,20 +531,20 @@ def _key_takeaways(
     improved = [r for r in check_rows if r.get("diff_pp") is not None and r["diff_pp"] > 0]
     regressed = [r for r in check_rows if r.get("diff_pp") is not None and r["diff_pp"] < 0]
     if improved or regressed:
-        parts: list[str] = []
+        check_parts: list[str] = []
         if improved:
             best = max(improved, key=lambda r: r["diff_pp"] or 0)
-            parts.append(
+            check_parts.append(
                 f"biggest gain `{best['check']}` ({best['task_id']}, "
                 f"{format_pp_diff(int(best['diff_pp']))})"
             )
         if regressed:
             worst = min(regressed, key=lambda r: r["diff_pp"] or 0)
-            parts.append(
+            check_parts.append(
                 f"biggest regression `{worst['check']}` ({worst['task_id']}, "
                 f"{format_pp_diff(int(worst['diff_pp']))})"
             )
-        bullets.append("**Checks.** " + "; ".join(parts) + ". See By check.")
+        bullets.append("**Checks.** " + "; ".join(check_parts) + ". See By check.")
 
     task_effects: list[tuple[float, str]] = []
     for task_id in results.get("tasks") or sorted({r.get("task_id", "") for r in control_runs}):
@@ -555,15 +555,17 @@ def _key_takeaways(
             if md is not None:
                 task_effects.append((float(md), task_id))
     if len(task_effects) > 1:
-        best = max(task_effects)
-        worst = min(task_effects)
-        if best[0] > 0:
+        best_effect = max(task_effects)
+        worst_effect = min(task_effects)
+        if best_effect[0] > 0:
+            diff_str = format_pp_diff(round(best_effect[0] * 100))
             bullets.append(
-                f"**Biggest gain:** `{best[1]}` ({format_pp_diff(round(best[0] * 100))})."
+                f"**Biggest gain:** `{best_effect[1]}` ({diff_str})."
             )
-        if worst[0] < 0:
+        if worst_effect[0] < 0:
+            diff_str = format_pp_diff(round(worst_effect[0] * 100))
             bullets.append(
-                f"**Biggest regression:** `{worst[1]}` ({format_pp_diff(round(worst[0] * 100))})."
+                f"**Biggest regression:** `{worst_effect[1]}` ({diff_str})."
             )
     c_pct_all = _score_percent(control)
     planned_pairs = (
@@ -805,7 +807,7 @@ def _group_row(
 
 def build_report_blocks(
     results: dict[str, Any], run_root: Path | None = None
-) -> tuple[str, list[tuple]]:
+) -> tuple[str, list[tuple[Any, ...]]]:
     comparison = results.get("comparison")
     skill_comparison = results.get("skill_comparison")
     preset = results.get("preset") or (results.get("settings") or {}).get("preset")
@@ -860,7 +862,7 @@ def build_report_blocks(
     headline_control, headline_skill = decision["control"], decision["skill"]
     split_basis_note = decision["basis_note"]
 
-    blocks: list[tuple] = []
+    blocks: list[tuple[Any, ...]] = []
     incomplete = results.get("incomplete_runs") or []
     if incomplete:
         known = [run.get("cost") for run in incomplete if run.get("cost") is not None]
@@ -1119,10 +1121,10 @@ def build_report_blocks(
                 _signed_tokens(s_api["totals"][field] - c_api["totals"][field])
                 if c_api["eligible_runs"] and s_api["eligible_runs"] else "N/A"
             )
-        cost_cell: Cell = _fmt_money_diff(cost_change, currency)
+        cost_cell = _fmt_money_diff(cost_change, currency)
         if cost_change is not None:
-            cost_cell = (cost_cell, _tone(round(cost_change, 2), False))
-        diff_row.append(cost_cell)
+            cost_cell_display = (cost_cell, _tone(round(cost_change, 2), False))
+        diff_row.append(cost_cell_display if cost_change is not None else cost_cell)
 
         blocks.append(("h", 2, "API-equivalent cost"))
         blocks.append(
@@ -1499,14 +1501,18 @@ def build_report_blocks(
             )
         )
 
-    sc = skill_comparison or {}
-    if (preset == "compression" or sc.get("preset") == "compression") and (
-        sc.get("source_bytes_a") or sc.get("source_bytes_b")
+    skill_comp: Any = skill_comparison or {}
+    if (preset == "compression" or skill_comp.get("preset") == "compression") and (
+        skill_comp.get("source_bytes_a") or skill_comp.get("source_bytes_b")
     ):
         try:
-            ba = int(sc.get("source_bytes_a") or 0)
-            bb = int(sc.get("source_bytes_b") or 0)
-            pct = (bb - ba) / ba * 100 if ba else (-float(sc.get("source_reduction_pct") or 0))
+            ba = int(skill_comp.get("source_bytes_a") or 0)
+            bb = int(skill_comp.get("source_bytes_b") or 0)
+            pct = (
+                (bb - ba) / ba * 100
+                if ba
+                else (-float(skill_comp.get("source_reduction_pct") or 0))
+            )
             blocks.append(("h", 2, "Source size"))
             blocks.append(
                 (

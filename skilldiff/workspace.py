@@ -49,7 +49,7 @@ HARNESS_USER_PATHS: dict[str, list[str]] = {
 
 def user_skill_paths(skill_names: list[str], harness: str) -> list[Path]:
     """Advisory scan, including plugin skills; discovery is a separate runtime check."""
-    found = []
+    found: list[Path] = []
     for raw in HARNESS_USER_PATHS.get(harness, []):
         base = Path(raw).expanduser()
         if base.name == "skills":
@@ -241,7 +241,11 @@ class Workspace:
         self.fixture_repo = fixture_repo.resolve() if fixture_repo else None
         self.mounted_fixtures = [Path(p) for p in (mounted_fixtures or [])]
         self.harness = harness
-        self.skill_dirs = (find_skill_dirs(self.skill_dir) or [self.skill_dir]) if skill_dir else []
+        self.skill_dirs = (
+            (find_skill_dirs(self.skill_dir) or [self.skill_dir])
+            if self.skill_dir
+            else []
+        )
         self.strip_skill_dirs: list[Path] = []
         self.pr_touched_skills = list(pr_touched_skills or [])
         for extra in strip_skill_dirs or []:
@@ -322,6 +326,7 @@ class Workspace:
         self.root.mkdir(parents=True, exist_ok=True)
 
         if self.source_commit:
+            assert self.fixture_repo is not None
             export_revision(self.fixture_repo, self.source_commit, self.root)
         elif self.fixture_repo and self.fixture_repo.exists():
             copy_fixture_clean(self.fixture_repo, self.root, reflink=self.reflink)
@@ -386,12 +391,12 @@ class Workspace:
                         for t in self._get_skill_target_dirs(d.name)
                     }
                     try:
-                        rel = existing.relative_to(self.root)
+                        rel_path: Path = existing.relative_to(self.root)
                     except ValueError:
                         continue
-                    if existing.exists() and rel not in installed:
+                    if existing.exists() and rel_path not in installed:
                         shutil.rmtree(existing)
-                        self.removed_from_control.append(str(rel))
+                        self.removed_from_control.append(str(rel_path))
         else:
             for skill_dir in [*self.skill_dirs, *self.strip_skill_dirs]:
                 for root in SKILL_ROOTS:

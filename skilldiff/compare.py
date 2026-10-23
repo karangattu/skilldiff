@@ -73,7 +73,9 @@ def _known_tokens(run: dict[str, Any]) -> float | None:
     return value if value is not None and math.isfinite(value) else None
 
 
-def _analysis_pairs(a: dict[str, Any], b: dict[str, Any]) -> list[tuple[dict, dict]]:
+def _analysis_pairs(
+    a: dict[str, Any], b: dict[str, Any]
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     return pair_runs(
         [analysis_run(r, _failure_policy(a)["agent_failure"]) for r in _skill_runs(a)],
         [analysis_run(r, _failure_policy(b)["agent_failure"]) for r in _skill_runs(b)],
@@ -296,8 +298,8 @@ def compare_results(a: dict[str, Any], b: dict[str, Any], strict: bool = False) 
                 continue
             key = (str(arun.get("model", "")), str(arun.get("task_id", "")), name)
             entry = checks.setdefault(key, [0, 0, 0])
-            entry[0] += int(ca[name])
-            entry[1] += int(cb[name])
+            entry[0] += int(ca[name] or 0)
+            entry[1] += int(cb[name] or 0)
             entry[2] += 1
     newly_failing: list[dict[str, Any]] = []
     newly_passing: list[dict[str, Any]] = []

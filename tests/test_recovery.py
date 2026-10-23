@@ -5,12 +5,13 @@ import json
 import os
 import shutil
 from pathlib import Path
+from typing import Any, Optional
 
 import pytest
 
-from skilldiff.config import ExperimentConfig, GraderConfig, TaskConfig
+from skilldiff.config import ClaudeConfig, ExperimentConfig, GraderConfig, TaskConfig
 from skilldiff.experiment import ExperimentRunner
-from skilldiff.runner import AgentRunner
+from skilldiff.runner import AgentRunner, RunResult
 
 
 @pytest.fixture
@@ -113,7 +114,16 @@ def test_later_pairs_use_frozen_inputs(experiment, parallel, baseline):
     original = (source / "SKILL.md").read_text()
 
     class InspectingAgent(AgentRunner):
-        def run(self, prompt, cwd, model, config):
+        def run(
+            self,
+            prompt: str | list[str],
+            cwd: Path,
+            model: str,
+            config: ExperimentConfig | ClaudeConfig | Any,
+            harness: Optional[str] = None,
+            skill_names: Optional[list[str]] = None,
+            timeout: Optional[float] = None,
+        ) -> RunResult:
             assert (cwd / "data.txt").read_text() == "original"
             installed = cwd / ".claude/skills/my-skill/SKILL.md"
             if installed.exists():
@@ -123,7 +133,7 @@ def test_later_pairs_use_frozen_inputs(experiment, parallel, baseline):
             cfg.timeout_seconds = 1
             tasks[0].prompt = "changed"
             assert prompt == "Test"
-            assert config.timeout_seconds == 1800
+            assert config.timeout_seconds == 1800  # type: ignore[union-attr]
             return super().run(prompt, cwd, model, config)
 
     result = ExperimentRunner(cfg, tasks, agent_runner=InspectingAgent()).run()
@@ -461,7 +471,16 @@ def test_fixture_root_symlink_is_resolved_once(experiment):
     cfg.runs = 2
 
     class RetargetingAgent(AgentRunner):
-        def run(self, prompt, cwd, model, config):
+        def run(
+            self,
+            prompt: str | list[str],
+            cwd: Path,
+            model: str,
+            config: ExperimentConfig | ClaudeConfig | Any,
+            harness: Optional[str] = None,
+            skill_names: Optional[list[str]] = None,
+            timeout: Optional[float] = None,
+        ) -> RunResult:
             assert (cwd / "data.txt").read_text() == "original"
             link.unlink()
             link.symlink_to(replacement)
@@ -488,7 +507,16 @@ def test_interruption_keeps_arm_resources_diff_and_explicit_partial_records(expe
     class InterruptedRunner(AgentRunner):
         count = 0
 
-        def run(self, prompt, cwd, model, config):
+        def run(
+            self,
+            prompt: str | list[str],
+            cwd: Path,
+            model: str,
+            config: ExperimentConfig | ClaudeConfig | Any,
+            harness: Optional[str] = None,
+            skill_names: Optional[list[str]] = None,
+            timeout: Optional[float] = None,
+        ) -> RunResult:
             self.count += 1
             (cwd / 'data.txt').write_text('repaired' if self.count == 1 else 'partial')
             if self.count == 2:

@@ -206,7 +206,7 @@ def test_parse_pricing_requires_provenance_and_complete_rates():
         )
 
 
-def _rates() -> dict:
+def _rates() -> dict[str, float]:
     return {"input": 1.0, "output": 2.0, "cache_read": 0.1, "cache_write": 1.25}
 
 

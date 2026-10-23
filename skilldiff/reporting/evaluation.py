@@ -402,6 +402,7 @@ def _build_runs_table(
         for arm_label, run in arm_pairs:
             if run is None:
                 continue
+            _files_changed_normalized = run.get("files_changed_normalized")
             row: list[Cell] = [
                 str(run.get("task_id", "")),
                 str(run.get("repetition", 1)),
@@ -416,8 +417,8 @@ def _build_runs_table(
                 _tokens_cell(run),
                 str(
                     len(
-                        run.get("files_changed_normalized")
-                        if run.get("files_changed_normalized") is not None
+                        _files_changed_normalized
+                        if _files_changed_normalized is not None
                         else normalize_changed_paths(run.get("files_changed") or [])
                     )
                 ),

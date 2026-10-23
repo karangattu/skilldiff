@@ -538,6 +538,10 @@ class ExperimentConfig:
     # arm's skill name(s). A template without "{skill}" says the same thing to
     # every arm, which keeps A/B revision runs fair.
     skill_invocation_prompt: Optional[str] = None
+    # Whether parallel / arm_parallel were explicitly set in config (vs default).
+    _arm_parallel_explicit: bool = False
+    _parallel_explicit: bool = False
+    _cli_parallel_explicit: bool = False
 
     @property
     def is_skill_comparison(self) -> bool:
@@ -1333,8 +1337,8 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
 
     for pattern in task_patterns:
         resolved_pattern = str(base_dir / pattern)
-        matching_paths = sorted(glob.glob(resolved_pattern))
-        for p in matching_paths:
+        matching_paths: list[str] = sorted(glob.glob(resolved_pattern))
+        for p in matching_paths:  # type: ignore[assignment]
             path_obj = Path(p).resolve()
             if path_obj in seen_paths:
                 continue

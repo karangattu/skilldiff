@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 from skilldiff.adoption import (
     adoption_actions,
@@ -21,7 +22,7 @@ def _run(
     loads=None,
     split: str = "dev",
     task: str = "t1",
-) -> dict:
+) -> dict[str, Any]:
     run = {
         "arm": arm,
         "model": "m",
@@ -175,7 +176,7 @@ def _experiment(tmp_path):
     )
 
 
-def _arm_runs(arm: str, task: str, split: str, invoked) -> list[dict]:
+def _arm_runs(arm: str, task: str, split: str, invoked) -> list[dict[str, Any]]:
     return [
         {
             "model": "sonnet",

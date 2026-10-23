@@ -309,7 +309,7 @@ def test_grader_cleanup_failure_cannot_become_a_valid_grade(tmp_path, monkeypatc
     ).grade_workspace(tmp_path)
     assert result.grade_status == "error"
     assert result.score is None
-    assert "cleanup" in result.feedback.lower()
+    assert result.feedback is not None and "cleanup" in result.feedback.lower()
 
 
 @pytest.fixture

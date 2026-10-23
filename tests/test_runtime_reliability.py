@@ -54,7 +54,7 @@ def test_yaml_serial_parallel_setting_is_not_replaced_by_auto_workers(
     config.write_text(f"name: serial\nskill: ./skill\nmodels: [m]\ntasks: [task.yaml]\nruns: 2\n"
                       f"parallel: 1\narm_parallel: false\nclaude:\n  bin_path: {agent}\n")
     cfg, tasks = load_experiment(config)
-    progress = []
+    progress: list[str] = []
     results = ExperimentRunner(cfg, tasks, output_dir=tmp_path / "runs",
                                progress=progress.append).run()
     assert len(results["runs"]["control"]) == 2
@@ -105,8 +105,9 @@ def test_codex_generic_error_keeps_service_cause_and_redacts_credentials(
     result = AgentRunner()._run_codex("repair", tmp_path, "m", CodexConfig())
     assert result.status == "error"
     assert result.failure_kind == kind
+    assert result.error is not None
     assert detail in result.error
-    assert "sensitive-test-value" not in result.error + result.transcript
+    assert "sensitive-test-value" not in result.error + (result.transcript or "")
 
 
 def test_malformed_codex_tool_result_stays_a_harness_error(tmp_path, monkeypatch):
@@ -117,7 +118,7 @@ def test_malformed_codex_tool_result_stays_a_harness_error(tmp_path, monkeypatch
     result = AgentRunner()._run_codex("repair", tmp_path, "m", CodexConfig())
     assert result.status == "error"
     assert result.failure_kind == "harness_error"
-    assert "Malformed structured output" in result.error
+    assert result.error is not None and "Malformed structured output" in result.error
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="native macOS isolation")

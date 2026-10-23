@@ -1,4 +1,5 @@
 import json
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -70,7 +71,7 @@ def test_grader_blast_radius_enforcement(tmp_path: Path):
 
     assert grade_c.success is True
     assert grade_t.success is False
-    assert "outside allowed paths" in grade_t.feedback
+    assert grade_t.feedback is not None and "outside allowed paths" in grade_t.feedback
 
 
 def test_grader_llm_rubric_evaluation(tmp_path: Path):
@@ -112,7 +113,7 @@ def test_grader_llm_rubric_evaluation(tmp_path: Path):
     )
     assert grade_c_fb.score is None
     assert grade_c_fb.grade_status == "error"
-    assert "judge command" in grade_c_fb.feedback
+    assert grade_c_fb.feedback is not None and "judge command" in grade_c_fb.feedback
 
 
 def test_task_config_extensions(tmp_path: Path):
@@ -135,6 +136,7 @@ def test_task_config_extensions(tmp_path: Path):
     assert task.prompts == ["Turn 1", "Turn 2"]
     assert task.allowed_paths == ["src/**"]
     assert task.forbidden_paths == [".env"]
+    assert task.grader is not None
     assert task.grader.type == "llm"
     assert task.grader.rubric == "Check quality"
 
@@ -332,9 +334,9 @@ def test_diagnose_ignores_partial_agent_failure_comparisons(tmp_path: Path):
 def test_cli_lint_and_diagnose(tmp_path: Path, capsys):
     from skilldiff.cli import cmd_diagnose, cmd_lint
 
-    class Args:
+    class Args(Namespace):
         def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
+            super().__init__(**kwargs)
 
     skill_dir = tmp_path / "test-skill"
     skill_dir.mkdir()

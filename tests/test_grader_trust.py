@@ -3,7 +3,9 @@ grader notes, blast-radius classification, auth probe, and regrade."""
 
 import json
 import stat
+from argparse import Namespace
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -28,9 +30,9 @@ from skilldiff.scope import (
 )
 
 
-class Args:
+class Args(Namespace):
     def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
+        super().__init__(**kwargs)
 
 
 # ------------------------------------------------------------------ scope helpers
@@ -150,7 +152,7 @@ def test_every_known_good_solution_must_score_full(tmp_path):
         [tmp_path / "broken"],
     )
     assert strict["verdict"] == "grader-too-strict"
-    assert any("known-good solution 1" in c for c in strict["checks"])
+    assert any("known-good solution 1" in c for c in cast(list[str], strict["checks"]))
 
 
 # --------------------------------------------------------------------- config
@@ -197,8 +199,8 @@ def test_notes_are_accepted_but_not_counted_as_checks():
     assert validate_grader_payload(payload) is None
     assert validate_grader_payload({"score": 1, "notes": "plain"}) is None
     assert validate_grader_payload({"score": 1, "notes": ["a", "b"]}) is None
-    assert "notes" in validate_grader_payload({"score": 1, "notes": 5})
-    assert "notes" in validate_grader_payload({"score": 1, "notes": [1, 2]})
+    assert "notes" in (validate_grader_payload({"score": 1, "notes": 5}) or {})
+    assert "notes" in (validate_grader_payload({"score": 1, "notes": [1, 2]}) or {})
     run = {"feedback": json.dumps(payload)}
     assert [name for name, _ in extract_checks(run)] == ["a"]
     assert extract_notes(run) == ["calls: 3", "err: none"]
@@ -343,7 +345,7 @@ def _scaffold_validation(tmp_path: Path, good: list[str], forbidden: list[str] |
     (tmp_path / "skill").mkdir()
     (tmp_path / "skill" / "SKILL.md").write_text("---\nname: skill\ndescription: d\n---\nbody\n")
     (tmp_path / "tasks").mkdir()
-    task = {
+    task: dict[str, Any] = {
         "id": "t",
         "prompt": "p",
         "repo": "../fixture",
@@ -424,9 +426,9 @@ def _mock_run(tmp_path: Path, monkeypatch, capsys):
     return task
 
 
-def _results(tmp_path: Path) -> dict:
+def _results(tmp_path: Path) -> dict[str, Any]:
     run_dir = sorted((tmp_path / "runs").iterdir())[-1]
-    return json.loads((run_dir / "results.json").read_text())
+    return cast(dict[str, Any], json.loads((run_dir / "results.json").read_text()))
 
 
 @pytest.mark.slow
@@ -507,10 +509,10 @@ def test_validate_grader_with_reference_solutions(tmp_path):
             return GradeResult(score=1.0, success=True, label="pass")
 
     report = validate_grader_against_directories(
-        MockGrader(), untouched, good_dir=good, reference_dirs=[ref]
+        cast(Grader, MockGrader()), untouched, good_dir=good, reference_dirs=[ref]
     )
     assert report["verdict"] == "ok"
-    assert "reference solution scores 100%" in report["checks"]
+    assert "reference solution scores 100%" in cast(list[str], report["checks"])
 
 
 def test_validate_grader_flags_deprecated_api(tmp_path):
@@ -531,10 +533,16 @@ def test_validate_grader_flags_deprecated_api(tmp_path):
             return GradeResult(score=1.0, success=True, label="pass")
 
     report = validate_grader_against_directories(
-        MockGrader(), untouched, good_dir=good, deprecated_patterns=["render.download"]
+        cast(Grader, MockGrader()),
+        untouched,
+        good_dir=good,
+        deprecated_patterns=["render.download"],
     )
     assert report["verdict"] == "deprecated-api-used"
-    assert any("uses deprecated API 'render.download'" in c for c in report["checks"])
+    assert any(
+        "uses deprecated API 'render.download'" in c
+        for c in cast(list[str], report["checks"])
+    )
 
 
 def test_check_blast_radius_ignores_pycache_by_default():

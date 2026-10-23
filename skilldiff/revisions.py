@@ -4,6 +4,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from skilldiff.config import PRConfig
 
@@ -96,8 +97,8 @@ def _synthetic_merge_commit(repo: Path, base_sha: str, head_sha: str, merge_base
 
 
 def resolve_comparison(
-    pr: PRConfig, previous: dict[str, str] | None = None
-) -> dict[str, str]:
+    pr: PRConfig, previous: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Resolve control/treatment commits for the configured PR workflow.
 
     Modes (pr.mode):

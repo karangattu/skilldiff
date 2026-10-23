@@ -1052,6 +1052,8 @@ def _recommendation(
     pairs_txt = f"{n} graded pairs" if n == total else f"{n} graded of {total} pairs"
 
     def effect_sentence(direction: str) -> str:
+        if mean_raw is None:
+            return "no score change recorded"
         mean_pp = round(float(mean_raw) * 100)
         change = (
             f"improved task score by {format_pp_diff(mean_pp)}"

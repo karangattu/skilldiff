@@ -1,6 +1,7 @@
 """Regression coverage for decisions made from the same eligible evidence everywhere."""
 
 import re
+from typing import Any
 
 import pytest
 
@@ -15,7 +16,7 @@ from skilldiff.reporter import (
 
 def evaluation(*, valid=True, held_out=False, usable_tasks=3, models=None):
     models = models or ["m"]
-    runs = {"control": [], "treatment": []}
+    runs: dict[str, list[dict[str, Any]]] = {"control": [], "treatment": []}
     tasks = ["a", "b", "c"]
     if held_out:
         tasks += ["held-a", "held-b", "held-c"]

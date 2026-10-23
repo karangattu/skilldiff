@@ -62,7 +62,7 @@ def build_html_report(results: dict[str, Any], run_root: Path | None = None) -> 
     return _render_html(title, blocks, str(results.get("timestamp", "")))
 
 
-def _render_html(title: str, blocks: list[tuple], date: str) -> str:
+def _render_html(title: str, blocks: list[tuple[Any, ...]], date: str) -> str:
     parts = [
         "<!doctype html>",
         '<html lang="en"><head><meta charset="utf-8">',

@@ -269,6 +269,7 @@ def test_pr_workflow_options_load(tmp_path):
     )
     cfg, _ = load_experiment(exp)
     assert cfg.preset == "pr"
+    assert cfg.pr is not None
     assert cfg.pr.mode == "correctness"
     assert cfg.pr.pair == "base-merge"
 

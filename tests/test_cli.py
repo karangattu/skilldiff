@@ -1,4 +1,5 @@
 import json
+from argparse import Namespace
 from pathlib import Path
 
 import yaml
@@ -6,9 +7,9 @@ import yaml
 from skilldiff.cli import _format_results, cmd_check, cmd_init, cmd_results, cmd_run
 
 
-class Args:
+class Args(Namespace):
     def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
+        super().__init__(**kwargs)
 
 
 def test_terminal_summary_uses_matched_eligible_pairs():

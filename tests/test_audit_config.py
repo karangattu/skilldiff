@@ -2,6 +2,7 @@ import json
 import os
 from argparse import Namespace
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -12,7 +13,7 @@ from skilldiff.grader import Grader
 from skilldiff.linter import lint_skill
 
 
-def experiment_file(tmp_path: Path, changes: dict | None = None) -> Path:
+def experiment_file(tmp_path: Path, changes: dict[str, Any] | None = None) -> Path:
     skill = tmp_path / "skill"
     skill.mkdir(exist_ok=True)
     (skill / "SKILL.md").write_text("---\nname: sample\ndescription: Sample skill.\n---\n")
@@ -198,8 +199,14 @@ def test_initializer_tasks_round_trip_with_both_splits_and_reachable_graders(tmp
     assert {task.split for task in tasks} == expected_splits
     assert len({task.id for task in tasks}) == len(tasks)
     for task in tasks:
+        assert task.source_path is not None
         task_dir = task.source_path.parent
-        fixture = config.pr.repo if config.pr else task_dir / task.repo
+        if config.pr and config.pr.repo:
+            fixture = config.pr.repo
+        elif task.repo:
+            fixture = task_dir / task.repo
+        else:
+            fixture = task_dir
         assert fixture.is_dir()
         grade = Grader(task.grader, [], "m", task_dir=task_dir).grade_workspace(fixture)
         assert grade.grade_status == "graded", grade.feedback
@@ -258,7 +265,8 @@ def test_check_requires_a_usable_grade_for_each_broken_fixture(
     }))
     # A short real subprocess timeout makes the CLI check cheap and deterministic.
     def bounded_grader(*args, **kwargs):
-        return Grader(*args, **kwargs, timeout=1)
+        kwargs["timeout"] = 1
+        return Grader(*args, **kwargs)
 
     monkeypatch.setattr("skilldiff.cli.Grader", bounded_grader)
     monkeypatch.setenv("CLAUDE_BIN", "/bin/echo")
@@ -407,6 +415,7 @@ def test_pr_install_valid(tmp_path, value):
         },
     )
     cfg, _ = load_experiment(config)
+    assert cfg.pr is not None
     assert cfg.pr.install == value
 
 
@@ -424,4 +433,13 @@ def test_pr_install_invalid(tmp_path, value):
     )
     with pytest.raises(ValueError, match="pr.install"):
         load_experiment(config)
+
+
+def test_mypy_configuration_in_pyproject():
+    root = Path(__file__).resolve().parents[1]
+    content = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "[tool.mypy]" in content
+    assert 'files = ["skilldiff", "tests"]' in content
+    assert "mypy>=" in content
+    assert "types-PyYAML>=" in content
 

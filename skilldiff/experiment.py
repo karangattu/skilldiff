@@ -13,7 +13,7 @@ from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional, cast
 
 from skilldiff import __version__
 from skilldiff.aggregation import (
@@ -306,7 +306,7 @@ class ExperimentRunner:
         self.agent_runner = agent_runner or AgentRunner()
         self.progress = progress or (lambda _msg: None)
         self._lock = threading.Lock()
-        self.comparison = None
+        self.comparison: dict[str, str] | None = None
         self.resume_dir = resume_dir
         self._baseline_runs: list[dict[str, Any]] = []
         self._retry_history: list[dict[str, Any]] = []
@@ -367,7 +367,7 @@ class ExperimentRunner:
             try:
                 prov = self._provenance_snapshot or collect_provenance(self.config, self.tasks)
                 skills = prov.get("skills") or []
-                hashes = {}
+                hashes: dict[str, list[str]] = {}
                 for s in skills:
                     hashes.setdefault(s.get("role"), []).append(s.get("hash"))
                 ha = "".join(hashes.get("skill_a", []))
@@ -816,11 +816,14 @@ class ExperimentRunner:
             extra_targets = list(self.config.container_install)
 
         if resuming:
+            assert previous is not None
+            assert self.config.pr is not None or not pr_install
             self._arm_container_images = dict(previous.get("container_image_ids") or {})
             if previous.get("container_image_id"):
                 self._container_image_id = previous["container_image_id"]
         elif self.config.isolation in {"docker", "podman"}:
             if pr_install and self.comparison:
+                assert self.config.pr is not None
                 c_commit = self.comparison["control_commit"][:8]
                 self.progress(f"Building container image for PR control arm ({c_commit})...")
                 with tempfile.TemporaryDirectory(prefix="skilldiff-export-ctrl-") as tmp_ctrl:
@@ -829,7 +832,7 @@ class ExperimentRunner:
                     )
                     ctrl_img = build_derived_container_image(
                         runtime=self.config.isolation,
-                        base_image=self._container_image_id,
+                        base_image=str(self._container_image_id),
                         install_targets=extra_targets,
                         repo_src=Path(tmp_ctrl),
                         install_spec=pr_install,
@@ -843,7 +846,7 @@ class ExperimentRunner:
                     )
                     treat_img = build_derived_container_image(
                         runtime=self.config.isolation,
-                        base_image=self._container_image_id,
+                        base_image=str(self._container_image_id),
                         install_targets=extra_targets,
                         repo_src=Path(tmp_treat),
                         install_spec=pr_install,
@@ -856,7 +859,7 @@ class ExperimentRunner:
                 self.progress("Building derived container image with custom packages...")
                 derived_img = build_derived_container_image(
                     runtime=self.config.isolation,
-                    base_image=self._container_image_id,
+                    base_image=str(self._container_image_id),
                     install_targets=extra_targets,
                     tag="skilldiff-custom:latest",
                 )
@@ -877,11 +880,12 @@ class ExperimentRunner:
         treatment_runs: list[dict[str, Any]] = []
         completed: set[tuple[str, str, int]] = set()
         if resuming:
-            mismatches = self._resume_mismatches(previous)
+            mismatches = self._resume_mismatches(previous or {})
             if mismatches:
                 raise ValueError(
                     "Resume refused: incompatible experiment (" + "; ".join(mismatches) + ")"
                 )
+            assert previous is not None
             self._snapshot_manifest_hash = previous.get("snapshot_manifest_hash")
             if file_hash(run_root / "inputs/manifest.json") != self._snapshot_manifest_hash:
                 raise ValueError("Snapshot manifest changed; resume refused")
@@ -1290,9 +1294,10 @@ class ExperimentRunner:
         warnings = list(old_results.get("warnings") or [])
         if regraded or skipped:
             skip_msg = f"; skipped {len(skipped)} (binary diff)" if skipped else ""
+            tasks_str = ", ".join(cast(Iterable[str], summary["tasks"]))
             warnings.append(
                 f"Regraded {regraded} run(s){skip_msg} on {now} for task(s) "
-                f"{', '.join(summary['tasks'])} with updated graders; {len(changes)} run(s) "
+                f"{tasks_str} with updated graders; {len(changes)} run(s) "
                 "scored differently than in the original run. Previous grades are kept in "
                 "each run record under regrade_history."
             )
@@ -1302,7 +1307,7 @@ class ExperimentRunner:
             provenance_snapshot=old_results.get("provenance"),
         )
         # Only grade-dependent aggregates are recomputed; run metadata stays as recorded.
-        for key in (
+        for field in (
             "name", "skilldiff_version", "preset", "arm_labels", "harness", "skill",
             "skill_a", "skill_b", "skill_comparison", "comparison", "skill_names",
             "timestamp", "run_dir", "models", "tasks", "task_categories", "task_details",
@@ -1311,8 +1316,8 @@ class ExperimentRunner:
             "provenance", "context_tax", "retries",
             "skill_invocation", "skill_invocation_prompt",
         ):
-            if key in old_results:
-                results[key] = old_results[key]
+            if field in old_results:
+                results[field] = old_results[field]
         results["regrades"] = list(old_results.get("regrades") or []) + [summary]
         report_paths = create_reports(results, run_root)
         results["report"] = {k: (str(v) if v else None) for k, v in report_paths.items()}

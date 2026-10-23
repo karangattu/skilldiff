@@ -6,6 +6,7 @@ import shutil
 import threading
 from copy import deepcopy
 from pathlib import Path
+from typing import cast as _cast
 
 from skilldiff.preflight import codex_env, protected_read_paths
 
@@ -80,14 +81,17 @@ def probe_capabilities(runner, cwd, config, scratch):
             raise RuntimeError(f"{harness} capability probe returned no CLI version")
         if harness == "opencode" and not re.search(r"(?:^|\s)v?2\.\d+", version):
             raise RuntimeError("OpenCode capability checks require V2")
-        required = {
-            "claude": {(): {"--input-format", "--output-format", "--verbose",
-                             "--no-session-persistence", "--setting-sources"}},
-            "codex": {("exec",): {"--json", "--ephemeral"},
-                      ("app-server",): {"--stdio"}},
-            "antigravity": {(): {"--input-format", "--output-format", "--add-dir"}},
-            "opencode": {("run",): {"--format", "--standalone", "--session"}},
-        }[harness]
+        required = _cast(
+            dict[tuple[str, ...], set[str]],
+            {
+                "claude": {(): {"--input-format", "--output-format", "--verbose",
+                                 "--no-session-persistence", "--setting-sources"}},
+                "codex": {("exec",): {"--json", "--ephemeral"},
+                          ("app-server",): {"--stdio"}},
+                "antigravity": {(): {"--input-format", "--output-format", "--add-dir"}},
+                "opencode": {("run",): {"--format", "--standalone", "--session"}},
+            }[harness],
+        )
         if harness == "opencode" and config.opencode.dangerously_skip_permissions:
             required[("run",)].add("--auto")
         commands = {}
@@ -96,7 +100,7 @@ def probe_capabilities(runner, cwd, config, scratch):
             help_text = execute([*command, "--help"])
             flags = set(re.findall(r"--[a-z][a-z0-9-]+", help_text))
             if isinstance(cli_flags, dict) and config.isolation == "local":
-                cli_flags[(binary, *command)] = set(flags)
+                cli_flags[tuple([binary]) + tuple(command)] = set(flags)
             missing = sorted(needs - flags)
             if missing:
                 raise RuntimeError(f"{harness} missing required capabilities: {', '.join(missing)}")

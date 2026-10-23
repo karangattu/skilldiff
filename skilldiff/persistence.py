@@ -63,7 +63,7 @@ def run_lock(root: Path) -> Iterator[None]:
                     stream.write(b"0")
                     stream.flush()
                 stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
         except OSError as exc:
             raise ValueError(f"Run is already locked by another writer: {root}") from exc
         try:
@@ -73,4 +73,4 @@ def run_lock(root: Path) -> Iterator[None]:
                 fcntl.flock(stream, fcntl.LOCK_UN)
             else:
                 stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]

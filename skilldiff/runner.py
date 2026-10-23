@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from skilldiff.config import (
     AntigravityConfig,
@@ -259,8 +259,8 @@ def cached_which(cmd: str, path: Optional[str] = None) -> Optional[str]:
     return _cached_which_impl(cmd, path)
 
 
-cached_which.cache_clear = _cached_which_impl.cache_clear
-cached_which.cache_info = _cached_which_impl.cache_info
+cached_which.cache_clear = _cached_which_impl.cache_clear  # type: ignore[attr-defined]
+cached_which.cache_info = _cached_which_impl.cache_info  # type: ignore[attr-defined]
 
 
 def clean_parent_env() -> dict[str, str]:
@@ -760,7 +760,7 @@ def validate_container_auth(config: ExperimentConfig) -> None:
             )
 
 
-def _kill_group(proc: subprocess.Popen) -> None:
+def _kill_group(proc: subprocess.Popen[bytes]) -> None:
     if os.name != "posix":
         if hasattr(proc, "kill"):
             try:
@@ -1076,7 +1076,7 @@ class AgentRunner:
             or (str(gemini_agy) if gemini_agy.exists() else None)
             or "agy"
         )
-        self._active: set[subprocess.Popen] = set()
+        self._active: set[subprocess.Popen[bytes]] = set()
         self._active_lock = threading.Lock()
         self._cancelled = False
         # Cache of `<cli> <subcommand> --help` flags, so capability detection
@@ -1113,10 +1113,10 @@ class AgentRunner:
     def opencode_run_flags(self, bin_path: str) -> set[str]:
         return self.cli_flags(bin_path, "run")
 
-    def capabilities(self, cwd: Path, config: ExperimentConfig, scratch: Path) -> dict:
+    def capabilities(self, cwd: Path, config: ExperimentConfig, scratch: Path) -> dict[str, Any]:
         from skilldiff.capabilities import probe_capabilities
 
-        return probe_capabilities(self, cwd, config, scratch)
+        return cast(dict[str, Any], probe_capabilities(self, cwd, config, scratch))
 
     def terminate_all(self) -> None:
         """Kill running agent sessions and refuse new ones (used on Ctrl-C)."""
@@ -1131,7 +1131,7 @@ class AgentRunner:
         if config is not None:
             override = getattr(config, harness).bin_path
             if override:
-                return override
+                return str(override)
         return {
             "claude": self.claude_bin,
             "codex": self.codex_bin,
@@ -1298,9 +1298,10 @@ class AgentRunner:
                     reader = threading.Thread(target=read_messages, daemon=True)
                     reader.start()
                     assert proc.stdin is not None
+                    stdin = proc.stdin
                     def send(request):
-                        proc.stdin.write((json.dumps(request) + "\n").encode())
-                        proc.stdin.flush()
+                        stdin.write((json.dumps(request) + "\n").encode())
+                        stdin.flush()
 
                     if conversation:
                         for request in conversation.start():
@@ -1310,7 +1311,7 @@ class AgentRunner:
                             try:
                                 line = messages.get(timeout=wait)
                             except queue.Empty as exc:
-                                raise subprocess.TimeoutExpired(cmd, timeout) from exc
+                                raise subprocess.TimeoutExpired(cmd, timeout or 0.0) from exc
                             if line is None:
                                 raise RuntimeError(
                                     "Conversation closed before completing all turns")
@@ -1351,7 +1352,7 @@ class AgentRunner:
                             try:
                                 line = messages.get(timeout=wait)
                             except queue.Empty as exc:
-                                raise subprocess.TimeoutExpired(cmd, timeout) from exc
+                                raise subprocess.TimeoutExpired(cmd, timeout or 0.0) from exc
                             if line is None:
                                 raise RuntimeError("Codex discovery closed before replying")
                             out.write(line)
@@ -1401,6 +1402,7 @@ class AgentRunner:
                     self._active.discard(proc)
                 if container_name:
                     try:
+                        assert runtime is not None
                         cleanup = subprocess.run(
                             [runtime, "rm", "-f", container_name],
                             stdout=subprocess.DEVNULL,
@@ -1452,7 +1454,7 @@ class AgentRunner:
             "num_turns",
             "reported_total_tokens",
         )
-        totals = dict.fromkeys(metrics, 0)
+        totals: dict[str, int | None] = dict.fromkeys(metrics, 0)
         known = set()
         unknown = set()
         session_id = "ses_" + uuid.uuid4().hex
@@ -1704,10 +1706,12 @@ class AgentRunner:
             }
             configs = {key: deepcopy(value) for key, value in configs.items()}
             for key, value in configs.items():
-                if not value.bin_path:
-                    value.bin_path = Path(self.binary_for(key)).name
-            claude_cfg, codex_cfg = configs["claude"], configs["codex"]
-            opencode_cfg, antigravity_cfg = configs["opencode"], configs["antigravity"]
+                if not value.bin_path:  # type: ignore[attr-defined]
+                    value.bin_path = Path(self.binary_for(key)).name  # type: ignore[attr-defined]
+            claude_cfg = cast(ClaudeConfig, configs["claude"])
+            codex_cfg = cast(CodexConfig, configs["codex"])
+            opencode_cfg = cast(OpenCodeConfig, configs["opencode"])
+            antigravity_cfg = cast(AntigravityConfig, configs["antigravity"])
 
         names = skill_names or []
         extra_env = dict(getattr(config, "env", None) or {})
@@ -1720,7 +1724,7 @@ class AgentRunner:
             )
         if active_harness == "codex":
             result = self._run_codex(
-                prompt,
+                cast(str, prompt),
                 cwd,
                 model,
                 codex_cfg,
@@ -1735,7 +1739,7 @@ class AgentRunner:
             )
         elif active_harness == "opencode":
             result = self._run_opencode(
-                prompt,
+                cast(str, prompt),
                 cwd,
                 model,
                 opencode_cfg,
@@ -1748,7 +1752,7 @@ class AgentRunner:
             )
         elif active_harness in {"antigravity", "agy"}:
             result = self._run_antigravity(
-                prompt,
+                cast(str, prompt),
                 cwd,
                 model,
                 antigravity_cfg,
@@ -1761,7 +1765,7 @@ class AgentRunner:
             )
         else:
             result = self._run_claude(
-                prompt,
+                cast(str, prompt),
                 cwd,
                 model,
                 claude_cfg,
@@ -2762,7 +2766,7 @@ _CODEX_POLICY_REJECTION = re.compile(r"exec_command failed: .*Rejected\(.*` reje
 
 def codex_permission_denials(stderr: str, stdout: str = "") -> list[str]:
     """Shell commands Codex's sandbox or exec policy blocked, one label per event."""
-    denials = []
+    denials: list[str] = []
     for line in stderr.splitlines():
         violation = _CODEX_SANDBOX_VIOLATION.search(line)
         if violation:
@@ -2821,7 +2825,9 @@ def opencode_permission_denials(stdout: str, stderr: str) -> list[str]:
         error = state.get("error")
         message = str(error.get("message") if isinstance(error, dict) else error).lower()
         if any(marker in message for marker in _OPENCODE_REJECTION_ERRORS):
-            from_stream.append(str(part.get("tool") or "unknown"))
+            from_stream.append(
+                str(part.get("tool") or "unknown") if isinstance(part, dict) else "unknown"
+            )
     # v1 interrupts the session after a rejection without emitting the failed tool,
     # so the stderr notice can be the only record.
     from_notice = _OPENCODE_AUTO_REJECT.findall(stderr)
@@ -2843,7 +2849,7 @@ def antigravity_permission_denials(data: Any, stderr: str) -> list[str]:
                      "unknown")) if isinstance(a, dict) else str(a)
             for a in actions
         ]
-    denials = []
+    denials: list[str] = []
     for line in stderr.splitlines():
         tools = _AGY_TOOLS_NOTICE.search(line)
         if tools:

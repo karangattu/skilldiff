@@ -8,7 +8,7 @@ from skilldiff.runner import AgentRunner, ExecResult
 
 def test_capability_probe_uses_selected_container_and_records_versions(tmp_path):
     class Runner(AgentRunner):
-        def _exec(self, cmd, cwd, env, timeout, **kwargs):
+        def _exec(self, cmd, cwd, env, timeout, **kwargs):  # type: ignore[override]
             assert kwargs["isolation"] == "docker"
             assert kwargs["container_image"] == "sha256:test"
             assert cmd[0] == "opencode"
@@ -43,7 +43,7 @@ def test_capability_probe_memoizes_and_clear_resets(tmp_path):
     calls = 0
 
     class CountingRunner(AgentRunner):
-        def _exec(self, cmd, cwd, env, timeout, **kwargs):
+        def _exec(self, cmd, cwd, env, timeout, **kwargs):  # type: ignore[override]
             nonlocal calls
             calls += 1
             if cmd[-1] == "--version":

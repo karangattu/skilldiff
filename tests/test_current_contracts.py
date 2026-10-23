@@ -40,7 +40,7 @@ def test_codex_failure_keeps_completed_usage(tmp_path):
     with patch.object(AgentRunner, "_exec", return_value=ExecResult(output, "", 0, 1)):
         result = AgentRunner().run("p", tmp_path, "m", CodexConfig())
     assert result.status == "error"
-    assert "provider failed" in result.error
+    assert result.error is not None and "provider failed" in result.error
     assert result.input_tokens == 40
 
 

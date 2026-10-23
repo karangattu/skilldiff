@@ -103,6 +103,7 @@ def test_pr_resume_reuses_original_commits(pr_experiment, monkeypatch, pair):
     monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
     monkeypatch.setattr("skilldiff.experiment._cli_version", lambda _: "test 1")
     cfg, tasks = load_experiment(path)
+    assert cfg.pr is not None
     cfg.pr.pair = pair
     cfg.pr.mode = "correctness"
     cfg.runs = 1
@@ -163,6 +164,7 @@ def test_pr_init_scaffolds_loadable_experiment(tmp_path):
     )
     assert cmd_init(args) == 0
     cfg, tasks = load_experiment(root / "skilldiff.yaml")
+    assert cfg.pr is not None
     assert cfg.pr.repo == repo.resolve()
     assert cfg.pr.head == "refs/pull/42/head"
     assert cfg.pr.base == "origin/main"
@@ -183,6 +185,7 @@ def test_merged_pr_requires_pre_merge_base(pr_experiment):
     from skilldiff.revisions import resolve_comparison
 
     cfg, _ = load_experiment(path)
+    assert cfg.pr is not None
     assert resolve_comparison(cfg.pr)["treatment_commit"] == head
 
 

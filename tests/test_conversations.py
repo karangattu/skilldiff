@@ -44,7 +44,7 @@ def test_conversation_deadline_keeps_completed_turn(tmp_path, conversation_cli, 
     assert result.status == "timeout"
     assert "kept" in result.transcript
     assert result.input_tokens is not None
-    assert result.duration < 5
+    assert result.duration is not None and result.duration < 5
 
 
 @pytest.mark.parametrize("config_class", CONFIGS)

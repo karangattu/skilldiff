@@ -294,10 +294,10 @@ def _run_warnings(
             "A fixture already contained the skill; skilldiff removed it from the control "
             "workspace."
         )
-    ungraded = [t.id for t in tasks if not (t.grader and t.grader.command)]
-    if ungraded:
+    ungraded_tasks = [t.id for t in tasks if not (t.grader and t.grader.command)]
+    if ungraded_tasks:
         warnings.append(
-            "No grader is configured for " + ", ".join(ungraded) + "; those runs score "
+            "No grader is configured for " + ", ".join(ungraded_tasks) + "; those runs score "
             "N/A (not 100%), so only cost and time are compared. Valid-pair counts shown."
         )
     return warnings
@@ -343,12 +343,18 @@ def aggregate_by_category(
         c_runs = [
             r
             for r in control_runs
-            if r.get("task_category", task_categories.get(r.get("task_id"), "general")) == cat
+            if r.get(
+                "task_category",
+                task_categories.get(str(r.get("task_id") or ""), "general"),
+            ) == cat
         ]
         t_runs = [
             r
             for r in treatment_runs
-            if r.get("task_category", task_categories.get(r.get("task_id"), "general")) == cat
+            if r.get(
+                "task_category",
+                task_categories.get(str(r.get("task_id") or ""), "general"),
+            ) == cat
         ]
         by_category[cat] = {
             "control": calculate_metrics(c_runs),

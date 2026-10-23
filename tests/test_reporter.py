@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import skilldiff.reporter as reporter
 from skilldiff.reporter import (
@@ -333,7 +334,7 @@ def test_build_quarto_report_with_runs_table_and_takeaways():
     assert "One pair can't separate a real effect from noise" in report
 
 
-def _runs(arm: str, scores: list[float], cost: float, skill_invoked=None) -> list[dict]:
+def _runs(arm: str, scores: list[float], cost: float, skill_invoked=None) -> list[dict[str, Any]]:
     return [
         {
             "model": "m",
@@ -356,7 +357,9 @@ def _runs(arm: str, scores: list[float], cost: float, skill_invoked=None) -> lis
     ]
 
 
-def _results(control: list[dict], treatment: list[dict], **extra) -> dict:
+def _results(
+    control: list[dict[str, Any]], treatment: list[dict[str, Any]], **extra
+) -> dict[str, Any]:
     return {
         "name": "exp",
         "timestamp": "2026-09-22T000000Z",
@@ -576,7 +579,7 @@ def test_closing_decision_thresholds_cannot_override_collapsed_interval():
 
 
 def test_closing_decision_uses_held_out_pairs_only():
-    def runs(arm: str, task: str, split: str, scores: list[float]) -> list[dict]:
+    def runs(arm: str, task: str, split: str, scores: list[float]) -> list[dict[str, Any]]:
         out = []
         for i, sc in enumerate(scores):
             r = _runs(arm, [sc], 0.5, skill_invoked=arm != "control")[0]
@@ -630,7 +633,7 @@ _PRICING = {
 }
 
 
-def _tokened(arm: str, scores: list[float], tokens: dict) -> list[dict]:
+def _tokened(arm: str, scores: list[float], tokens: dict[str, Any]) -> list[dict[str, Any]]:
     runs = _runs(arm, scores, 0.5, skill_invoked=arm != "control")
     for r in runs:
         r.update(tokens)
@@ -741,7 +744,7 @@ def test_codex_evaluation_uses_known_tokens_when_cache_write_is_missing():
 
 
 def test_evaluation_table_preserves_unknown_metrics_and_cost():
-    control = [{"task_id": "unknown", "arm": "control", "model": "m"}]
+    control: list[dict[str, Any]] = [{"task_id": "unknown", "arm": "control", "model": "m"}]
     table = reporter.render_evaluation_table(_results(control, [], pricing=_PRICING))
     assert (
         "| unknown | Control | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |"
@@ -940,7 +943,7 @@ def test_evaluation_completeness_row_complete_run():
     assert "| 2 | 2 | 2 | 0 | 0 | Complete |" in md
 
 
-def _split_runs(arm: str, task: str, split: str, scores: list[float]) -> list[dict]:
+def _split_runs(arm: str, task: str, split: str, scores: list[float]) -> list[dict[str, Any]]:
     out = []
     for i, sc in enumerate(scores):
         r = _runs(arm, [sc], 0.5, skill_invoked=arm != "control")[0]

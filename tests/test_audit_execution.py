@@ -279,7 +279,7 @@ def test_multi_turn_config_timeout_bounds_whole_task(
     config.antigravity.bin_path = conversation_cli
     result = AgentRunner().run(["remember kept", "hang", "forbidden"], tmp_path, "m", config)
     assert result.status == "timeout"
-    assert result.duration < 3
+    assert result.duration is not None and result.duration < 3
     assert "kept" in result.transcript and "forbidden" not in result.transcript
 
 

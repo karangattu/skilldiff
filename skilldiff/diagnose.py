@@ -85,7 +85,7 @@ def _extract_transcript(record: dict[str, Any], root: Path) -> str:
         t_file = root / artifacts / "transcript.txt"
         if t_file.is_file():
             try:
-                return t_file.read_text(encoding="utf-8")
+                return str(t_file.read_text(encoding="utf-8"))
             except OSError:
                 pass
     return ""
@@ -396,11 +396,13 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         )
 
     if under_triggered:
-        tasks_list = sorted({item.get("task_id") or item.get("task") for item in under_triggered})
+        tasks_list = sorted(
+            {str(item.get("task_id") or item.get("task") or "") for item in under_triggered}
+        )
         is_explicit = all_tasks_explicit(data, tasks_list)
         arm_counts = ", ".join(
             f"{arm}: {sum(1 for item in under_triggered if item['arm'] == arm)}"
-            for arm in sorted({item["arm"] for item in under_triggered})
+            for arm in sorted({str(item["arm"]) for item in under_triggered})
         )
         recommendations.append(
             (
@@ -418,11 +420,13 @@ def diagnose_run(run_dir: Path) -> dict[str, Any]:
         )
 
     if over_triggered:
-        tasks_list = sorted({item.get("task_id") or item.get("task") for item in over_triggered})
+        tasks_list = sorted(
+            {str(item.get("task_id") or item.get("task") or "") for item in over_triggered}
+        )
         is_explicit = all_tasks_explicit(data, tasks_list)
         arm_counts = ", ".join(
             f"{arm}: {sum(1 for item in over_triggered if item['arm'] == arm)}"
-            for arm in sorted({item["arm"] for item in over_triggered})
+            for arm in sorted({str(item["arm"]) for item in over_triggered})
         )
         recommendations.append(
             (
