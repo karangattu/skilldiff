@@ -5,6 +5,15 @@ on:
     branches: ["**"]
   pull_request:
     branches: ["**"]
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to test"
+        required: false
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -19,6 +28,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref_name }}
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v7
@@ -63,6 +74,8 @@ jobs:
         harness: [claude, codex, antigravity, opencode]
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref_name }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -100,6 +113,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref_name }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
