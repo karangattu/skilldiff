@@ -13,6 +13,13 @@ This project uses semantic versioning.
 - Multi-turn failed runs mark missing metrics as unknown.
 - Container cleanup failures keep the agent exit code and report cleanup separately.
 - Relative cost and token intervals skip bootstrap resamples with a zero baseline.
+- Duplicate control or treatment records fail pairing instead of silently overwriting each other.
+- Baseline comparisons use the same repetition default as primary pairing.
+- Resume snapshot lookup falls back to the original path instead of crashing on a missing manifest entry.
+- `check --ci` fails when warnings are present, and `compare --ci` refuses incompatible comparisons.
+- Derived container images reject line breaks in image names and install specifications.
+- Release runs reuse the full CI matrix before publishing.
+- OpenCode and Antigravity auto-approval without isolation reports a warning; the Claude `isolate` comment states that user-level skills and plugins can still leak.
 
 ## [0.27.0] - 2026-10-22
 
