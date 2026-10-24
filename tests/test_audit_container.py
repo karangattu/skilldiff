@@ -416,6 +416,16 @@ def test_real_container_paths_env_grader_and_cleanup(tmp_path, monkeypatch, runt
     assert not any(name.startswith("skilldiff-") for name in names.splitlines())
 
 
+def test_build_derived_container_image_rejects_line_breaks(monkeypatch):
+    monkeypatch.setattr("skilldiff.runner.cached_which", lambda _: "/bin/true")
+    with pytest.raises(ValueError, match="line break"):
+        build_derived_container_image("docker", "base\nRUN echo injected")
+    with pytest.raises(ValueError, match="line break"):
+        build_derived_container_image(
+            "docker", "base:latest", install_targets=["pkg\rRUN echo injected"]
+        )
+
+
 def test_build_derived_container_image_noop(tmp_path, monkeypatch):
     runtime = tmp_path / "docker"
     runtime.write_text("#!/bin/sh\nexit 1\n")

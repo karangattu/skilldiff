@@ -590,6 +590,11 @@ def resolve_container_image(runtime: str, image: Optional[str], timeout: float =
     )
 
 
+def _reject_dockerfile_line_breaks(value: str, label: str) -> None:
+    if "\n" in value or "\r" in value:
+        raise ValueError(f"{label} must not contain line breaks")
+
+
 def build_derived_container_image(
     runtime: str,
     base_image: str,
@@ -599,6 +604,15 @@ def build_derived_container_image(
     tag: str | None = None,
     timeout: float = 600,
 ) -> str:
+    if any(character.isspace() for character in base_image):
+        raise ValueError("Container image must not contain whitespace or line breaks")
+    for target in install_targets or []:
+        _reject_dockerfile_line_breaks(target, "Container install target")
+    if isinstance(install_spec, str):
+        _reject_dockerfile_line_breaks(install_spec, "Container install specification")
+    elif isinstance(install_spec, list):
+        for item in install_spec:
+            _reject_dockerfile_line_breaks(item, "Container install specification")
     binary = cached_which(runtime)
     if not binary:
         raise ValueError(f"Container runtime '{runtime}' not found on PATH")
