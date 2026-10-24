@@ -391,6 +391,19 @@ def test_report_command_obeys_run_lock(experiment):
     assert files(root) == before
 
 
+def test_snapshot_lookup_falls_back_to_original_fixture(tmp_path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    source = tmp_path / "tasks" / "task.yaml"
+    source.parent.mkdir()
+    source.write_text("id: t1\nprompt: Test\n")
+    task = TaskConfig(id="t1", prompt="Test", repo="../fixture", source_path=source)
+    cfg = ExperimentConfig(name="snapshot", skill=None, models=["m"], tasks_patterns=[])
+    runner = ExperimentRunner(cfg, [task])
+    runner._use_snapshots(tmp_path, {"sources": []})
+    assert runner._fixture_snapshots["t1"] == fixture.resolve()
+
+
 def test_input_path_names_cannot_collide(experiment):
     cfg, tasks = experiment
     cfg.models = ["a/b", "a:b"]

@@ -767,16 +767,17 @@ class ExperimentRunner:
 
     def _use_snapshots(self, run_root: Path, manifest: dict[str, Any]) -> None:
         self._snapshot_paths = snapshot_paths(run_root, manifest)
-        self._fixture_snapshots = {
-            task.id: self._snapshot_paths[(task.source_path.parent / task.repo).resolve()]
-            for task in self.tasks
-            if task.source_path and task.repo and not self.config.pr
-        }
+        self._fixture_snapshots = {}
+        for task in self.tasks:
+            if task.source_path and task.repo and not self.config.pr:
+                source = (task.source_path.parent / task.repo).resolve()
+                self._fixture_snapshots[task.id] = self._snapshot_paths.get(source, source)
         self._execution_config = deepcopy(self.config)
         for field in ("skill", "skill_a", "skill_b"):
             source = getattr(self.config, field)
             if source:
-                setattr(self._execution_config, field, self._snapshot_paths[source.resolve()])
+                resolved = source.resolve()
+                setattr(self._execution_config, field, self._snapshot_paths.get(resolved, resolved))
         self._mounted_fixture_snapshots = {}
         for task in self.tasks:
             snapshots = []
