@@ -4,7 +4,16 @@ from pathlib import Path
 
 import yaml
 
-from skilldiff.cli import _format_results, cmd_check, cmd_init, cmd_results, cmd_run
+from skilldiff.cli import (
+    _format_results,
+    cmd_check,
+    cmd_compare,
+    cmd_init,
+    cmd_results,
+    cmd_run,
+    permission_summary,
+)
+from skilldiff.config import ExperimentConfig
 
 
 class Args(Namespace):
@@ -144,6 +153,51 @@ def test_cli_check_demo(tmp_path: Path, monkeypatch, capsys, capable_cli):
     assert "untouched fixture scores 0%" in out
     assert "12 agent sessions" not in out
     assert "6 agent sessions per full run" in out
+
+
+def test_cli_check_ci_fails_on_warnings(tmp_path: Path, monkeypatch, capsys, capable_cli):
+    monkeypatch.chdir(tmp_path)
+    cmd_init(Args(force=False))
+    cfg = tmp_path / "skilldiff.yaml"
+    cfg.write_text(cfg.read_text().replace("runs: 3", "runs: 1"))
+    fake = tmp_path / "claude"
+    fake.write_text("#!/bin/sh\necho 9.9.9\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("CLAUDE_BIN", str(fake))
+
+    code = cmd_check(Args(config="skilldiff.yaml", no_grade=True, no_probe=True, ci=True))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "warn  runs: 1" in out
+
+
+def test_cli_compare_ci_uses_strict_mode(monkeypatch):
+    import skilldiff.compare as compare_mod
+
+    seen = {}
+
+    def fake_compare(a, b, strict=False):
+        seen["strict"] = strict
+        return {"a_name": a["name"], "b_name": b["name"]}
+
+    monkeypatch.setattr(compare_mod, "load_results", lambda path: ({"name": str(path)}, Path(path)))
+    monkeypatch.setattr(compare_mod, "compare_results", fake_compare)
+    code = cmd_compare(Args(run_a="a", run_b="b", strict=False, ci=True, json=True))
+    assert code == 0
+    assert seen["strict"] is True
+
+
+def test_permission_summary_warns_for_unconfined_auto_approval():
+    for harness in ("opencode", "antigravity"):
+        cfg = ExperimentConfig(
+            name="unsafe", skill=None, models=["m"], tasks_patterns=[],
+            harness=harness, isolation="local",
+        )
+        lines = permission_summary(cfg)
+        assert any(
+            level == "warn" and "confine" in message
+            for level, message in lines
+        ), lines
 
 
 def test_cli_check_rejects_existing_binary_that_cannot_run(tmp_path: Path, monkeypatch, capsys):

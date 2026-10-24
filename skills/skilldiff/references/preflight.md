@@ -91,8 +91,9 @@ During runs, `--terminate-on-ceiling` (or `terminate_on_ceiling: true`) skips
 remaining repetitions for tasks where control scores 100%, `--max-turns` and
 `--max-tool-budget` cap per-session turns and tool calls, `env:` forwards warm
 environment variables (`PYTHONPATH`, `PYTHONDONTWRITEBYTECODE`) into agents,
-probes, and graders, and `--ci` enforces strict exit codes. Resume also
-requires the same isolation mode and immutable container image identity.
+probes, and graders, and `--ci` enforces strict exit codes. For preflight,
+`check --ci` fails on warnings; `compare --ci` refuses incompatible runs. Resume
+also requires the same isolation mode and immutable container image identity.
 An explicit YAML `parallel` value, including `1`, overrides automatic pair
 parallelism. `arm_parallel: false` separately disables simultaneous arms.
 When concurrency is omitted, real agent runs may use automatic workers.

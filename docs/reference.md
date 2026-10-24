@@ -475,7 +475,7 @@ Each run records skill hashes, prompt hashes, fixture hashes, grader hashes, loc
 
 ```bash
 skilldiff compare runs/2026-09-22T120000Z runs/2026-09-23T120000Z
-# add --strict to reject mismatched models, tasks, or hashes
+# add --strict, or --ci, to reject mismatched models, tasks, or hashes
 ```
 
 The output shows score changes, adoption changes, efficiency changes, and newly failing or passing checks. Efficiency uses per-run means over matched tasks and repetitions, not totals. It warns if models, tasks, or versions differ. Prefer a single-run A/B over `compare`, which must match tasks and repetitions to normalize efficiency.
@@ -507,12 +507,12 @@ Keep the entire run directory, including `inputs/`, for recovery. A small siblin
 | `skilldiff init [--skill PATH] [--harness H] [--dir D]` | Make a demo or a template for your skill; `--template claude-eval` adds profile, pinned model, cost basis, and split layout |
 | `skilldiff init --skill-a A --skill-b B [--include-baseline] [--preset revision\|compression] [--dir D]` | Make a skill A/B test with paired results |
 | `skilldiff init --pr N --repo PATH [--base REF] [--pr-mode M] [--pr-pair P]` | Make a PR test from local refs |
-| `skilldiff check [-c CONFIG] [--no-probe] [--no-grade] [--scan-home]` | Check config, CLI, skill exposure, model and sandbox preflight, and graders; `--no-probe` skips paid Claude probes |
+| `skilldiff check [-c CONFIG] [--no-probe] [--no-grade] [--scan-home] [--ci]` | Check config, CLI, skill exposure, model and sandbox preflight, and graders; `--no-probe` skips paid Claude probes; `--ci` fails on warnings |
 | `skilldiff run [-c CONFIG] [--runs N] [--split dev\|held-out] [-j N] [-m MODEL] [-t TASK] [--resume \| --resume-from DIR] [--seed N] [--no-probe]` | Run the test (resume reuses pairs only when hashes match; `--no-probe` skips Claude model/canary preflight) |
 | `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run |
 | `skilldiff report [RUN_DIR]` | Rebuild reports for a run |
 | `skilldiff regrade [RUN_DIR] [-c CONFIG] [-t TASK] [--dry-run]` | Re-run the current graders on a finished run without any agent session |
-| `skilldiff compare RUN_A RUN_B [--json] [--strict]` | Compare two runs |
+| `skilldiff compare RUN_A RUN_B [--json] [--strict\|--ci]` | Compare two runs; `--ci` refuses incompatible comparisons |
 | `skilldiff lint [SKILL_DIR] [--prompts PATH] [--json]` | Lint SKILL.md frontmatter, trigger keywords, and length; optionally compare the description with task prompts |
 | `skilldiff diagnose [RUN_DIR] [--json]` | Diagnose failure modes, regressions, and adoption gaps |
 

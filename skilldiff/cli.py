@@ -76,7 +76,7 @@ claude:
   max_turns: 30
   max_budget_usd: 2.00      # per session
   permission_mode: acceptEdits
-  isolate: true             # use project/local settings; runtime discovery checks skills
+  isolate: true             # project/local only; user-level skills/plugins can still leak
   sandbox: true             # Bash runs in Claude's sandbox without prompts, inside the workspace
   # profile: eval           # opt-in app eval: auto-approves commands INSIDE the sandbox and
   #                         # allows localhost binding; unsandboxed commands stay disabled
@@ -90,10 +90,10 @@ claude:
 """,
     "opencode": """opencode:
   service: go
-  dangerously_skip_permissions: true  # passes --auto (v2) so tools never wait for approval
+  dangerously_skip_permissions: true  # passes --auto; use isolation: docker for untrusted skills
 """,
     "antigravity": """antigravity:
-  dangerously_skip_permissions: true  # print mode otherwise soft-denies tools that ask
+  dangerously_skip_permissions: true  # print mode otherwise soft-denies; use isolation: docker
 """,
 }
 
@@ -106,7 +106,7 @@ claude:
   max_turns: 30
   max_budget_usd: 2.00
   permission_mode: acceptEdits
-  isolate: true
+  isolate: true             # project/local settings only; not a filesystem boundary
   sandbox: true
   # Opt-in: auto-approves commands inside the sandbox and allows localhost binding
   # for app servers. Graders and skill sources stay unreadable to commands.
@@ -800,15 +800,13 @@ def permission_summary(cfg: ExperimentConfig) -> list[tuple[str, str]]:
             lines.append(("ok", f"codex permissions: {cfg.codex.sandbox} sandbox, no prompts; "
                                 f"network {network}"))
     elif harness == "opencode" and not external:
-        lines.append(("ok" if cfg.opencode.dangerously_skip_permissions else "warn",
-                      "opencode permissions: "
+        lines.append(("warn", "opencode permissions: "
                       + ("tools auto-approved; OpenCode has no OS sandbox, so use "
                          "isolation: docker to confine commands"
                          if cfg.opencode.dangerously_skip_permissions
                          else "prompts are auto-rejected in headless runs")))
     elif harness == "antigravity":
-        lines.append(("ok" if cfg.antigravity.dangerously_skip_permissions else "warn",
-                      "antigravity permissions: "
+        lines.append(("warn", "antigravity permissions: "
                       + ("tools auto-approved; commands are not confined unless you use "
                          "isolation: docker"
                          if cfg.antigravity.dangerously_skip_permissions
@@ -1544,7 +1542,9 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     print()
     print(f"{ok_count} ok, {warnings} warning(s), {problems} problem(s)")
-    return 1 if problems else 0
+    if problems or (getattr(args, "ci", False) and warnings):
+        return 1
+    return 0
 
 
 # ------------------------------------------------------------------------ run/results
@@ -1950,7 +1950,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"Could not load runs: {exc}", file=sys.stderr)
         return 1
-    strict = bool(getattr(args, "strict", False))
+    strict = bool(getattr(args, "strict", False)) or bool(getattr(args, "ci", False))
     try:
         comp = compare_results(a, b, strict=strict)
     except ValueError as exc:
@@ -2441,7 +2441,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--scan-home", action="store_true",
         help="Also scan HOME for possible skill copies (bounded, advisory; local runs only)",
     )
-    check_parser.add_argument("--ci", action="store_true", help="Enable strict CI exit checks")
+    check_parser.add_argument(
+        "--ci", action="store_true", help="Exit non-zero when warnings are present"
+    )
     check_parser.set_defaults(func=cmd_check)
 
     run_parser = subparsers.add_parser("run", help="Run both arms of the experiment")
@@ -2557,7 +2559,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Reject incompatible experiments (different models/tasks/hashes) instead of warning",
     )
-    compare_parser.add_argument("--ci", action="store_true", help="Enable strict CI exit checks")
+    compare_parser.add_argument(
+        "--ci", action="store_true", help="Refuse incompatible comparisons for CI"
+    )
     compare_parser.set_defaults(func=cmd_compare)
 
     lint_parser = subparsers.add_parser(
