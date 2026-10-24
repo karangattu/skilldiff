@@ -6,6 +6,19 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-23
+
+### Added
+
+- Python 3.12+ minimum runtime and support for Python 3.12, 3.13, 3.14, and 3.15.
+- `skilldiff resume --retry-failed` re-runs errored paired runs while keeping successful pairs intact.
+- Skill linter detects prompt solution leakage from skill body content.
+- `skilldiff diagnose` warns on control-arm ceiling effects and prompt leakage confounds.
+- Built-in rate tables for Codex, Antigravity, and OpenCode harnesses.
+- Live auth probes for Codex, Antigravity, and OpenCode preflight checks.
+- Plain-English bottom line summary in evaluation verdict outputs and reports.
+- Current 2026 rates for GPT-6, Gemini 3.8, and DeepSeek V4 across harnesses.
+
 ### Fixed
 
 - Manual releases check out the requested tag before testing and building.
@@ -20,6 +33,11 @@ This project uses semantic versioning.
 - Derived container images reject line breaks in image names and install specifications.
 - Release runs reuse the full CI matrix before publishing.
 - OpenCode and Antigravity auto-approval without isolation reports a warning; the Claude `isolate` comment states that user-level skills and plugins can still leak.
+- Grader parses JSON within markdown code fences and forwards judge model configuration to the evaluation environment.
+- Safe sequential concurrency defaults and longer rate limit backoff in runner pairing.
+- Real current model rate cards and defaults across harnesses.
+- Type annotations and mypy typechecking enforcement in CI.
+- Tracked `uv.lock` for reliable frozen installations.
 
 ## [0.27.0] - 2026-10-22
 
