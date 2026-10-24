@@ -380,7 +380,7 @@ def aggregate_baseline_comparisons(
             (
                 str(r.get("model", "")),
                 str(r.get("task_id", "")),
-                int(r.get("repetition", 0)),
+                int(r.get("repetition", 1)),
             ): r
             for r in base
         }
@@ -391,7 +391,7 @@ def aggregate_baseline_comparisons(
                 (
                     str(r.get("model", "")),
                     str(r.get("task_id", "")),
-                    int(r.get("repetition", 0)),
+                    int(r.get("repetition", 1)),
                 )
             ]
             if k in b_by_key

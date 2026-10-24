@@ -5,6 +5,7 @@ from skilldiff.aggregation import (
     _run_summary,
     _run_warnings,
     _settings_summary,
+    aggregate_baseline_comparisons,
     check_contamination,
 )
 from skilldiff.config import ClaudeConfig, ExperimentConfig
@@ -72,6 +73,15 @@ def test_settings_summary():
     assert settings["timeout_seconds"] == 300
     assert settings["parallel"] == 2
     assert settings["effort"] == "low"
+
+
+def test_baseline_comparisons_use_the_primary_repetition_default():
+    baseline = [{"model": "m", "task_id": "t", "score": 0.0, "status": "ok"}]
+    control = [{"model": "m", "task_id": "t", "repetition": 1, "score": 1.0, "status": "ok"}]
+    treatment = [{"model": "m", "task_id": "t", "repetition": 1, "score": 1.0, "status": "ok"}]
+    comparisons, _ = aggregate_baseline_comparisons(baseline, control, treatment)
+    assert comparisons["baseline_vs_a"]["pairs"] == 1
+    assert comparisons["baseline_vs_b"]["pairs"] == 1
 
 
 def test_check_contamination():
