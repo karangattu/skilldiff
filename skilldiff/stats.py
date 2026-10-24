@@ -59,9 +59,24 @@ def pair_runs(
             int(run.get("repetition", 1)),
         )
 
-    treatment_by_key = {key(r): r for r in treatment_runs}
+    def unique(runs: list[dict[str, Any]], arm: str) -> dict[tuple[str, str, int], dict[str, Any]]:
+        by_key: dict[tuple[str, str, int], dict[str, Any]] = {}
+        for run in runs:
+            run_key = key(run)
+            if run_key in by_key:
+                raise ValueError(
+                    f"duplicate {arm} run for model={run_key[0]!r}, task={run_key[1]!r}, "
+                    f"repetition={run_key[2]}"
+                )
+            by_key[run_key] = run
+        return by_key
+
+    control_by_key = unique(control_runs, "control")
+    treatment_by_key = unique(treatment_runs, "treatment")
     return [
-        (c, treatment_by_key[key(c)]) for c in control_runs if key(c) in treatment_by_key
+        (control_by_key[key(c)], treatment_by_key[key(c)])
+        for c in control_runs
+        if key(c) in treatment_by_key
     ]
 
 

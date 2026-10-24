@@ -1,3 +1,5 @@
+import pytest
+
 from skilldiff.stats import (
     analysis_run,
     bootstrap_ci,
@@ -18,6 +20,17 @@ def test_pair_runs_matches_model_task_and_repetition():
     treatment = [_run("treatment", 2, 1.0), _run("treatment", 1, 1.0)]
     pairs = pair_runs(control, treatment)
     assert [(c["repetition"], t["repetition"]) for c, t in pairs] == [(1, 1), (2, 2)]
+
+
+def test_pair_runs_rejects_duplicate_runs():
+    control = [_run("control", 1, 0.0)]
+    duplicate_treatment = [_run("treatment", 1, 1.0), _run("treatment", 1, 0.5)]
+    with pytest.raises(ValueError, match="duplicate treatment"):
+        pair_runs(control, duplicate_treatment)
+
+    duplicate_control = [_run("control", 1, 0.0), _run("control", 1, 1.0)]
+    with pytest.raises(ValueError, match="duplicate control"):
+        pair_runs(duplicate_control, [_run("treatment", 1, 1.0)])
 
 
 def test_bootstrap_ci_needs_two_values_and_brackets_mean():
