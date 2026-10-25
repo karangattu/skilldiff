@@ -73,7 +73,7 @@ def test_documented_smoke_commands_select_dev_tasks():
     root = SKILL_DIR.parents[1]
     smoke_docs = ALL_DOCS + "\n" + "\n".join(
         (root / path).read_text() for path in (
-            "README.md", "docs/reference.md", "examples/csv-totals/README.md",
+            "README.md", "docs/manual.md", "docs/reference.md", "examples/csv-totals/README.md",
         )
     )
     commands = re.findall(r"^skilldiff run .*--runs 1.*$", smoke_docs, re.MULTILINE)

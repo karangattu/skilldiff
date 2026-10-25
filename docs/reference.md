@@ -603,7 +603,7 @@ details in their error summaries and remain excluded harness failures.
 
 Running these from inside an agent needs a few things too:
 
-- Shell access. The agent must run `skilldiff` outside its own sandbox. See [setup details](../README.md#manual-setup) for the one-time setup per agent.
+- Shell access. The agent must run `skilldiff` outside its own sandbox. See [setup details](manual.md#shell-permissions) for the one-time setup per agent.
 - A signed-in CLI. SkillDiff starts separate agent runs with your normal login. Sign in once in a terminal with `claude auth login`.
 - Network and login-folder access. `check` fails with `host:` and prints the fix when the agent's sandbox would block them; `run` refuses to start.
 - Time. A full test can exceed the agent timeout. Then run it in the background and check it with `skilldiff results`.
