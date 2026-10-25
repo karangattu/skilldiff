@@ -570,7 +570,7 @@ def resolve_container_image(runtime: str, image: Optional[str], timeout: float =
     binary = cached_which(runtime)
     if not binary:
         raise ValueError(f"Container runtime '{runtime}' not found on PATH")
-    candidates = [image] if image else [DEFAULT_CONTAINER_IMAGE, "python:3.11"]
+    candidates = [image] if image else [DEFAULT_CONTAINER_IMAGE, "python:3.12"]
     last_err = ""
     for candidate in candidates:
         proc = subprocess.run(

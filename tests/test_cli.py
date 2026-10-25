@@ -426,3 +426,23 @@ def test_cli_init_claude_eval_template(tmp_path: Path, capsys):
     assert (exp / "tasks" / "dev" / "changelog-entry.yaml").is_file()
     assert (exp / "tasks" / "heldout" / "changelog-entry-heldout.yaml").is_file()
     assert {task.split for task in tasks} == {"dev", "held-out"}
+
+
+def test_cli_run_no_probe_flag_and_help():
+    from skilldiff.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["run", "--no-probe"])
+    assert args.no_probe is True
+
+    subparsers_actions = [
+        action for action in parser._actions if action.dest == "command"
+    ]
+    assert isinstance(subparsers_actions[0].choices, dict)
+    run_parser = subparsers_actions[0].choices["run"]
+    no_probe_action = next(
+        a for a in run_parser._actions if "--no-probe" in a.option_strings and a.help
+    )
+    assert no_probe_action.help is not None
+    assert "harness auth" in no_probe_action.help
+

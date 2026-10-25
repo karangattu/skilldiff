@@ -5,19 +5,18 @@ description: Measure whether an Agent Skill actually helps. Use when the user wa
 
 # Evaluate a skill with skilldiff
 
-skilldiff runs the same tasks twice in identical fresh workspaces. The **control** arm
-runs without the skill and the **skill** arm runs with it. Then skilldiff grades both arms
-and reports the paired difference in score, cost, time, tokens, and skill adoption.
-Your job: design a fair experiment, run it, and explain the result honestly.
+skilldiff runs the same tasks twice in identical fresh workspaces: **control**
+without the skill and **skill** with it. skilldiff grades both arms and reports paired
+differences in score, cost, time, tokens, and adoption. Design a fair experiment, run
+it, and explain the result honestly.
 
-Own the setup, task files, graders, execution, and interpretation. The user can
-give a goal and a skill path. Reuse their current harness and an available model
-when established; ask only for missing choices. For setup, short requests, demos,
-and structured outputs, read [agent workflow](references/agent-workflow.md).
+Own setup, task files, graders, execution, and interpretation. The user provides a
+goal and skill path. Reuse their harness and model when established; ask only for
+missing choices. For setup, short requests, and demos, read
+[agent workflow](references/agent-workflow.md).
 
-If the user invoked this skill with arguments (for example `/skilldiff ./skills/my-skill`
-or `$skilldiff ./skills/my-skill`), treat the first path as the skill under test. Treat
-any other words as extra instructions, such as the models or harness to use.
+If the user passed arguments (for example `/skilldiff ./skills/my-skill`), treat the first
+path as the skill under test and remaining words as extra instructions (models, harness).
 
 ## 1. Install and locate
 
@@ -45,10 +44,11 @@ skilldiff lint /abs/path/to/skill
 skilldiff lint /abs/path/to/skill --prompts ./skill-eval/tasks/  # trigger coverage
 ```
 
-`lint` checks the frontmatter, description, trigger keywords, links, and token
-footprint. `--prompts` also flags task prompts with little language shared with
-the description, a signal for symptom-style prompts that may not trigger. Fix
-what it flags: a weak description is the usual cause of low adoption.
+`lint` checks frontmatter, description, trigger keywords, links, and token
+footprint. `--prompts` flags low trigger overlap and prompt solution leakage
+(terms exposing skill body instructions). `diagnose` separately flags ceiling
+effects from prompt leakage. Fix what they flag: weak descriptions hurt
+adoption; prompt leakage masks real skill effect.
 
 ## 2. Scaffold
 
@@ -242,7 +242,8 @@ over 10 repetitions of one task. Do not add runs until the interval looks good.
 Use `--parallel N` only if the user's rate limits allow it. Use `--resume` (or
 `--resume-from <run-dir>`) to continue an interrupted run; completed pairs are
 reused only when skill, task, PR revision, and execution settings match, and a
-mismatch refuses instead of silently mixing results.
+mismatch refuses instead of silently mixing results. Pass `--retry-failed` to re-run
+pairs that hit harness errors, timeouts, or failures while preserving successful pairs.
 Set `parallel: 1` and `arm_parallel: false` for serial execution.
 
 Container execution needs a local image with the harness CLI, graders, and

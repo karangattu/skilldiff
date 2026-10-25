@@ -514,3 +514,29 @@ def test_resume_checks_derived_container_image_presence(tmp_path, monkeypatch):
     reasons = runner._resume_mismatches(metadata)
     assert any("missing_ctrl" in reason for reason in reasons)
 
+
+def test_resolve_container_image_fallback_candidate(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from skilldiff.runner import DEFAULT_CONTAINER_IMAGE, resolve_container_image
+
+    monkeypatch.setattr("skilldiff.runner.cached_which", lambda r: "/usr/bin/docker")
+    inspected = []
+
+    def fake_run(cmd, capture_output=True, text=True, timeout=20, check=False):
+        inspected.append(cmd[-1])
+        res = MagicMock()
+        if cmd[-1] == "python:3.12":
+            res.returncode = 0
+            res.stdout = "sha256:1234567890abcdef\n"
+        else:
+            res.returncode = 1
+            res.stdout = ""
+        return res
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    image_id = resolve_container_image("docker", None)
+    assert image_id == "sha256:1234567890abcdef"
+    assert inspected == [DEFAULT_CONTAINER_IMAGE, "python:3.12"]
+
+

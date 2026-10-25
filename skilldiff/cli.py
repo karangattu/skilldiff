@@ -2489,7 +2489,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--no-probe",
         action="store_true",
-        help="Skip Claude model and sandbox probes before the first paid session",
+        help="Skip harness auth, model, and sandbox probes before the first paid session",
     )
     run_parser.add_argument("--seed", type=int, help="Override the randomization seed")
     run_parser.add_argument("--max-turns", type=int, help="Override max turns per session")

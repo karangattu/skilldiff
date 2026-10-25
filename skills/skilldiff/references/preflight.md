@@ -82,7 +82,7 @@ Container execution needs a locally available image containing the harness CLI,
 graders, and dependencies (defaults to `ghcr.io/karangattu/skilldiff-sandbox:latest`,
 built from `docker/Dockerfile` with Python, `uv`, Node.js, Playwright Chromium,
 `claude`, `codex`, `opencode`, `agy`/`antigravity`, and `/opt/venv` outside
-`/workspace`, or falls back to `python:3.11`). `bin_path` refers to an executable
+`/workspace`, or falls back to `python:3.12`). `bin_path` refers to an executable
 inside that image. Container runs stage only the required subscription login
 credentials into the session scratch directory (or forward configured API keys);
 host skill, plugin, and session directories are not mounted. Run `skilldiff check` first (pass
@@ -118,8 +118,9 @@ call. That prevents a cap sized from a guess from ending the real run early.
 Each returned arm immediately publishes telemetry, response, transcript, and
 diff before its partner or grader finishes. Interrupted arms have explicit
 partial records, with unknown spend marked unknown. Incomplete trials are
-reported separately and excluded from paired decisions. Resume refuses an
-incomplete pair and preserves evidence; start a new run for an explicit retry.
+reported separately and excluded from paired decisions. Normal resume refuses an
+incomplete pair and preserves evidence; use `--retry-failed` to re-run only failed or
+interrupted pairs without discarding valid ones, or start a new run for a full restart.
 POSIX cleanup tracks observed child processes by PID and launch time, including
 servers that create new sessions. Never kill unrelated servers by name or port.
 Very fast reparenting can escape observation; use containers for stronger cleanup.
@@ -204,11 +205,11 @@ use `codex app-server` instead of `exec`.
   `skilldiff run -c skill-eval/skilldiff.yaml` with your shell tool's background
   option, check its progress output now and then, and read `skilldiff results` when
   it ends.
-- For Claude, `check` makes one tiny authenticated call per configured model
-  (`--no-probe` skips it) to catch an expired login and a model mismatch. It also
-  runs the sandbox canary; any denied or skipped command shape fails the check.
-  `run` repeats the model and canary preflight before the first paid session
-  unless you pass `--no-probe`.
+- For supported harnesses (`claude`, `codex`, `opencode`, `antigravity`), `check`
+  makes one tiny authenticated call per configured model (`--no-probe` skips it) to
+  catch an expired login and model mismatches. For Claude it also runs the sandbox canary;
+  any denied or skipped command shape fails the check. `run` repeats this model and
+  canary preflight before the first paid session unless you pass `--no-probe`.
 - If `check` reports that the harness CLI is missing, or a smoke run fails with "Not
   logged in", ask the user to sign in with that harness's normal login (for example
   `claude auth login` or `opencode auth login`). Never ask for or handle their

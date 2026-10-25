@@ -568,7 +568,7 @@ identity for execution and resume; it does not pull images automatically.
 Use an image containing the harness CLI, grader programs, and their dependencies.
 The default `ghcr.io/karangattu/skilldiff-sandbox:latest` image (built from
 `docker/Dockerfile`) includes Python, `uv`, Node.js, Playwright Chromium, and the
-`claude`, `codex`, `opencode`, and `agy`/`antigravity` CLIs; the `python:3.11`
+`claude`, `codex`, `opencode`, and `agy`/`antigravity` CLIs; the `python:3.12`
 fallback only supplies Python. An explicit harness `bin_path` refers to a path
 inside the image. Automatically discovered host CLIs use their executable name
 inside the image. Workspace arguments are translated to `/workspace`; agents

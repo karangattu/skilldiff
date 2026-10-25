@@ -6,9 +6,10 @@ reproduce, and the closing decision your summary must end with.
 
 ## API-equivalent cost
 
-Claude models use a built-in rate table keyed by full model ID, so a new Claude
-run needs no `pricing:` block. Add `pricing:` rates to override the table or to
-price another provider; the report includes an **API-equivalent cost** table from
+Built-in rate tables keyed by full model ID cover Claude, Codex (`gpt-6.*`),
+Antigravity (`gemini-*`), and OpenCode (`deepseek-*`), so runs using standard models
+need no `pricing:` block. Add `pricing:` rates to override built-in rates or to
+price an unmodeled provider; the report includes an **API-equivalent cost** table from
 the recorded token breakdown, and regenerating the report reproduces the estimate.
 Carry those costs into the final evaluation table in your summary. If the run has
 no recorded rates, look up the current per-token prices on the providers' own
@@ -111,7 +112,7 @@ The report itself ends with a **Closing decision** table — score, cost, time,
 tokens, tool calls, turns, and adoption, each with paired change, 95% CI, and
 one plain reading — followed by the bottom line: SHIP, DO NOT SHIP, or
 NEEDS MORE RUNS (with ceiling or floor effects noted when tasks cannot discriminate),
-plus one sentence that states why. Low adoption on any skill arm on the decision
+plus the structured Bottom Line summary (Verdict, Why, Next step). Low adoption on any skill arm on the decision
 basis downgrades a would-be SHIP to NEEDS MORE RUNS and names the description
 fix. End your summary
 with that same bottom line and reason; do not invent a different verdict from the
