@@ -90,6 +90,7 @@ def save_run_artifacts(
     transcript: str,
     diff: str,
 ) -> None:
+    from skilldiff.scout import build_scout_transcript
     from skilldiff.telemetry import redact_secrets
 
     clean_transcript = redact_secrets(transcript)
@@ -99,8 +100,11 @@ def save_run_artifacts(
         record["transcript"] = redact_secrets(str(record["transcript"]))
     atomic_write(arm_dir / "transcript.txt", clean_transcript)
     atomic_write(arm_dir / "diff.patch", diff)
+    scout_transcript = build_scout_transcript(record, clean_transcript, diff)
+    atomic_json(arm_dir / "transcript.json", scout_transcript)
     record["artifact_hashes"] = {
-        name: file_hash(arm_dir / name) for name in ("transcript.txt", "diff.patch")
+        name: file_hash(arm_dir / name)
+        for name in ("transcript.txt", "diff.patch", "transcript.json")
     }
     atomic_json(arm_dir / "run.json", record)
 

@@ -66,6 +66,7 @@ Use the existing JSON commands for facts instead of scraping terminal tables:
 skilldiff lint /abs/path/to/skill --json
 skilldiff results -c /abs/path/to/skill-eval/skilldiff.yaml --json
 skilldiff diagnose -c /abs/path/to/skill-eval/skilldiff.yaml --json
+skilldiff export -c /abs/path/to/skill-eval/skilldiff.yaml --format scout
 ```
 
 Save the exact run directory returned by execution. Pass it to `results` and

@@ -2114,6 +2114,29 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    from skilldiff.scout import export_run_to_scout
+
+    run_dir = _resolve_run_dir(args)
+    if not run_dir:
+        print("No experiment run found to export.", file=sys.stderr)
+        return 1
+
+    fmt = getattr(args, "format", "scout") or "scout"
+    out = Path(args.output_dir) if getattr(args, "output_dir", None) else None
+
+    try:
+        summary = export_run_to_scout(run_dir, output_dir=out, format=fmt)
+    except Exception as exc:
+        print(f"Export failed: {exc}", file=sys.stderr)
+        return 1
+
+    count = summary.get("count", 0)
+    target = summary.get("output_dir", "")
+    print(f"Exported {count} transcript(s) for Inspect Scout ({fmt}) to {target}")
+    return 0
+
+
 def _print_report_paths(results: dict[str, Any]) -> None:
     report = results.get("report", {}) or {}
     if report.get("html"):
@@ -2587,6 +2610,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Exit non-zero when adoption failures, regressions, or session/grader errors occur",
     )
     diagnose_parser.set_defaults(func=cmd_diagnose)
+
+    export_parser = subparsers.add_parser(
+        "export",
+        help="Export experiment runs and transcripts to Inspect Scout or JSON/JSONL format",
+    )
+    export_parser.add_argument("run_dir", nargs="?", help="Path to run directory or results.json")
+    export_parser.add_argument("--config", "-c", help="Look for runs next to this config")
+    export_parser.add_argument(
+        "--format",
+        choices=["scout", "json", "jsonl"],
+        default="scout",
+        help="Export format (scout: individual JSONs + JSONL; json: single JSON; jsonl: JSONL)",
+    )
+    export_parser.add_argument(
+        "--output-dir", "-o", help="Target output directory for exported files"
+    )
+    export_parser.set_defaults(func=cmd_export)
 
     return parser
 

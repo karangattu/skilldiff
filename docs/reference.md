@@ -515,6 +515,7 @@ Keep the entire run directory, including `inputs/`, for recovery. A small siblin
 | `skilldiff compare RUN_A RUN_B [--json] [--strict\|--ci]` | Compare two runs; `--ci` refuses incompatible comparisons |
 | `skilldiff lint [SKILL_DIR] [--prompts PATH] [--json]` | Lint SKILL.md frontmatter, trigger keywords, and length; optionally compare the description with task prompts |
 | `skilldiff diagnose [RUN_DIR] [--json]` | Diagnose failure modes, regressions, and adoption gaps |
+| `skilldiff export [RUN_DIR] [--format scout\|json\|jsonl] [-o DIR]` | Export runs and transcripts to Inspect Scout or JSON/JSONL |
 
 `regrade` is for grader fixes after the fact. It rebuilds each arm's final files from the run's frozen fixture plus the saved `diff.patch`, grades them with the current graders, and rewrites scores, aggregates, and reports. Each regraded record keeps its earlier grade under `regrade_history`, `results.json` gains a `regrades` entry, and the report shows a warning that the run was regraded, so the change stays auditable. Use `--dry-run` to see which scores would change first. A pair whose diff cannot be rebuilt (binary or excluded files) keeps its original grade and is reported as skipped. PR experiments are not supported.
 

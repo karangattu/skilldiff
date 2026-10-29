@@ -109,6 +109,7 @@ and known-broken solutions per task.
 | `skilldiff run` | Run the experiment (`--runs N`, `-t TASK`, `--resume`) |
 | `skilldiff results` / `report` | Show or rebuild the reports for a run |
 | `skilldiff diagnose` | Explain failures: skill not triggering, regressions, denied tools |
+| `skilldiff export` | Export structured transcripts and metadata for Inspect Scout |
 | `skilldiff regrade` | Re-grade a finished run after a grader fix, without new sessions |
 | `skilldiff compare` | Compare two runs |
 | `skilldiff lint` | Lint a `SKILL.md` before you spend anything; `--prompts PATH` checks trigger coverage |

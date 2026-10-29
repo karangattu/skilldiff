@@ -308,8 +308,9 @@ Don't overstate the result. "Faster in 3 runs" is an anecdote, not a finding. Us
 commands: `skilldiff results --markdown` prints a Markdown summary for a PR,
 `skilldiff results --json` and `skilldiff diagnose --json` emit structured JSON
 for dashboards, `--ci` enforces non-zero exit codes on invalid baselines, ceiling
-termination, or adoption failures, and `skilldiff report` rebuilds the reports
-for an old run.
+termination, or adoption failures, `skilldiff export [run-dir] [--format scout|json|jsonl]`
+exports structured transcripts and metadata for Inspect Scout transcript auditing,
+and `skilldiff report` rebuilds the reports for an old run.
 
 **Before you trust a surprising per-run difference, read the diff.** Open the
 `diff.patch` of any run that scored below its pair and confirm the grader judged real
