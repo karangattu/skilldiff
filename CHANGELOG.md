@@ -6,6 +6,15 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-29
+
+### Added
+
+- `skilldiff export` CLI subcommand to export experiment runs and conversation transcripts to Inspect Scout, single JSON, or JSONL formats.
+- Structured Inspect Scout-compatible `transcript.json` persistence in `save_run_artifacts` alongside `transcript.txt` and `diff.patch`.
+- Multi-harness message extraction and conversation reconstruction for Claude Code, Codex, Antigravity, and OpenCode execution traces in `skilldiff.scout`.
+- Automatic secret redaction and metadata embedding for exported Scout transcripts.
+
 ## [0.28.0] - 2026-10-23
 
 ### Added

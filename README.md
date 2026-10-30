@@ -89,4 +89,4 @@ The [compatibility guide](docs/compatibility.md) lists supported agent versions 
 For agent instructions, start with [skills/skilldiff/SKILL.md](skills/skilldiff/SKILL.md)
 and the [agent workflow](skills/skilldiff/references/agent-workflow.md).
 
-See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.28.0.
+See [CHANGELOG.md](CHANGELOG.md) for version history. Current version is 0.29.0.
