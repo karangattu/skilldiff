@@ -3,7 +3,8 @@
 `skilldiff scan [run-dir]` turns a finished run's agent transcripts into an
 [Inspect Scout](https://meridianlabs-ai.github.io/inspect_scout/) transcripts
 database and runs skilldiff's scanners over it. It needs the `scout` extra
-(`uv tool install 'skilldiff[scout] @ git+https://github.com/karangattu/skilldiff'`).
+(`uv tool install 'skilldiff[scout] @ git+https://github.com/karangattu/skilldiff'`)
+on Python 3.12 to 3.14; Inspect Scout's dependencies have no 3.15 wheels yet.
 
 What it writes under the run directory:
 

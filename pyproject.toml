@@ -39,15 +39,16 @@ skilldiff = "skilldiff.inspect_provider"
 
 [project.optional-dependencies]
 # Inspect Scout transcript database export, scanners, and `skilldiff scan`.
+# Its dependency tree has no Python 3.15 wheels yet; the Scout tests skip there.
 scout = [
-    "inspect-scout>=0.6",
+    "inspect-scout>=0.6; python_version < '3.15'",
 ]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",
     "mypy>=1.11",
     "types-PyYAML>=6.0",
-    "inspect-scout>=0.6",
+    "inspect-scout>=0.6; python_version < '3.15'",
 ]
 
 [tool.ruff]
