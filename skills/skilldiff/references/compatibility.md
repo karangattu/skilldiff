@@ -11,10 +11,15 @@ and usage stay `N/A`; use `reported_total_tokens` when the breakdown is incomple
 Install each treatment skill once: `.claude/skills` for Claude, `.agents/skills`
 for Codex and AGY, and `.opencode/skills` for OpenCode. For AGY's global SkillDiff
 installation use `npx skills add karangattu/skilldiff -g -y --copy -a antigravity-cli`.
-Native global skills are in `~/.gemini/antigravity-cli/skills`
-and plugins can also supply skills. AGY has no `isolate: true` option. Treat
+Native global skills are in `~/.gemini/antigravity-cli/skills` (older installs
+also use `~/.gemini/skills`) and plugins can also supply skills. AGY resolves its
+login from the user keychain, not from a copied home directory, so it has no
+private-home `isolate` option; `isolation: macos` keeps `~/.gemini` and the
+keychain reachable while denying its skills, plugins, and instructions. Codex
+and OpenCode default to private state directories holding only the login. Treat
 filesystem exposure scans as advisory; confirmed target discovery or successful
-loading in control invalidates the baseline. Count adoption only from successful
+loading in control invalidates the baseline. Without an availability signal
+(OpenCode, AGY), a user-level copy of the target skill fails `check` for local runs. Count adoption only from successful
 target-skill loads or reads, not denied calls or other installed skills. A skill
 call with no result is not a hit: record the run as unmeasured so it stays out of
 the hit rate instead of counting as either a hit or a miss.

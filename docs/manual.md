@@ -11,6 +11,8 @@ Install the `skilldiff` tool:
 
 ```bash
 uv tool install git+https://github.com/karangattu/skilldiff
+# with Inspect Scout transcript audits (skilldiff scan, scout view):
+uv tool install 'skilldiff[scout] @ git+https://github.com/karangattu/skilldiff'
 ```
 
 > [!NOTE]
@@ -38,7 +40,7 @@ npx skills update skilldiff -g
 | Claude Code | `claude-code` | `~/.claude/skills/skilldiff` |
 | Codex | `codex` | `~/.agents/skills/skilldiff` |
 | OpenCode | `opencode` | `~/.config/opencode/skills/skilldiff` |
-| Antigravity CLI (AGY) | `antigravity-cli` | `~/.gemini/antigravity-cli/skills/skilldiff` |
+| Antigravity CLI (AGY) | `antigravity-cli` | `~/.gemini/antigravity-cli/skills/skilldiff` (older installs: `~/.gemini/skills`) |
 
 Use `--copy` so AGY receives the skill in its native global directory.
 The installer treats Antigravity CLI and the desktop agent as separate agents.
@@ -109,9 +111,11 @@ and known-broken solutions per task.
 | `skilldiff run` | Run the experiment (`--runs N`, `-t TASK`, `--resume`) |
 | `skilldiff results` / `report` | Show or rebuild the reports for a run |
 | `skilldiff diagnose` | Explain failures: skill not triggering, regressions, denied tools |
-| `skilldiff export` | Export structured transcripts and metadata for Inspect Scout |
+| `skilldiff export` | Export transcripts: `--format scout-db` writes an Inspect Scout transcripts database |
+| `skilldiff scan` | Audit a run's transcripts with Inspect Scout scanners (skill use with cited messages, agreement with the harness parser, optional model-judged influence); install the `scout` extra |
 | `skilldiff regrade` | Re-grade a finished run after a grader fix, without new sessions |
 | `skilldiff compare` | Compare two runs |
+| `skilldiff summary` | One table across runs, e.g. the same skill on each harness (`run --harness H --model M` per CLI) |
 | `skilldiff lint` | Lint a `SKILL.md` before you spend anything; `--prompts PATH` checks trigger coverage |
 
 ## How the comparison works
@@ -172,7 +176,9 @@ task's `runtime_probe` through Claude's Bash tool. Reports and `skilldiff
 diagnose` count denied tool calls per arm for all four harnesses (including
 Codex sandbox blocks), so a broken permission setup cannot pass as a low score.
 To block reads outside the workspace as well, use `isolation: docker`/`podman`,
-or `isolation: macos` for Claude and Codex.
+or `isolation: macos` on any harness. Codex and OpenCode default to private state
+directories that hold only the login; AGY signs in through the keychain, so only
+`isolation: macos` keeps its global skills out of a run.
 
 Native macOS setup handles uv Python aliases, shell heredocs, Git configuration,
 and temporary pytest collection without opening host skill or grader contents.

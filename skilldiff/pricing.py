@@ -355,10 +355,10 @@ def merge_pricing(
     models: list[str],
     harness: str,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Fill gaps in a user pricing block from the built-in Claude table.
+    """Fill gaps in a user pricing block from the built-in rate tables.
 
     Returns (resolved pricing, unpriced configured models). Explicit user rates for a
-    model win; missing rates are filled only for the Claude harness.
+    model win; missing rates come from the built-in table for any harness.
     """
     resolved: dict[str, Any] = {}
     user_rates = dict((user_pricing or {}).get("rates") or {})

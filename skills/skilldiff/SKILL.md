@@ -66,9 +66,10 @@ skilldiff init --skill /abs/path/to/skill --dir ./skill-eval --harness antigravi
 Claude scaffolds pin `claude-sonnet-5-5`. Use full IDs such as
 `claude-haiku-5-5`; bare `sonnet`/`haiku`/`opus` fail config loading.
 `--template claude-eval` adds the eval profile, cost basis, thresholds, and splits.
+Harness logins, defaults, isolation, and multi-agent runs (`run --harness H
+--model M`, then `summary`): [references/harnesses.md](references/harnesses.md).
 
-Ask the user which agent CLI they use if it is not obvious. The other three
-modes scaffold the same way:
+The other three modes scaffold the same way:
 
 ```bash
 # PR: code without the PR vs code with the PR
@@ -80,9 +81,7 @@ skilldiff init --skill-a /abs/path/to/original --skill-b /abs/path/to/minified -
 ```
 
 You never install the skill into workspaces yourself. SkillDiff installs the
-right revision into each fresh workspace per harness (`.claude/skills` for
-Claude, `.agents/skills` for Codex, `.opencode/skills`
-for OpenCode, `.agents/skills` for Antigravity).
+right revision into each fresh workspace's native skills directory.
 
 Use [examples/csv-totals](https://github.com/karangattu/skilldiff/tree/main/examples/csv-totals)
 for dev and held-out tasks, fixtures, a grader, and a sample report, or
@@ -164,7 +163,8 @@ Keep the defaults (`claude.sandbox: true`, `codex.sandbox: workspace-write`, and
 apps that need background launch and localhost, use opt-in `claude.profile: eval`;
 it keeps the sandbox on and never allows unsandboxed commands. Do not set
 `sandbox: false`, which exposes graders and skill sources. `check` fails on any
-refused canary shape and probes each task's `runtime_probe` through Claude. Fix
+refused canary shape and runs each task's `runtime_probe` in the harness's
+session environment (and via Claude's Bash tool locally). Fix
 denials before interpreting scores; `diagnose` also flags a model served as
 another ID. See [preflight safeguards](references/preflight.md).
 
@@ -308,8 +308,8 @@ Don't overstate the result. "Faster in 3 runs" is an anecdote, not a finding. Us
 commands: `skilldiff results --markdown` prints a Markdown summary for a PR,
 `skilldiff results --json` and `skilldiff diagnose --json` emit structured JSON
 for dashboards, `--ci` enforces non-zero exit codes on invalid baselines, ceiling
-termination, or adoption failures, `skilldiff export [run-dir] [--format scout|json|jsonl]`
-exports structured transcripts and metadata for Inspect Scout transcript auditing,
+termination, or adoption failures, `skilldiff scan [run-dir] [--llm]` audits transcripts
+with Inspect Scout, judging through the signed-in CLI ([references/scout.md](references/scout.md)),
 and `skilldiff report` rebuilds the reports for an old run.
 
 **Before you trust a surprising per-run difference, read the diff.** Open the

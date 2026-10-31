@@ -70,10 +70,30 @@ def test_claude_read_paths_require_macos_isolation(tmp_path):
         load_experiment(path)
 
 
-def test_macos_isolation_rejects_harnesses_without_support(tmp_path):
-    path = write_experiment(tmp_path, "harness: opencode\nisolation: macos\n")
+@pytest.mark.parametrize("harness", ["opencode", "antigravity"])
+def test_macos_isolation_accepts_every_harness_with_read_paths(tmp_path, harness):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    path = write_experiment(
+        tmp_path,
+        f"harness: {harness}\nisolation: macos\n{harness}:\n  read_paths: [./runtime]\n",
+    )
 
-    with pytest.raises(ValueError, match="Codex and Claude harnesses only"):
+    config, _ = load_experiment(path)
+
+    assert config.isolation == "macos"
+    assert getattr(config, harness).read_paths == [str(runtime.resolve())]
+
+
+@pytest.mark.parametrize("harness", ["opencode", "antigravity"])
+def test_read_paths_require_macos_isolation_on_every_harness(tmp_path, harness):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    path = write_experiment(
+        tmp_path, f"harness: {harness}\n{harness}:\n  read_paths: [./runtime]\n"
+    )
+
+    with pytest.raises(ValueError, match=f"{harness}.read_paths requires isolation: macos"):
         load_experiment(path)
 
 
@@ -130,7 +150,48 @@ def test_macos_command_masks_bundled_claude_skills(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     cmd = macos_command(["claude"], workspace, scratch, [str(runtime)], [])
-    assert r"\.(agents|codex|claude)" in cmd[2]
+    assert r"\.(agents|codex|claude|opencode|gemini)" in cmd[2]
+
+
+def test_protected_read_paths_cover_opencode_and_antigravity_user_paths(tmp_path):
+    cfg = ExperimentConfig(name="t", skill=None, models=["m"], tasks_patterns=[],
+                           harness="antigravity")
+    protected = protected_read_paths(cfg)
+    for rel in (".gemini/antigravity-cli/skills", ".gemini/antigravity-cli/plugins",
+                ".gemini/GEMINI.md", ".config/opencode/skills", ".config/opencode/plugins"):
+        assert str(Path.home() / rel) in protected
+
+
+def test_macos_command_state_paths_stay_usable_but_not_home(tmp_path, monkeypatch):
+    if sys.platform != "darwin":
+        pytest.skip("macOS isolation requires macOS")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    fake_home = tmp_path / "fakehome"
+    (fake_home / ".gemini" / "antigravity-cli" / "skills").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    gemini = str(fake_home / ".gemini")
+    skills = str(fake_home / ".gemini" / "antigravity-cli" / "skills")
+    keychains = fake_home / "Library" / "Keychains"
+    keychains.mkdir(parents=True)
+    claude = fake_home / ".claude"
+    claude.mkdir()
+    cmd = macos_command(["agy"], workspace, scratch, [], [skills],
+                        [(gemini, "rw"), (str(keychains), "ro"), (str(claude), "open")])
+    profile = cmd[2]
+    allow = profile.index(f'(allow file-read* file-write* (subpath "{gemini}"))')
+    deny = profile.index(f'(deny file-read* (subpath "{skills}"))')
+    assert allow < deny, "later deny rules must win over the state directory allowance"
+    assert f'(allow file-read* (subpath "{keychains}"))' in profile
+    assert f'(allow file-write* (subpath "{keychains}"))' not in profile
+    assert f'(allow file-read* (literal "{claude}"))' in profile
+    assert f'(subpath "{claude}")' not in profile
+    with pytest.raises(ValueError, match="state path is too broad"):
+        macos_command(["agy"], workspace, scratch, [], [], [(str(fake_home), "rw")])
+    with pytest.raises(ValueError, match="unknown state path mode"):
+        macos_command(["agy"], workspace, scratch, [], [], [(gemini, "x")])
 
 
 def test_macos_command_rejects_missing_and_broad_read_paths(tmp_path):

@@ -82,6 +82,7 @@ CODEX_KEYS = frozenset(
         "sandbox",
         "verify_skills",
         "read_paths",
+        "isolate",
         "network_access",
         "dangerously_bypass_approvals_and_sandbox",
         "bin_path",
@@ -98,9 +99,12 @@ OPENCODE_KEYS = frozenset(
         "variant",
         "bin_path",
         "extra_args",
+        "read_paths",
     }
 )
-ANTIGRAVITY_KEYS = frozenset({"dangerously_skip_permissions", "bin_path", "extra_args"})
+ANTIGRAVITY_KEYS = frozenset(
+    {"dangerously_skip_permissions", "bin_path", "extra_args", "read_paths"}
+)
 PR_KEYS = frozenset({"repo", "base", "head", "mode", "pair", "install"})
 THRESHOLD_KEYS = frozenset(
     {
@@ -387,6 +391,11 @@ class CodexConfig:
 
     verify_skills: bool = True
     read_paths: list[str] = field(default_factory=list)
+    # Run with a private CODEX_HOME holding only the login's auth.json, so host
+    # config, rules, memories, and ~/.codex/skills stay out of both arms. Codex
+    # still reads ~/.agents/skills; use isolation: macos/docker to block that.
+    isolate: bool = True
+
 
 @dataclass
 class OpenCodeConfig:
@@ -400,6 +409,8 @@ class OpenCodeConfig:
     variant: Optional[str] = None
     bin_path: Optional[str] = None
     extra_args: list[str] = field(default_factory=list)
+    # Readable roots for isolation: macos.
+    read_paths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -407,6 +418,10 @@ class AntigravityConfig:
     dangerously_skip_permissions: bool = True
     bin_path: Optional[str] = None
     extra_args: list[str] = field(default_factory=list)
+    # Readable roots for isolation: macos. AGY resolves its login from the real
+    # home directory, so there is no private-home `isolate`; the macOS sandbox
+    # keeps ~/.gemini usable while denying its skills, plugins, and instructions.
+    read_paths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -959,7 +974,18 @@ def load_task(task_path: Path) -> TaskConfig:
     )
 
 
-def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskConfig]]:
+def load_experiment(
+    experiment_path: Path,
+    harness_override: Optional[str] = None,
+    models_override: Optional[list[str]] = None,
+) -> tuple[ExperimentConfig, list[TaskConfig]]:
+    """Load an experiment file.
+
+    ``harness_override`` and ``models_override`` come from the command line and
+    replace the file's ``harness`` and ``models`` so one experiment can run on
+    every agent CLI. A different harness needs its own model, so overriding the
+    harness without a model is refused.
+    """
     if not experiment_path.exists():
         raise FileNotFoundError(f"Experiment file not found: {experiment_path}")
 
@@ -1053,6 +1079,9 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     if not models or not isinstance(models, list):
         raise ValueError("Experiment config must specify a non-empty list of 'models'")
     validate_string_list(models, "models", nonempty=True)
+    if models_override:
+        validate_string_list(models_override, "model", nonempty=True)
+        models = list(models_override)
 
     task_patterns = data.get("tasks", [])
     if not task_patterns or not isinstance(task_patterns, list):
@@ -1079,6 +1108,21 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         raise ValueError(
             f"Invalid harness '{harness}'. Must be one of: {', '.join(sorted(valid_harnesses))}"
         )
+    if harness_override:
+        requested = str(harness_override).lower().strip()
+        if requested == "agy":
+            requested = "antigravity"
+        if requested not in valid_harnesses:
+            raise ValueError(
+                f"Invalid harness '{requested}'. Must be one of: "
+                f"{', '.join(sorted(valid_harnesses))}"
+            )
+        if requested != harness and not models_override:
+            raise ValueError(
+                f"--harness {requested} differs from the config's harness '{harness}'; "
+                f"pass --model with a model that {requested} can serve"
+            )
+        harness = requested
     if harness == "claude":
         for model in models:
             if is_bare_family_alias(str(model)):
@@ -1120,6 +1164,7 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         read_paths=[str((experiment_path.parent / Path(p).expanduser()).resolve())
                     for p in codex_data.get("read_paths", [])],
         auth=codex_auth,
+        isolate=codex_data.get("isolate", True),
         sandbox=codex_data.get("sandbox", "workspace-write"),
         network_access=codex_data.get("network_access", False),
         dangerously_bypass_approvals_and_sandbox=codex_data.get(
@@ -1145,6 +1190,8 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         variant=opencode_data.get("variant"),
         bin_path=opencode_data.get("bin_path"),
         extra_args=opencode_data.get("extra_args", []),
+        read_paths=[str((experiment_path.parent / Path(p).expanduser()).resolve())
+                    for p in opencode_data.get("read_paths", [])],
     )
 
     antigravity_data = data.get("antigravity") or data.get("agy") or {}
@@ -1152,6 +1199,8 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
         dangerously_skip_permissions=antigravity_data.get("dangerously_skip_permissions", True),
         bin_path=antigravity_data.get("bin_path"),
         extra_args=antigravity_data.get("extra_args", []),
+        read_paths=[str((experiment_path.parent / Path(p).expanduser()).resolve())
+                    for p in antigravity_data.get("read_paths", [])],
     )
 
     timeout_val = data.get("timeout_seconds", 1800)
@@ -1201,12 +1250,10 @@ def load_experiment(experiment_path: Path) -> tuple[ExperimentConfig, list[TaskC
     failure_policy.setdefault("missing", "exclude")
 
     isolation = str(data.get("isolation", "local") or "local").strip().lower()
-    if codex_cfg.read_paths and isolation != "macos":
-        raise ValueError("codex.read_paths requires isolation: macos")
-    if claude_cfg.read_paths and isolation != "macos":
-        raise ValueError("claude.read_paths requires isolation: macos")
-    if isolation == "macos" and harness not in {"codex", "claude"}:
-        raise ValueError("isolation: macos supports the Codex and Claude harnesses only")
+    for block_name, block_cfg in (("claude", claude_cfg), ("codex", codex_cfg),
+                                  ("opencode", opencode_cfg), ("antigravity", antigravity_cfg)):
+        if block_cfg.read_paths and isolation != "macos":
+            raise ValueError(f"{block_name}.read_paths requires isolation: macos")
     container_image = data.get("container_image")
     container_install = data.get("container_install")
     exp_env = validate_env_mapping(data.get("env"), "env")

@@ -33,12 +33,21 @@ Issues = "https://github.com/karangattu/skilldiff/issues"
 [project.scripts]
 skilldiff = "skilldiff.cli:main"
 
+# Lets `scout scan --model skilldiff/<harness>/<model>` find the CLI-backed judge.
+[project.entry-points.inspect_ai]
+skilldiff = "skilldiff.inspect_provider"
+
 [project.optional-dependencies]
+# Inspect Scout transcript database export, scanners, and `skilldiff scan`.
+scout = [
+    "inspect-scout>=0.6",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",
     "mypy>=1.11",
     "types-PyYAML>=6.0",
+    "inspect-scout>=0.6",
 ]
 
 [tool.ruff]

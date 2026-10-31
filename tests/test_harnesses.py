@@ -1059,3 +1059,58 @@ def test_probe_antigravity_auth_success_and_failure(tmp_path: Path):
         assert "Session token expired" in bad_probe.detail
 
 
+
+
+def test_codex_isolate_uses_private_home_locally(tmp_path: Path, monkeypatch):
+    from skilldiff.config import CodexConfig
+    from skilldiff.preflight import codex_env
+
+    host = tmp_path / "host-codex"
+    host.mkdir()
+    (host / "auth.json").write_text('{"token": "x"}', encoding="utf-8")
+    (host / "config.toml").write_text("model = 'x'\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(host))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    env = codex_env(CodexConfig(), "local", scratch)
+    private = Path(env["CODEX_HOME"])
+    assert private == scratch / "codex-home"
+    assert (private / "auth.json").read_text(encoding="utf-8") == '{"token": "x"}'
+    assert not (private / "config.toml").exists()
+
+    env = codex_env(CodexConfig(isolate=False), "local", scratch)
+    assert env["CODEX_HOME"] == str(host)
+
+
+def test_opencode_isolate_stages_private_data_config_and_cache(tmp_path: Path, monkeypatch):
+    from skilldiff.config import OpenCodeConfig
+    from skilldiff.runner import opencode_env
+
+    host_data = tmp_path / "host-data"
+    (host_data / "opencode").mkdir(parents=True)
+    (host_data / "opencode" / "auth.json").write_text(
+        '{"opencode": {"type": "api", "key": "k"}}', encoding="utf-8"
+    )
+    host_cfg = tmp_path / "host-config"
+    host_cfg.mkdir()
+    (host_cfg / "service.json").write_text("{}", encoding="utf-8")
+    (host_cfg / "opencode.json").write_text('{"plugin": ["x"]}', encoding="utf-8")
+    monkeypatch.setenv("XDG_DATA_HOME", str(host_data))
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(host_cfg))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    env = opencode_env(OpenCodeConfig(), scratch)
+    assert env["XDG_DATA_HOME"] == str(scratch / "opencode-data")
+    assert (scratch / "opencode-data" / "opencode" / "auth.json").is_file()
+    assert env["OPENCODE_CONFIG_DIR"] == str(scratch / "opencode_config")
+    assert (scratch / "opencode_config" / "service.json").is_file()
+    assert not (scratch / "opencode_config" / "opencode.json").exists()
+    assert env["XDG_CACHE_HOME"] == str(scratch / "opencode-cache")
+    assert env["XDG_STATE_HOME"] == str(scratch / "opencode-state")
+    assert env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] == "true"
+
+    plain = opencode_env(OpenCodeConfig(isolate=False), scratch)
+    assert plain["XDG_DATA_HOME"] == str(host_data)
+    assert plain["OPENCODE_CONFIG_DIR"] == str(host_cfg)

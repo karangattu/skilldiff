@@ -41,6 +41,7 @@ HARNESS_USER_PATHS: dict[str, list[str]] = {
     "antigravity": [
         "~/.gemini/antigravity-cli/skills",
         "~/.gemini/antigravity-cli/plugins",
+        "~/.gemini/skills",
         "~/.gemini/GEMINI.md",
         "~/.gemini/memory",
     ],

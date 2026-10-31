@@ -1,6 +1,5 @@
 """Credential-free capability checks, in the same boundary as paid execution."""
 
-import os
 import re
 import shutil
 import threading
@@ -8,7 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import cast as _cast
 
-from skilldiff.preflight import codex_env, protected_read_paths
+from skilldiff.preflight import harness_state_paths, protected_read_paths
 
 _CAPABILITIES_CACHE: dict[tuple[object, ...], dict[str, object]] = {}
 _CAPABILITIES_LOCK = threading.Lock()
@@ -64,11 +63,13 @@ def probe_capabilities(runner, cwd, config, scratch):
             if cached is not None:
                 return deepcopy(cached)
 
-        env = (codex_env(config.codex, config.isolation, scratch) if harness == "codex"
-               else os.environ.copy())
+        # Probe with the same environment and boundary sessions get, so a private
+        # state directory or sandbox state path that breaks the CLI fails here.
+        env = runner.session_env(config, scratch)
         kwargs = dict(isolation=config.isolation, container_image=config.container_image,
                       temp_dir=scratch, read_paths=getattr(native, "read_paths", []),
-                      protected_paths=protected_read_paths(config))
+                      protected_paths=protected_read_paths(config),
+                      state_paths=harness_state_paths(config))
         def execute(args):
             result = runner._exec([binary, *args], cwd, env, 30, **kwargs)
             if result.exit_code or result.timed_out:

@@ -22,13 +22,75 @@ def protected_read_paths(config: ExperimentConfig) -> list[str]:
     paths.extend(
         str(Path.home() / name)
         for name in (".agents/skills", ".codex/skills", ".codex/plugins", ".codex/memories",
-                     ".claude/skills", ".claude/plugins")
+                     ".claude/skills", ".claude/plugins",
+                     ".config/opencode/skills", ".config/opencode/plugins",
+                     ".config/opencode/AGENTS.md", ".config/opencode/memory",
+                     ".gemini/antigravity-cli/skills", ".gemini/antigravity-cli/plugins",
+                     ".gemini/skills", ".gemini/GEMINI.md", ".gemini/memory")
     )
     for root in config.codex.read_paths:
         paths.extend(str(Path(root) / name) for name in (".agents", ".codex"))
     for root in config.claude.read_paths:
         paths.extend(str(Path(root) / name) for name in (".agents", ".claude"))
+    for root in config.opencode.read_paths:
+        paths.extend(str(Path(root) / name) for name in (".agents", ".opencode", ".claude"))
+    for root in config.antigravity.read_paths:
+        paths.extend(str(Path(root) / name) for name in (".agents", ".gemini"))
     return paths
+
+
+# Host paths a harness must keep reaching under the macOS sandbox, with the access
+# it needs: "rw" for login and session state that cannot be staged elsewhere,
+# "ro" for a login store, "open" when the CLI only opens the directory node
+# itself (its entries stay denied). Skills, plugins, and instructions under them
+# stay denied via protected_read_paths. $DARWIN_USER_TEMP_DIR is the per-user
+# temp directory from getconf, which OpenCode resolves regardless of TMPDIR; it
+# only needs to open that node, never its entries (other sessions live there).
+HARNESS_SANDBOX_STATE_PATHS: dict[str, tuple[tuple[str, str], ...]] = {
+    # AGY keeps its login in the user keychain and its state under ~/.gemini.
+    "antigravity": (("~/.gemini", "rw"), ("~/Library/Keychains", "ro")),
+    # OpenCode's standalone server resolves every config root it knows, even
+    # with Claude Code support disabled, and needs the per-user temp directory.
+    "opencode": (
+        ("~/.claude", "open"),
+        ("~/.agents", "open"),
+        ("$DARWIN_USER_TEMP_DIR", "open"),
+        ("$DARWIN_USER_TEMP_DIR/..", "open"),
+        ("$DARWIN_USER_TEMP_DIR/../..", "open"),
+        ("$DARWIN_USER_TEMP_DIR/../../..", "open"),
+    ),
+}
+
+
+def harness_read_paths(config: ExperimentConfig) -> list[str]:
+    return list(getattr(config, config.harness).read_paths)
+
+
+def _darwin_user_temp_dir() -> str | None:
+    import subprocess
+
+    try:
+        out = subprocess.run(["getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True,
+                             text=True, timeout=5, check=False).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.rstrip("/") or None
+
+
+def harness_state_paths_for(harness: str) -> list[tuple[str, str]]:
+    entries = []
+    for raw, mode in HARNESS_SANDBOX_STATE_PATHS.get(harness, ()):
+        if raw.startswith("$DARWIN_USER_TEMP_DIR"):
+            base = _darwin_user_temp_dir()
+            if base is None:
+                continue
+            raw = base + raw[len("$DARWIN_USER_TEMP_DIR"):]
+        entries.append((str(Path(raw).expanduser()), mode))
+    return entries
+
+
+def harness_state_paths(config: ExperimentConfig) -> list[tuple[str, str]]:
+    return harness_state_paths_for(config.harness)
 
 
 # Where each harness keeps login and session state it must write during a run.
@@ -110,7 +172,7 @@ def codex_env(config: CodexConfig, isolation: str, scratch: Path | None) -> dict
     env = clean_parent_env()
     if config.auth in {"subscription", "stored"}:
         env.pop("OPENAI_API_KEY", None)
-    if isolation in {"macos", "docker", "podman"} and scratch:
+    if (isolation in {"macos", "docker", "podman"} or config.isolate) and scratch:
         home = scratch / "codex-home"
         home.mkdir(exist_ok=True)
         auth = Path(env.get("CODEX_HOME", str(Path.home() / ".codex"))) / "auth.json"
@@ -129,19 +191,15 @@ def probe_workspace(
     scratch: Path,
     runtime_probe: str | None = None,
 ) -> dict[str, Any]:
-    from skilldiff.runner import clean_parent_env
-
     report: dict[str, Any] = {"expected_skills": expected_skills,
                               "cli": runner.capabilities(cwd, config, scratch)}
-    read_paths = (
-        config.claude.read_paths if config.harness == "claude" else config.codex.read_paths
-    )
     kwargs = dict(
         isolation=config.isolation,
         container_image=config.container_image,
         temp_dir=scratch,
-        read_paths=read_paths,
+        read_paths=harness_read_paths(config),
         protected_paths=protected_read_paths(config),
+        state_paths=harness_state_paths(config),
     )
     if config.isolation == "macos":
         with tempfile.TemporaryDirectory(prefix="read-boundary-", dir=cwd.parent) as outside:
@@ -154,9 +212,7 @@ def probe_workspace(
             result = runner._exec(
                 ["/bin/sh", "-c", command],
                 cwd,
-                codex_env(config.codex, config.isolation, scratch)
-                if config.harness == "codex"
-                else clean_parent_env(),
+                runner.session_env(config, scratch),
                 10,
                 **kwargs,
             )
@@ -166,11 +222,7 @@ def probe_workspace(
                 )
             report["read_boundary"] = "sibling content denied"
     if runtime_probe:
-        probe_env = (
-            codex_env(config.codex, config.isolation, scratch)
-            if config.harness == "codex"
-            else clean_parent_env()
-        )
+        probe_env = runner.session_env(config, scratch)
         extra_env = dict(getattr(config, "env", None) or {})
         if extra_env:
             probe_env.update(extra_env)

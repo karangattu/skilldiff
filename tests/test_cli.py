@@ -200,6 +200,17 @@ def test_permission_summary_warns_for_unconfined_auto_approval():
         ), lines
 
 
+def test_permission_summary_reports_external_boundary_for_auto_approval():
+    for harness in ("opencode", "antigravity"):
+        cfg = ExperimentConfig(
+            name="confined", skill=None, models=["m"], tasks_patterns=[],
+            harness=harness, isolation="macos",
+        )
+        lines = permission_summary(cfg)
+        assert lines == [("ok", f"{harness} permissions: tools auto-approved; commands "
+                                "confined by the macOS isolation boundary")], lines
+
+
 def test_cli_check_rejects_existing_binary_that_cannot_run(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     cmd_init(Args(force=False))
@@ -446,3 +457,86 @@ def test_cli_run_no_probe_flag_and_help():
     assert no_probe_action.help is not None
     assert "harness auth" in no_probe_action.help
 
+
+
+def test_cli_run_harness_override_needs_a_model(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    cmd_init(Args(force=False))
+
+    assert cmd_run(Args(config="skilldiff.yaml", runs=1, harness="codex")) == 1
+    err = capsys.readouterr().err
+    assert "--harness codex differs from the config's harness 'claude'" in err
+    assert "pass --model" in err
+
+
+def test_cli_summary_lines_up_runs_across_harnesses(tmp_path: Path, monkeypatch, capsys):
+    from skilldiff.cli import cmd_summary
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    cmd_init(Args(force=False))
+
+    assert cmd_run(Args(config="skilldiff.yaml", runs=1, no_probe=True)) == 0
+    assert cmd_run(Args(config="skilldiff.yaml", runs=1, no_probe=True,
+                        harness="codex", model=["gpt-6.1-sol"])) == 0
+    capsys.readouterr()
+
+    assert cmd_summary(Args(config="skilldiff.yaml", json=True)) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert [row["harness"] for row in summary["runs"]] == ["claude", "codex"]
+    assert summary["runs"][1]["models"] == ["gpt-6.1-sol"]
+    assert all(isinstance(row["agent_cli"], (str, type(None))) for row in summary["runs"])
+    assert all(row["decision"] for row in summary["runs"])
+    assert any("several harnesses" in w for w in summary["warnings"])
+
+    assert cmd_summary(Args(config="skilldiff.yaml", json=False)) == 0
+    table = capsys.readouterr().out
+    assert "| Run | Harness | CLI | Model |" in table
+    assert "| claude |" in table and "| codex |" in table
+    assert "Caveats:" in table
+
+    results = json.loads((sorted((tmp_path / "runs").iterdir())[-1] / "results.json").read_text())
+    assert results["harness"] == "codex"
+    assert results["models"] == ["gpt-6.1-sol"]
+
+
+def test_cli_summary_without_runs_fails_cleanly(tmp_path: Path, monkeypatch, capsys):
+    from skilldiff.cli import cmd_summary
+
+    monkeypatch.chdir(tmp_path)
+    assert cmd_summary(Args(config="skilldiff.yaml", json=False)) == 1
+    assert "No finished runs" in capsys.readouterr().err
+
+
+def test_cli_check_fails_on_user_level_skill_without_a_discovery_probe(
+    tmp_path: Path, monkeypatch, capsys
+):
+    import skilldiff.cli as cli_mod
+
+    monkeypatch.chdir(tmp_path)
+    cmd_init(Args(force=False, harness="antigravity"))
+    copy = Path.home() / ".gemini" / "antigravity-cli" / "skills" / "changelog-style"
+    monkeypatch.setattr(cli_mod, "find_user_level_installs", lambda names, harness: [str(copy)])
+
+    code = cmd_check(Args(config="skilldiff.yaml", no_probe=True, no_grade=True))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "no discovery probe" in out
+    assert str(copy) in out
+
+
+def test_cli_check_keeps_user_level_skill_advisory_for_probed_harnesses(
+    tmp_path: Path, monkeypatch, capsys
+):
+    import skilldiff.cli as cli_mod
+
+    monkeypatch.chdir(tmp_path)
+    cmd_init(Args(force=False, harness="claude"))
+    copy = Path.home() / ".claude" / "skills" / "changelog-style"
+    monkeypatch.setattr(cli_mod, "find_user_level_installs", lambda names, harness: [str(copy)])
+
+    code = cmd_check(Args(config="skilldiff.yaml", no_probe=True, no_grade=True))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Advisory filesystem scan" in out
