@@ -223,7 +223,7 @@ def skilldiff_adoption(
 
 def _cell(record: Any, key: str) -> Any:
     """A data frame cell as a plain Python value; pandas NA/NaN become None."""
-    import pandas as pd  # type: ignore[import-untyped]
+    import pandas as pd
 
     value = record.get(key)
     try:

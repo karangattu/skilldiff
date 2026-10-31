@@ -139,7 +139,10 @@ def test_release_workflow_checks_out_requested_ref():
     ci = yaml.safe_load(
         (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     )
+    # CI checks out the caller's ref when invoked by the release workflow and the
+    # event's own ref otherwise. `github.ref_name` must not be the fallback: on
+    # pull_request events it is "N/merge", which is not a branch and fails checkout.
     for job in ci["jobs"].values():
         for step in job.get("steps") or []:
             if str(step.get("uses", "")).startswith("actions/checkout"):
-                assert step.get("with", {}).get("ref") == "${{ inputs.ref || github.ref_name }}"
+                assert step.get("with", {}).get("ref") == "${{ inputs.ref }}"
