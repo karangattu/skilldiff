@@ -510,12 +510,16 @@ def test_cli_summary_without_runs_fails_cleanly(tmp_path: Path, monkeypatch, cap
 
 
 def test_cli_check_fails_on_user_level_skill_without_a_discovery_probe(
-    tmp_path: Path, monkeypatch, capsys
+    tmp_path: Path, monkeypatch, capsys, capable_cli
 ):
     import skilldiff.cli as cli_mod
 
     monkeypatch.chdir(tmp_path)
     cmd_init(Args(force=False, harness="antigravity"))
+    fake = tmp_path / "agy"
+    fake.write_text("#!/bin/sh\necho 9.9.9\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("AGY_BIN", str(fake))
     copy = Path.home() / ".gemini" / "antigravity-cli" / "skills" / "changelog-style"
     monkeypatch.setattr(cli_mod, "find_user_level_installs", lambda names, harness: [str(copy)])
 
@@ -524,19 +528,24 @@ def test_cli_check_fails_on_user_level_skill_without_a_discovery_probe(
     assert code == 1
     assert "no discovery probe" in out
     assert str(copy) in out
+    assert "1 problem(s)" in out
 
 
 def test_cli_check_keeps_user_level_skill_advisory_for_probed_harnesses(
-    tmp_path: Path, monkeypatch, capsys
+    tmp_path: Path, monkeypatch, capsys, capable_cli
 ):
     import skilldiff.cli as cli_mod
 
     monkeypatch.chdir(tmp_path)
     cmd_init(Args(force=False, harness="claude"))
+    fake = tmp_path / "claude"
+    fake.write_text("#!/bin/sh\necho 9.9.9\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("CLAUDE_BIN", str(fake))
     copy = Path.home() / ".claude" / "skills" / "changelog-style"
     monkeypatch.setattr(cli_mod, "find_user_level_installs", lambda names, harness: [str(copy)])
 
     code = cmd_check(Args(config="skilldiff.yaml", no_probe=True, no_grade=True))
     out = capsys.readouterr().out
-    assert code == 0
+    assert code == 0, out
     assert "Advisory filesystem scan" in out
