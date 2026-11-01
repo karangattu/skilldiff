@@ -6,6 +6,8 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-10-31
+
 ### Added
 
 - `skilldiff summary` lines up any number of finished runs in one table (score, Δ with interval, adoption, cost, time, and each run's own decision) for the same skill on several harnesses or models, with caveats when task inputs, skill revisions, or cost bases differ.
