@@ -28,7 +28,7 @@ from skilldiff.config import (
     read_skill_name,
 )
 from skilldiff.conversations import Conversation
-from skilldiff.preflight import codex_env, protected_read_paths
+from skilldiff.preflight import codex_env, harness_state_paths_for, protected_read_paths
 from skilldiff.pricing import one_call_cost_estimate
 from skilldiff.processes import OwnedDescendants
 from skilldiff.telemetry import redact_secrets
@@ -475,6 +475,71 @@ def _stage_opencode_db(
         pass
 
 
+def stage_opencode_data(temp_dir: Path, env: dict[str, str]) -> None:
+    """Give OpenCode a private data directory holding only its stored credentials.
+
+    Sets ``XDG_DATA_HOME`` to a staged copy (auth.json plus the credential and
+    account tables of opencode.db) so host sessions, skills, and plugins under
+    ``~/.local/share/opencode`` stay out of the run. Copies ``service.json`` into
+    the private config directory when the host login uses one.
+    """
+    opencode_data_root = (
+        Path(env.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "opencode"
+    )
+    opencode_creds = _collect_opencode_auth(env)
+    if opencode_creds:
+        opencode_data = temp_dir / "opencode-data"
+        opencode_dir = opencode_data / "opencode"
+        opencode_dir.mkdir(parents=True, exist_ok=True)
+        target_opencode = opencode_dir / "auth.json"
+        if not target_opencode.exists():
+            target_opencode.write_text(json.dumps(opencode_creds), encoding="utf-8")
+            target_opencode.chmod(0o600)
+        _stage_opencode_db(
+            opencode_data_root / "opencode.db", opencode_dir / "opencode.db", opencode_creds
+        )
+        env["XDG_DATA_HOME"] = str(opencode_data.resolve())
+    host_opencode_cfg = Path(
+        env.get("OPENCODE_CONFIG_DIR") or (Path.home() / ".config" / "opencode")
+    )
+    if (host_opencode_cfg / "service.json").is_file():
+        isolated_cfg = temp_dir / "opencode_config"
+        isolated_cfg.mkdir(parents=True, exist_ok=True)
+        target_service = isolated_cfg / "service.json"
+        if not target_service.exists():
+            shutil.copyfile(host_opencode_cfg / "service.json", target_service)
+        env.setdefault("OPENCODE_CONFIG_DIR", str(isolated_cfg.resolve()))
+
+
+def opencode_env(config: OpenCodeConfig, scratch: Optional[Path]) -> dict[str, str]:
+    """Environment for one OpenCode session.
+
+    With ``isolate`` the session uses private config, data, and cache directories
+    under the session scratch directory, so only the staged login is visible and
+    the host's skills, plugins, instructions, and sessions are not. Claude Code
+    skill discovery and default plugins are disabled. ``~/.agents/skills`` is
+    still readable without an OS boundary.
+    """
+    env = clean_parent_env()
+    if not config.isolate:
+        return env
+    if scratch is not None:
+        stage_opencode_data(scratch, env)
+        isolated_config = scratch / "opencode_config"
+        isolated_config.mkdir(parents=True, exist_ok=True)
+        env["OPENCODE_CONFIG_DIR"] = str(isolated_config.resolve())
+        for key, name in (("XDG_CACHE_HOME", "opencode-cache"),
+                          ("XDG_STATE_HOME", "opencode-state")):
+            private = scratch / name
+            private.mkdir(parents=True, exist_ok=True)
+            env[key] = str(private.resolve())
+    env["OPENCODE_DISABLE_CLAUDE_CODE"] = "true"
+    env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] = "true"
+    env["OPENCODE_DISABLE_DEFAULT_PLUGINS"] = "true"
+    env["OPENCODE_DISABLE_AUTOUPDATE"] = "true"
+    return env
+
+
 def stage_container_auth(temp_dir: Path, env: dict[str, str]) -> Optional[Path]:
     """Stage host subscription credentials into temp_dir without exposing skills or history."""
     env["IS_SANDBOX"] = "1"
@@ -523,32 +588,7 @@ def stage_container_auth(temp_dir: Path, env: dict[str, str]) -> Optional[Path]:
             target_codex.chmod(0o600)
         env["CODEX_HOME"] = "/root/.codex"
 
-    opencode_data_root = (
-        Path(env.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "opencode"
-    )
-    opencode_creds = _collect_opencode_auth(env)
-    if opencode_creds:
-        opencode_data = temp_dir / "opencode-data"
-        opencode_dir = opencode_data / "opencode"
-        opencode_dir.mkdir(parents=True, exist_ok=True)
-        target_opencode = opencode_dir / "auth.json"
-        if not target_opencode.exists():
-            target_opencode.write_text(json.dumps(opencode_creds), encoding="utf-8")
-            target_opencode.chmod(0o600)
-        _stage_opencode_db(
-            opencode_data_root / "opencode.db", opencode_dir / "opencode.db", opencode_creds
-        )
-        env["XDG_DATA_HOME"] = str(opencode_data.resolve())
-    host_opencode_cfg = Path(
-        env.get("OPENCODE_CONFIG_DIR") or (Path.home() / ".config" / "opencode")
-    )
-    if (host_opencode_cfg / "service.json").is_file():
-        isolated_cfg = temp_dir / "opencode_config"
-        isolated_cfg.mkdir(parents=True, exist_ok=True)
-        target_service = isolated_cfg / "service.json"
-        if not target_service.exists():
-            shutil.copyfile(host_opencode_cfg / "service.json", target_service)
-        env.setdefault("OPENCODE_CONFIG_DIR", str(isolated_cfg.resolve()))
+    stage_opencode_data(temp_dir, env)
 
     agy_files = _antigravity_auth_files()
     if agy_files:
@@ -1154,6 +1194,14 @@ class AgentRunner:
             "antigravity": self.antigravity_bin,
         }[harness]
 
+    def session_env(self, config: ExperimentConfig, scratch: Optional[Path]) -> dict[str, str]:
+        """The environment sessions of the configured harness run with (no model call)."""
+        if config.harness == "codex":
+            return codex_env(config.codex, config.isolation, scratch)
+        if config.harness == "opencode":
+            return opencode_env(config.opencode, scratch)
+        return clean_parent_env()
+
     def _exec(
         self,
         cmd: list[str],
@@ -1169,6 +1217,7 @@ class AgentRunner:
         protected_paths: Optional[list[str]] = None,
         rpc_requests: Optional[list[dict[str, Any]]] = None,
         conversation: Optional[Conversation] = None,
+        state_paths: Optional[list[tuple[str, str]]] = None,
     ) -> ExecResult:
         """Run a CLI with a timeout and clean up its owned children.
 
@@ -1203,7 +1252,7 @@ class AgentRunner:
 
             macos_environment(env, temp_dir, forward_env or [])
             exec_cmd = macos_command(exec_cmd, cwd, temp_dir, read_paths or [],
-                                     protected_paths or [])
+                                     protected_paths or [], state_paths or [])
         elif isolation in {"docker", "podman"}:
             runtime = cached_which(isolation)
             if not runtime:
@@ -1764,6 +1813,8 @@ class AgentRunner:
                 temp_dir=temp_dir,
                 skill_names=names, session_id=session_id,
                 extra_env=extra_env,
+                protected_paths=(protected_read_paths(config)
+                                 if isinstance(config, ExperimentConfig) else []),
             )
         elif active_harness in {"antigravity", "agy"}:
             result = self._run_antigravity(
@@ -1777,6 +1828,8 @@ class AgentRunner:
                 container_image=container_image,
                 temp_dir=temp_dir,
                 extra_env=extra_env,
+                protected_paths=(protected_read_paths(config)
+                                 if isinstance(config, ExperimentConfig) else []),
             )
         else:
             result = self._run_claude(
@@ -2267,6 +2320,7 @@ class AgentRunner:
         skill_names: Optional[list[str]] = None,
         session_id: Optional[str] = None,
         extra_env: Optional[dict[str, str]] = None,
+        protected_paths: Optional[list[str]] = None,
     ) -> RunResult:
         bin_path = opencode_cfg.bin_path or self.opencode_bin
         target_model = model
@@ -2289,16 +2343,7 @@ class AgentRunner:
             cmd.append("--standalone")
         cmd.extend(opencode_cfg.extra_args)
         cmd.extend(["-m", target_model, prompt])
-        env = clean_parent_env()
-        if opencode_cfg.isolate:
-            if temp_dir is not None:
-                isolated_config = temp_dir / "opencode_config"
-                isolated_config.mkdir(parents=True, exist_ok=True)
-                env["OPENCODE_CONFIG_DIR"] = str(isolated_config.resolve())
-            env["OPENCODE_DISABLE_CLAUDE_CODE"] = "true"
-            env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] = "true"
-            env["OPENCODE_DISABLE_DEFAULT_PLUGINS"] = "true"
-            env["OPENCODE_DISABLE_AUTOUPDATE"] = "true"
+        env = opencode_env(opencode_cfg, temp_dir)
         if extra_env:
             env.update(extra_env)
 
@@ -2312,6 +2357,9 @@ class AgentRunner:
                 isolation=isolation,
                 container_image=container_image,
                 temp_dir=temp_dir,
+                read_paths=opencode_cfg.read_paths,
+                protected_paths=protected_paths,
+                state_paths=harness_state_paths_for("opencode"),
                 forward_env=list((extra_env or {}).keys()),
             )
         except Exception as exc:
@@ -2395,6 +2443,7 @@ class AgentRunner:
         temp_dir: Optional[Path] = None,
         skill_names: Optional[list[str]] = None,
         extra_env: Optional[dict[str, str]] = None,
+        protected_paths: Optional[list[str]] = None,
     ) -> RunResult:
         bin_path = antigravity_cfg.bin_path or self.antigravity_bin
         prompts = prompt if isinstance(prompt, list) else [prompt]
@@ -2433,6 +2482,12 @@ class AgentRunner:
                 container_image=container_image,
                 temp_dir=temp_dir,
                 conversation=conversation,
+                read_paths=antigravity_cfg.read_paths,
+                protected_paths=protected_paths,
+                # AGY authenticates from the user keychain and keeps state in
+                # ~/.gemini, so the macOS sandbox keeps those reachable; its
+                # skills, plugins, and instructions are denied through protected_paths.
+                state_paths=harness_state_paths_for("antigravity"),
                 forward_env=list((extra_env or {}).keys()),
             )
         except Exception as exc:

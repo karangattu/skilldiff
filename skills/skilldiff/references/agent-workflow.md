@@ -54,7 +54,12 @@ skilldiff run -c /abs/path/to/skill-eval/skilldiff.yaml --split dev --runs 1
 ```
 
 `check --no-probe` validates setup without paid authentication calls. Stop on
-failures and assess warnings before running. Follow [preflight safeguards](preflight.md)
+failures and assess warnings before running.
+
+When the user wants the same skill tested on several agents, keep one experiment
+and pass `--harness` with a matching `--model` to `check` and `run` for each CLI
+they are signed in to, then read `skilldiff summary -c <config>`. Each row keeps
+its own decision; do not pool rows or compare tool counts across harnesses. Follow [preflight safeguards](preflight.md)
 for host restrictions and background execution. Honor any existing authorization
 for larger runs; otherwise show the planned sessions and cost before asking.
 
@@ -66,7 +71,8 @@ Use the existing JSON commands for facts instead of scraping terminal tables:
 skilldiff lint /abs/path/to/skill --json
 skilldiff results -c /abs/path/to/skill-eval/skilldiff.yaml --json
 skilldiff diagnose -c /abs/path/to/skill-eval/skilldiff.yaml --json
-skilldiff export -c /abs/path/to/skill-eval/skilldiff.yaml --format scout
+skilldiff scan -c /abs/path/to/skill-eval/skilldiff.yaml      # needs the scout extra
+skilldiff export -c /abs/path/to/skill-eval/skilldiff.yaml --format scout-db
 ```
 
 Save the exact run directory returned by execution. Pass it to `results` and

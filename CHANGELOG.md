@@ -6,6 +6,29 @@ This project uses semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- `skilldiff summary` lines up any number of finished runs in one table (score, Δ with interval, adoption, cost, time, and each run's own decision) for the same skill on several harnesses or models, with caveats when task inputs, skill revisions, or cost bases differ.
+- `--harness` (with `--model`) on `skilldiff run` and `skilldiff check` runs one experiment file on another agent CLI.
+- `isolation: macos` on every harness: OpenCode and Antigravity accept `read_paths`, the sandbox keeps AGY's `~/.gemini` and keychain and OpenCode's config-discovery roots reachable, and host skills, plugins, and instructions for all four harnesses are denied.
+- `codex.isolate` (default `true`) runs local sessions with a private `CODEX_HOME` holding only `auth.json`.
+- A test that every shipped example config loads and passes `skilldiff check`.
+- `skilldiff scan` audits a run's transcripts with Inspect Scout: `skill_use` (confirmed skill loads and reads per run, with cited messages, mirroring the harness rule), `skill_mentions`, and with `--llm` the model-judged `skill_influence` and `skill_miss_reason` scanners. It reports agreement between Scout and the harness parser and writes `scout/scan-summary.json`.
+- An inspect_ai model provider, `skilldiff/<harness>/<model>`, that judges through the signed-in Claude Code, Codex, OpenCode, or Antigravity CLI with tools disabled, so Scout's LLM scanners need no API key. `scan --llm` defaults to the run's own CLI and model; the provider is registered through the `inspect_ai` entry point for `scout scan --model skilldiff/...`.
+- `skilldiff export --format scout-db` writes a real Inspect Scout transcripts database (`scout/db`) with inspect_ai messages, tool calls, tool errors, and run metadata, so `scout scan` and `scout view` work on skilldiff runs. `skilldiff.scanners` is a `scout scan` entry point.
+- Optional `scout` extra (`skilldiff[scout]`) that installs Inspect Scout.
+
+### Changed
+
+- `opencode.isolate` also gives sessions private data, cache, and state directories holding only the stored credentials, so host sessions, skills, and plugins under `~/.local/share/opencode` stay out of both arms.
+- `skilldiff check` fails, instead of warning, when a local OpenCode or Antigravity run would load a user-level copy of the target skill, since those harnesses report no skill availability before paid sessions.
+- The skill, reference, manual, and compatibility docs describe per-harness login, default model, isolation, and what `check` verifies.
+
+### Fixed
+
+- The shipped `py-shiny-troubleshooting` example pinned a bare `sonnet` alias and failed `check`; both examples now pin `claude-sonnet-5-5`.
+- Protected read paths cover `~/.gemini/skills`, which older Antigravity installs use.
+
 ## [0.29.0] - 2026-10-29
 
 ### Added
@@ -20,7 +43,7 @@ This project uses semantic versioning.
 ### Added
 
 - Python 3.12+ minimum runtime and support for Python 3.12, 3.13, 3.14, and 3.15.
-- `skilldiff resume --retry-failed` re-runs errored paired runs while keeping successful pairs intact.
+- `skilldiff run --resume --retry-failed` re-runs errored paired runs while keeping successful pairs intact.
 - Skill linter detects prompt solution leakage from skill body content.
 - `skilldiff diagnose` warns on control-arm ceiling effects and prompt leakage confounds.
 - Built-in rate tables for Codex, Antigravity, and OpenCode harnesses.

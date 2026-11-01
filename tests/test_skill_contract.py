@@ -98,5 +98,9 @@ def test_skill_documents_workflow_improvements():
         "files_changed_normalized",
         "examples/py-shiny-troubleshooting",
         "skilldiff-sandbox",
+        "skilldiff summary",
+        "--harness codex --model",
+        "skilldiff scan",
+        "scout view",
     ):
         assert token in ALL_DOCS, f"expected skill docs to cover {token!r}"

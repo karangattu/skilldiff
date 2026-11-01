@@ -1,4 +1,4 @@
-"""Native read boundaries for opt-in macOS Codex evaluations."""
+"""Native read boundaries for opt-in macOS evaluations on any harness."""
 
 import json
 import os
@@ -50,7 +50,16 @@ def macos_command(
     scratch: Path | None,
     read_paths: list[str],
     protected_paths: list[str],
+    state_paths: list[tuple[str, str]] | None = None,
 ) -> list[str]:
+    """Wrap ``cmd`` in a seatbelt profile.
+
+    ``state_paths`` are ``(path, mode)`` host locations the harness must keep
+    reaching: ``"rw"`` for login and session state (AGY's ``~/.gemini``), ``"ro"``
+    for a login store (the user keychain), ``"open"`` to open or list the directory
+    node itself while its entries stay denied (OpenCode's config discovery).
+    Entries of ``protected_paths`` inside them are still denied, since later rules win.
+    """
     if sys.platform != "darwin" or not shutil.which("sandbox-exec"):
         raise ValueError("isolation: macos requires macOS and sandbox-exec")
     if scratch is None:
@@ -94,6 +103,17 @@ def macos_command(
         rules.append(f"(deny file-read* file-write* (subpath {json.dumps(value)}))")
     for root in roots:
         rules.append(f"(allow file-read* file-write* (subpath {json.dumps(str(root))}))")
+    state_ops = {"rw": "file-read* file-write*", "ro": "file-read*", "open": "file-read*"}
+    for raw, mode in state_paths or []:
+        state = Path(raw).expanduser().resolve()
+        if mode not in state_ops:
+            raise ValueError(f"unknown state path mode {mode!r} for {state}")
+        if mode != "open" and (state == Path.home() or state in Path.home().parents):
+            raise ValueError(f"state path is too broad for isolation: {state}")
+        scope = "literal" if mode == "open" else "subpath"
+        rules.append(f"(allow {state_ops[mode]} ({scope} {json.dumps(str(state))}))")
+        for parent in state.parents:
+            rules.append(f"(allow file-read-metadata (literal {json.dumps(str(parent))}))")
     if roots[0].parent in roots[1].parents:
         # Pytest collects temporary tests from their common session directory.
         # Permit listing its names, never reading sibling file contents.
@@ -120,7 +140,8 @@ def macos_command(
             rules.append(f"(allow file-read-metadata (literal {json.dumps(str(parent))}))")
     # Runtime packages can bundle skills several levels below the declared root.
     for root in set([*requested, *(p.resolve() for p in requested)]):
-        pattern = "^" + re.escape(str(root)) + r"/(.*/)?\.(agents|codex|claude)(/|$)"
+        bundled_dirs = r"\.(agents|codex|claude|opencode|gemini)"
+        pattern = "^" + re.escape(str(root)) + r"/(.*/)?" + bundled_dirs + "(/|$)"
         # Package metadata tools stat RECORD entries, including bundled skills.
         # Keep their contents and directory listings denied while allowing stat.
         rules.append(f'(deny file-read-data (regex {json.dumps(pattern)}))')
@@ -129,7 +150,7 @@ def macos_command(
         root = Path(value).expanduser().resolve()
         if any(root == own or own in root.parents for own in roots):
             raise ValueError(f"Protected read path is inside the workspace: {root}")
-        bundled = root.name in {".agents", ".codex", ".claude"} and any(
+        bundled = root.name in {".agents", ".codex", ".claude", ".opencode", ".gemini"} and any(
             root.parent == allowed.resolve() for allowed in requested)
         operation = "file-read-data" if bundled else "file-read*"
         rules.append(f"(deny {operation} (subpath {json.dumps(str(root))}))")

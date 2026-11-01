@@ -233,14 +233,17 @@ For local runs, SkillDiff also checks these user-level paths for possible harnes
 | `claude` | `~/.claude/skills`, `~/.claude/plugins`, `~/.claude/CLAUDE.md`, `~/.claude/memory`, `~/.claude/settings.json` |
 | `codex` | `~/.codex/skills`, `~/.agents/skills`, `~/.codex/AGENTS.md`, `~/.codex/memory` |
 | `opencode` | `~/.config/opencode/skills`, `~/.config/opencode/plugins`, `~/.claude/skills`, `~/.agents/skills`, `~/.config/opencode/AGENTS.md`, `~/.config/opencode/memory` |
-| `antigravity` | `~/.gemini/antigravity-cli/skills`, `~/.gemini/antigravity-cli/plugins/*/skills`, `~/.gemini/GEMINI.md`, `~/.gemini/memory` |
+| `antigravity` | `~/.gemini/antigravity-cli/skills`, `~/.gemini/antigravity-cli/plugins/*/skills`, `~/.gemini/skills`, `~/.gemini/GEMINI.md`, `~/.gemini/memory` |
 
 AGY means Antigravity CLI. Its workspace directory is `.agents/skills`, its global
 skills live in `~/.gemini/antigravity-cli/skills`, and plugins can supply additional
 skills. Install with `-a antigravity-cli --copy`; the desktop agent is a different
-installer target. AGY has no SkillDiff `isolate` setting. Filesystem scans are
-advisory. Confirmed target discovery or loading in a no-skill control is a harness
-error and invalidates that baseline.
+installer target. AGY has no SkillDiff `isolate` setting because its login lives
+in the user keychain; use `isolation: macos`. Filesystem scans are advisory for
+Claude and Codex, which verify availability at runtime. For OpenCode and AGY,
+which report no availability, `check` fails a local run that finds a user-level
+copy of the target skill. Confirmed target discovery or loading in a no-skill
+control is a harness error and invalidates that baseline.
 
 `check` and `run` also warn about the live skill sources and matching copies in the
 experiment's `runs/` directory, including frozen `inputs/` snapshots. Runs record
@@ -507,15 +510,17 @@ Keep the entire run directory, including `inputs/`, for recovery. A small siblin
 | `skilldiff init [--skill PATH] [--harness H] [--dir D]` | Make a demo or a template for your skill; `--template claude-eval` adds profile, pinned model, cost basis, and split layout |
 | `skilldiff init --skill-a A --skill-b B [--include-baseline] [--preset revision\|compression] [--dir D]` | Make a skill A/B test with paired results |
 | `skilldiff init --pr N --repo PATH [--base REF] [--pr-mode M] [--pr-pair P]` | Make a PR test from local refs |
-| `skilldiff check [-c CONFIG] [--no-probe] [--no-grade] [--scan-home] [--ci]` | Check config, CLI, skill exposure, model and sandbox preflight, and graders; `--no-probe` skips paid Claude probes; `--ci` fails on warnings |
-| `skilldiff run [-c CONFIG] [--runs N] [--split dev\|held-out] [-j N] [-m MODEL] [-t TASK] [--resume \| --resume-from DIR] [--seed N] [--no-probe]` | Run the test (resume reuses pairs only when hashes match; `--no-probe` skips Claude model/canary preflight) |
+| `skilldiff check [-c CONFIG] [--harness H -m MODEL] [--no-probe] [--no-grade] [--fail-on-ceiling] [--scan-home] [--ci]` | Check config, CLI, skill exposure, model and sandbox preflight, and graders; `--harness` checks the config on another agent CLI (with `--model`); `--no-probe` skips the paid login/model probes; `--ci` fails on warnings |
+| `skilldiff run [-c CONFIG] [--harness H] [--runs N] [--split dev\|held-out] [-j N] [-m MODEL] [-t TASK] [--resume \| --resume-from DIR] [--retry-failed] [--seed N] [--no-probe] [--max-turns N] [--max-tool-budget N] [--terminate-on-ceiling] [--json] [--ci]` | Run the test; `--harness` runs the config on another agent CLI and needs `--model`; resume reuses pairs only when hashes match; `--no-probe` skips the login, model, and canary preflight |
 | `skilldiff results [RUN_DIR] [--json \| --markdown]` | Show the latest run |
 | `skilldiff report [RUN_DIR]` | Rebuild reports for a run |
 | `skilldiff regrade [RUN_DIR] [-c CONFIG] [-t TASK] [--dry-run]` | Re-run the current graders on a finished run without any agent session |
 | `skilldiff compare RUN_A RUN_B [--json] [--strict\|--ci]` | Compare two runs; `--ci` refuses incompatible comparisons |
+| `skilldiff summary [RUN ...] [-c CONFIG] [--json]` | One table across finished runs (the same skill on several harnesses or models): score, Δ with interval, adoption, cost, time, and each run's own decision, with caveats when inputs differ |
 | `skilldiff lint [SKILL_DIR] [--prompts PATH] [--json]` | Lint SKILL.md frontmatter, trigger keywords, and length; optionally compare the description with task prompts |
 | `skilldiff diagnose [RUN_DIR] [--json]` | Diagnose failure modes, regressions, and adoption gaps |
-| `skilldiff export [RUN_DIR] [--format scout\|json\|jsonl] [-o DIR]` | Export runs and transcripts to Inspect Scout or JSON/JSONL |
+| `skilldiff export [RUN_DIR] [--format scout-db\|scout\|json\|jsonl] [-o DIR]` | Export runs and transcripts; `scout-db` writes the Inspect Scout transcripts database that `scout scan`/`scout view` read (needs the `scout` extra) |
+| `skilldiff scan [RUN_DIR] [-c CONFIG] [--llm] [--model M] [--json]` | Audit a run with Inspect Scout scanners: confirmed skill loads per run with cited messages, agreement with the harness parser, and with `--llm` the model-judged skill influence and miss reason, judged through the run's signed-in CLI (`skilldiff/<harness>/<model>`; `--model` picks another CLI or an API-key provider). Writes `scout/db`, `scout/scans`, and `scout/scan-summary.json` under the run (needs the `scout` extra) |
 
 `regrade` is for grader fixes after the fact. It rebuilds each arm's final files from the run's frozen fixture plus the saved `diff.patch`, grades them with the current graders, and rewrites scores, aggregates, and reports. Each regraded record keeps its earlier grade under `regrade_history`, `results.json` gains a `regrades` entry, and the report shows a warning that the run was regraded, so the change stays auditable. Use `--dry-run` to see which scores would change first. A pair whose diff cannot be rebuilt (binary or excluded files) keeps its original grade and is reported as skipped. PR experiments are not supported.
 
@@ -523,11 +528,11 @@ Keep the entire run directory, including `inputs/`, for recovery. A small siblin
 
 Claude Code. The default uses your subscription and `claude-sonnet-5-5`. SkillDiff removes `ANTHROPIC_API_KEY` from each run. To bill through the API, set `auth: api_key` and export the key. `sandbox: true` (default) runs Bash inside Claude Code's own sandbox, so commands need no approval but write only to the workspace and cannot read grader or skill sources. Set `allowed_domains` for hosts commands may reach. For app evaluations that need background launch and localhost, set `profile: eval`; it is opt-in, keeps the sandbox, and never allows unsandboxed commands. With `sandbox: false`, use `permission_mode` plus `allowed_tools`. `isolate: true` selects project/local settings. It does not guarantee that global skills, plugins, or instructions are absent; runtime skill discovery is checked separately. SkillDiff preserves subscription credentials and does not use `--bare`.
 
-Codex. The default uses stored login and removes `OPENAI_API_KEY`. Sandboxing is `sandbox: workspace-write` (or `dangerously_bypass_approvals_and_sandbox`). Network is off unless `network_access: true`. Single-turn sessions require `--ephemeral`; multi-turn threads require the app-server ephemeral interface. Required capabilities are checked before model execution.
+Codex. The default uses stored login and removes `OPENAI_API_KEY`. `isolate: true` (default) runs with a private `CODEX_HOME` holding only the login's `auth.json`, so host `config.toml`, rules, memories, and `~/.codex/skills` stay out of both arms; `~/.agents/skills` is still readable without an OS boundary. Sandboxing is `sandbox: workspace-write` (or `dangerously_bypass_approvals_and_sandbox`). Network is off unless `network_access: true`. Single-turn sessions require `--ephemeral`; multi-turn threads require the app-server ephemeral interface. Required capabilities are checked before model execution.
 
-OpenCode. The default `service: go` uses your Go subscription. Sign in with `opencode auth login`. `dangerously_skip_permissions: true` requires `--auto` on OpenCode V2, so tools never wait for approval. OpenCode has no OS sandbox.
+OpenCode. The default `service: go` uses your Go subscription. Sign in with `opencode auth login`. `dangerously_skip_permissions: true` requires `--auto` on OpenCode V2, so tools never wait for approval. `isolate: true` (default) runs a private server with private config, data, cache, and state directories that hold only the stored credentials, and disables Claude Code skill discovery and default plugins; `~/.agents/skills` is still readable without an OS boundary. OpenCode has no OS sandbox of its own; use `isolation: macos` or a container.
 
-Antigravity. Short names expand to full models. `gemini-3.8` becomes `gemini-3.8-flash-medium`. Permissions are `dangerously_skip_permissions`.
+Antigravity. Short names expand to full models. `gemini-3.8` becomes `gemini-3.8-flash-medium`. Permissions are `dangerously_skip_permissions`. AGY signs in through the user keychain, so there is no private-home `isolate`; local runs can read `~/.gemini/antigravity-cli/skills`, `~/.gemini/skills`, plugins, and `GEMINI.md`. `isolation: macos` keeps `~/.gemini` and the keychain reachable and denies those paths.
 
 Every harness records the tool calls it refused as `permission_denials` on each run: Claude's `permission_denials` result field, Codex sandbox violations and exec-policy rejections from its stderr log, plus filesystem errors inside failed command results (labeled `shell (sandbox: filesystem)`, `shell (exec policy)`, or `shell (filesystem: Operation not permitted)`), OpenCode's auto-rejected permission requests, and Antigravity's soft-denied tools (`denied_actions`). The main report has a **Harness diagnostics** section with denial reasons, configured-versus-served models, unrecognized model IDs, and rate-limit retries; `diagnose` uses the same summary. A denied tool or model mismatch cannot pass as a low score; fix it and rerun before attributing the result to the skill.
 
@@ -585,7 +590,7 @@ evaluation.
 
 To install dependencies or packages into the container environment without modifying the base image or polluting workspaces, specify `container_install` (a package spec, local directory, or list of specs/paths). In PR evaluations (`preset: pr` or `pr:` block), set `pr.install: true` (or an install spec like `".[dev]"`) to build derived images per arm: the control arm container receives the base revision installed, and the treatment arm receives the PR revision installed. Immutable image digests are recorded for reproducible runs and resume.
 
-For Codex skill experiments, `check` queries `app-server skills/list` in fresh workspaces to verify skill discovery prior to paid sessions. Codex and Claude also support opt-in macOS native isolation (`isolation: macos`) via `sandbox-exec` with private session directories; Claude takes its runtime root from `claude.read_paths`, as Codex does from `codex.read_paths`. Tasks can declare a `runtime_probe` command. See [preflight reference](../skills/skilldiff/references/preflight.md) for details.
+For Codex skill experiments, `check` queries `app-server skills/list` in fresh workspaces to verify skill discovery prior to paid sessions. Every harness supports opt-in macOS native isolation (`isolation: macos`) via `sandbox-exec` with private session directories; each takes its runtime roots from its own `read_paths` (`claude.read_paths`, `codex.read_paths`, `opencode.read_paths`, `antigravity.read_paths`). Tasks can declare a `runtime_probe` command. See [preflight reference](../skills/skilldiff/references/preflight.md) for details.
 
 Temporary workspace Git repositories disable automatic maintenance. This keeps
 templates stable while repetitions copy their Git object files.

@@ -41,19 +41,26 @@ counted as a miss or as a hit. OpenCode
 adoption requires a successful target skill load or successful skill-file read,
 rather than an arbitrary matching tool input.
 
-AGY's global skills live in `~/.gemini/antigravity-cli/skills`; plugins can provide
-skills under `~/.gemini/antigravity-cli/plugins/*/skills`. Install the SkillDiff
-skill with `npx skills add karangattu/skilldiff -g -y --copy -a antigravity-cli`.
-The desktop Antigravity installer target is separate. AGY has no SkillDiff
-`isolate` option.
+AGY's global skills live in `~/.gemini/antigravity-cli/skills` (older installs
+also use `~/.gemini/skills`); plugins can provide skills under
+`~/.gemini/antigravity-cli/plugins/*/skills`. Install the SkillDiff skill with
+`npx skills add karangattu/skilldiff -g -y --copy -a antigravity-cli`. The desktop
+Antigravity installer target is separate. AGY 1.4 resolves its login from the user
+keychain: a copied `~/.gemini` under another `HOME` is not signed in, so there is
+no private-home `isolate` option and container auth staging for AGY remains
+unverified. `isolation: macos` keeps `~/.gemini` writable and `~/Library/Keychains`
+readable while denying AGY's skills, plugins, and instructions.
 
 Subscription authentication is preserved. Claude's project/local settings
 selection is not a blanket exclusion of global skills, plugins, or instructions.
 `--bare` disables subscription credential discovery and skill context and is not
-used by default. OpenCode V2 uses `opencode auth login` and ordered `permissions`
-rules with actions such as `shell` and `skill`. Its standalone server still reads
-the user's applicable configuration. Use an enforced sandbox/container when
-filesystem confidentiality is required.
+used by default. Codex `isolate: true` (default) uses a private `CODEX_HOME` with
+only `auth.json`. OpenCode V2 uses `opencode auth login` and ordered `permissions`
+rules with actions such as `shell` and `skill`. With `isolate: true` (default) its
+standalone server uses private config, data, cache, and state directories holding
+only the stored credentials. `~/.agents/skills` stays readable to Codex and
+OpenCode without an OS boundary. Use `isolation: macos` or an enforced container
+when filesystem confidentiality is required.
 
 ## Verification
 
@@ -74,8 +81,12 @@ a code from the first turn:
 | AGY | 1.3.1 | Both conversations completed and recalled the code; treatment read the skill. One result's cached input exceeded its input counter, so uncached input is `N/A`; its reported total is retained. |
 | OpenCode | v2.0.23 | Both turns completed via session export fallback; treatment loaded the skill. |
 
-Paid container sessions have not been verified. A passing dev smoke is a transport
-check, not evidence for a skill shipping verdict. Keep held-out evaluation policy
+On 2026-10-31, credential-free checks under `isolation: macos` listed models with
+AGY 1.4.11 (`agy models`) and OpenCode v2.0.32 (`opencode models --standalone`)
+inside the boundary, with host skill directories denied; paid sessions under the
+boundary on those two harnesses have not been run. Paid container sessions have
+not been verified. A passing dev smoke is a transport check, not evidence for a
+skill shipping verdict. Keep held-out evaluation policy
 and historical saved results unchanged. Recheck authenticated pairs after CLI
 upgrades, especially OpenCode releases that fix final-event delivery.
 

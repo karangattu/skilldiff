@@ -33,12 +33,22 @@ Issues = "https://github.com/karangattu/skilldiff/issues"
 [project.scripts]
 skilldiff = "skilldiff.cli:main"
 
+# Lets `scout scan --model skilldiff/<harness>/<model>` find the CLI-backed judge.
+[project.entry-points.inspect_ai]
+skilldiff = "skilldiff.inspect_provider"
+
 [project.optional-dependencies]
+# Inspect Scout transcript database export, scanners, and `skilldiff scan`.
+# Its dependency tree has no Python 3.15 wheels yet; the Scout tests skip there.
+scout = [
+    "inspect-scout>=0.6; python_version < '3.15'",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",
     "mypy>=1.11",
     "types-PyYAML>=6.0",
+    "inspect-scout>=0.6; python_version < '3.15'",
 ]
 
 [tool.ruff]
@@ -77,3 +87,8 @@ exclude = [
     ".pytest_cache/",
     ".ruff_cache/",
 ]
+
+# Optional Inspect Scout stack: absent on Python 3.15 and untyped pandas.
+[[tool.mypy.overrides]]
+module = ["inspect_scout", "inspect_scout.*", "inspect_ai", "inspect_ai.*", "pandas", "pandas.*"]
+ignore_missing_imports = true

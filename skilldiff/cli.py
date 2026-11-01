@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import json
 import os
 import shlex
@@ -85,15 +86,19 @@ claude:
 """,
     "codex": """codex:
   auth: stored
+  isolate: true             # private CODEX_HOME with only auth.json; ~/.agents/skills can leak
   sandbox: workspace-write  # no prompts; writes stay in the workspace
   network_access: false     # true lets commands install packages or fetch docs
 """,
     "opencode": """opencode:
   service: go
-  dangerously_skip_permissions: true  # passes --auto; use isolation: docker for untrusted skills
+  isolate: true             # private config/data/cache; ~/.agents/skills can still leak
+  dangerously_skip_permissions: true  # passes --auto; isolation: macos or docker confines commands
 """,
     "antigravity": """antigravity:
-  dangerously_skip_permissions: true  # print mode otherwise soft-denies; use isolation: docker
+  dangerously_skip_permissions: true  # print mode otherwise soft-denies
+  # AGY signs in via the keychain, so there is no isolate; use isolation: macos
+  # to keep ~/.gemini skills, plugins, and GEMINI.md out of both arms.
 """,
 }
 
@@ -799,19 +804,41 @@ def permission_summary(cfg: ExperimentConfig) -> list[tuple[str, str]]:
                 "off (set codex.network_access: true to allow installs)")
             lines.append(("ok", f"codex permissions: {cfg.codex.sandbox} sandbox, no prompts; "
                                 f"network {network}"))
-    elif harness == "opencode" and not external:
-        lines.append(("warn", "opencode permissions: "
-                      + ("tools auto-approved; OpenCode has no OS sandbox, so use "
-                         "isolation: docker to confine commands"
-                         if cfg.opencode.dangerously_skip_permissions
-                         else "prompts are auto-rejected in headless runs")))
-    elif harness == "antigravity":
-        lines.append(("warn", "antigravity permissions: "
-                      + ("tools auto-approved; commands are not confined unless you use "
-                         "isolation: docker"
-                         if cfg.antigravity.dangerously_skip_permissions
-                         else "tools that need approval are soft-denied in print mode")))
+    elif harness in {"opencode", "antigravity"}:
+        auto = (cfg.opencode.dangerously_skip_permissions if harness == "opencode"
+                else cfg.antigravity.dangerously_skip_permissions)
+        if external and auto:
+            boundary = "macOS" if isolation == "macos" else isolation
+            lines.append(("ok", f"{harness} permissions: tools auto-approved; commands "
+                                f"confined by the {boundary} isolation boundary"))
+        elif harness == "opencode":
+            lines.append(("warn", "opencode permissions: "
+                          + ("tools auto-approved; OpenCode has no OS sandbox, so use "
+                             "isolation: macos or docker to confine commands"
+                             if auto else "prompts are auto-rejected in headless runs")))
+        else:
+            lines.append(("warn", "antigravity permissions: "
+                          + ("tools auto-approved; commands are not confined unless you use "
+                             "isolation: macos or docker" if auto
+                             else "tools that need approval are soft-denied in print mode")))
     return lines
+
+
+def _blocking_user_level_installs(cfg: ExperimentConfig, installs: list[str]) -> list[str]:
+    """User-level target skills no preflight can rule out before paid sessions.
+
+    Claude reports available skills at initialization and Codex has a native
+    discovery probe, so their copies stay advisory. OpenCode and AGY report no
+    availability, so a copy they can read means a contaminated control. OpenCode
+    with ``isolate`` uses private config and data directories and disables Claude
+    Code skills, leaving only ``~/.agents/skills`` readable.
+    """
+    if cfg.isolation != "local" or cfg.harness not in {"opencode", "antigravity"}:
+        return []
+    if cfg.harness == "opencode" and cfg.opencode.isolate:
+        agents = str(Path.home() / ".agents" / "skills")
+        return [p for p in installs if p.startswith(agents + os.sep)]
+    return list(installs)
 
 
 def cmd_check(args: argparse.Namespace) -> int:
@@ -837,7 +864,11 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     print(f"Checking {config_path}")
     try:
-        cfg, tasks = load_experiment(config_path)
+        cfg, tasks = load_experiment(
+            config_path,
+            harness_override=getattr(args, "harness", None),
+            models_override=getattr(args, "model", None),
+        )
     except Exception as exc:
         fail(f"configuration: {exc}")
         return 1
@@ -1213,7 +1244,13 @@ def cmd_check(args: argparse.Namespace) -> int:
                 ok(f"antigravity auth probe: {model} authenticated")
 
     installs = [] if image_id else find_user_level_installs(cfg.skill_names, cfg.harness)
-    if installs:
+    blocking = _blocking_user_level_installs(cfg, installs)
+    if blocking:
+        fail(f"user-level copies of the target skill would load in the no-skill control, and "
+             f"{cfg.harness} has no discovery probe to catch that before paid sessions: "
+             + ", ".join(blocking)
+             + ". Move them aside, or use isolation: macos/docker/podman to block host reads")
+    elif installs:
         warn("Advisory filesystem scan found user-level target skills; runtime discovery "
              "determines control contamination: " + ", ".join(installs))
 
@@ -1561,7 +1598,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        exp_config, tasks = load_experiment(config_path)
+        exp_config, tasks = load_experiment(
+            config_path,
+            harness_override=getattr(args, "harness", None),
+            models_override=getattr(args, "model", None),
+        )
     except Exception as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
@@ -1941,6 +1982,39 @@ def cmd_regrade(args: argparse.Namespace) -> int:
     return 0
 
 
+def _all_run_dirs(runs_parent: Path) -> list[Path]:
+    if not runs_parent.exists():
+        return []
+    return sorted(p for p in runs_parent.iterdir()
+                  if p.is_dir() and (p / "results.json").exists())
+
+
+def cmd_summary(args: argparse.Namespace) -> int:
+    from skilldiff.summary import format_summary, summarize_runs
+
+    paths = [Path(p) for p in (getattr(args, "runs", None) or [])]
+    if not paths:
+        config = getattr(args, "config", None)
+        candidates = ([Path(config).parent / "runs"] if config else []) + [Path("runs")]
+        for parent in candidates:
+            paths = _all_run_dirs(parent)
+            if paths:
+                break
+    if not paths:
+        print("No finished runs found. Pass run directories or --config.", file=sys.stderr)
+        return 1
+    try:
+        summary = summarize_runs(paths)
+    except (OSError, ValueError) as exc:
+        print(f"Summary error: {exc}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(summary, indent=2))
+    else:
+        print(format_summary(summary))
+    return 0
+
+
 def cmd_compare(args: argparse.Namespace) -> int:
     from skilldiff.compare import compare_results, format_comparison, load_results
 
@@ -2134,6 +2208,74 @@ def cmd_export(args: argparse.Namespace) -> int:
     count = summary.get("count", 0)
     target = summary.get("output_dir", "")
     print(f"Exported {count} transcript(s) for Inspect Scout ({fmt}) to {target}")
+    return 0
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    """Export a run to an Inspect Scout database and run skilldiff's scanners over it."""
+    run_dir = _resolve_run_dir(args)
+    if not run_dir or not (run_dir / "results.json").exists():
+        print("No experiment run with results.json found.", file=sys.stderr)
+        return 1
+    try:
+        from inspect_scout import scan, transcripts_from
+
+        from skilldiff.scanners import build_scanners, format_scan_summary, scan_summary
+        from skilldiff.scout import export_run_to_scout_db
+    except ImportError:
+        print(
+            "skilldiff scan needs Inspect Scout: install skilldiff with the 'scout' extra "
+            "(uv tool install 'skilldiff[scout] @ git+https://github.com/karangattu/skilldiff')",
+            file=sys.stderr,
+        )
+        return 1
+    model = getattr(args, "model", None)
+    llm = bool(getattr(args, "llm", False) or model)
+    try:
+        results = read_json(run_dir / "results.json")
+        if llm and not model:
+            # Judge through the run's own signed-in CLI and model: no API key needed.
+            from skilldiff.inspect_provider import model_id
+
+            model = model_id(str(results.get("harness") or "claude"),
+                             str((results.get("models") or ["claude-sonnet-5-5"])[0]))
+        cli_judge = bool(model and model.startswith("skilldiff/"))
+        if cli_judge:
+            import skilldiff.inspect_provider  # noqa: F401  (registers the provider)
+        export = export_run_to_scout_db(run_dir)
+        scanners = build_scanners(list(results.get("skill_names") or []), llm=llm, model=model)
+        scans_dir = run_dir.resolve() / "scout" / "scans"
+        if llm:
+            print(f"Model-judged scanners use {model}", file=sys.stderr)
+        # Scout prints its completion panel to stdout whatever the display mode;
+        # keep stdout for the table or JSON.
+        with contextlib.redirect_stdout(sys.stderr):
+            status = scan(
+                scanners=scanners,
+                transcripts=transcripts_from(export["output_dir"]),
+                scans=str(scans_dir),
+                model=model,
+                # CLI judges are whole agent sessions: keep them to one process so the
+                # provider's connection limit bounds how many run at once.
+                max_processes=1 if cli_judge else None,
+                display="none",
+            )
+        summary = scan_summary(status.location, results)
+    except Exception as exc:
+        print(f"Scan failed: {exc}", file=sys.stderr)
+        return 1
+    summary["transcripts_db"] = export["output_dir"]
+    summary["complete"] = bool(status.complete)
+    summary["errors"] = [str(e) for e in (status.errors or [])]
+    atomic_json(run_dir / "scout" / "scan-summary.json", summary)
+    if getattr(args, "json", False):
+        print(json.dumps(summary, indent=2, default=str))
+    else:
+        print(format_scan_summary(summary))
+        print(f"Saved: {run_dir / 'scout' / 'scan-summary.json'}")
+    if summary["errors"] or not summary["complete"]:
+        print("Scan finished with errors: " + "; ".join(summary["errors"][:3]), file=sys.stderr)
+        return 1
     return 0
 
 
@@ -2448,6 +2590,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check_parser.add_argument("--config", "-c", default="skilldiff.yaml")
     check_parser.add_argument(
+        "--harness", choices=sorted(HARNESS_BLOCKS),
+        help="Check the experiment on this agent CLI instead of the config's harness "
+             "(pass --model too)",
+    )
+    check_parser.add_argument(
+        "--model", "-m", action="append",
+        help="Check with this model instead of the config's models (repeatable)",
+    )
+    check_parser.add_argument(
         "--no-probe",
         action="store_true",
         help="Skip the one-turn authenticated call that verifies the harness login",
@@ -2487,6 +2638,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--model", "-m", action="append", help="Only run this model (repeatable)"
+    )
+    run_parser.add_argument(
+        "--harness", choices=sorted(HARNESS_BLOCKS),
+        help="Run the experiment on this agent CLI instead of the config's harness; "
+             "requires --model with a model that CLI can serve",
     )
     run_parser.add_argument(
         "--task", "-t", action="append", help="Only run this task id (repeatable)"
@@ -2587,6 +2743,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compare_parser.set_defaults(func=cmd_compare)
 
+    summary_parser = subparsers.add_parser(
+        "summary",
+        help="One table across finished runs: the same skill on several harnesses or models",
+    )
+    summary_parser.add_argument(
+        "runs", nargs="*", help="Run dirs or results.json files (default: every run under runs/)"
+    )
+    summary_parser.add_argument("--config", "-c", help="Look for runs next to this config")
+    summary_parser.add_argument("--json", action="store_true", help="Output the summary as JSON")
+    summary_parser.set_defaults(func=cmd_summary)
+
     lint_parser = subparsers.add_parser(
         "lint", help="Static linter for SKILL.md: frontmatter, triggers, links, and length"
     )
@@ -2619,14 +2786,38 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--config", "-c", help="Look for runs next to this config")
     export_parser.add_argument(
         "--format",
-        choices=["scout", "json", "jsonl"],
+        choices=["scout", "scout-db", "json", "jsonl"],
         default="scout",
-        help="Export format (scout: individual JSONs + JSONL; json: single JSON; jsonl: JSONL)",
+        help="Export format (scout-db: Inspect Scout transcripts database that scout scan/view "
+             "read, needs the scout extra; scout: individual JSONs + JSONL; json: single JSON; "
+             "jsonl: JSONL)",
     )
     export_parser.add_argument(
         "--output-dir", "-o", help="Target output directory for exported files"
     )
     export_parser.set_defaults(func=cmd_export)
+
+    scan_parser = subparsers.add_parser(
+        "scan",
+        help="Audit a run's transcripts with Inspect Scout scanners: skill use per run, "
+             "agreement with the harness parser, and optional model-judged skill influence",
+    )
+    scan_parser.add_argument("run_dir", nargs="?", help="Path to run directory or results.json")
+    scan_parser.add_argument("--config", "-c", help="Look for runs next to this config")
+    scan_parser.add_argument(
+        "--model", "-m",
+        help="Judge model for the LLM scanners. Default with --llm: the run's own signed-in "
+             "CLI and model (skilldiff/<harness>/<model>). Any skilldiff/<harness>/<model> "
+             "id judges through that CLI's subscription; an inspect_ai id such as "
+             "anthropic/claude-sonnet-5-5 needs that provider's API key. Enables --llm",
+    )
+    scan_parser.add_argument(
+        "--llm", action="store_true",
+        help="Also run the model-judged skill_influence and skill_miss_reason scanners "
+             "through the run's signed-in CLI (or --model)",
+    )
+    scan_parser.add_argument("--json", action="store_true", help="Output the summary as JSON")
+    scan_parser.set_defaults(func=cmd_scan)
 
     return parser
 

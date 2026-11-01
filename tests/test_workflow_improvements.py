@@ -280,16 +280,29 @@ def test_py_shiny_troubleshooting_pack_validates(
     pack_root = tmp_path / "py-shiny-troubleshooting"
     shutil.copytree(source, pack_root)
     pack_cfg = pack_root / "skilldiff.yaml"
-    # The shipped example keeps its historical alias; pin a full ID in the copy
-    # so this test exercises the current hard-fail policy without editing examples.
-    pack_cfg.write_text(
-        pack_cfg.read_text(encoding="utf-8").replace(
-            "models:\n  - sonnet\n", "models:\n  - claude-sonnet-5-5\n"
-        ),
-        encoding="utf-8",
-    )
     exp_cfg, tasks = load_experiment(pack_cfg)
     assert len(tasks) == 6
     parser = build_parser()
     args = parser.parse_args(["check", "-c", str(pack_cfg), "--no-probe", "--fail-on-ceiling"])
+    assert cmd_check(args) == 0
+
+
+@pytest.mark.parametrize("example", ["csv-totals", "py-shiny-troubleshooting"])
+def test_shipped_example_configs_load_and_check(
+    example: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capable_cli, conversation_cli
+) -> None:
+    """Every shipped example must pass `skilldiff check` as-is: users copy them verbatim."""
+    import shutil
+
+    monkeypatch.setenv("SKILLDIFF_MOCK_RUNNER", "1")
+    monkeypatch.setenv("CLAUDE_BIN", conversation_cli)
+    source = Path(__file__).resolve().parents[1] / "examples" / example
+    root = tmp_path / example
+    shutil.copytree(source, root, ignore=shutil.ignore_patterns("runs", "sample"))
+    cfg, tasks = load_experiment(root / "skilldiff.yaml")
+    assert tasks
+    assert not cfg.pricing_unpriced, cfg.pricing_unpriced
+    args = build_parser().parse_args(
+        ["check", "-c", str(root / "skilldiff.yaml"), "--no-probe", "--no-grade"]
+    )
     assert cmd_check(args) == 0

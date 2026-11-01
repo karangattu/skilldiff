@@ -347,14 +347,8 @@ def build_scout_transcript(
     }
 
 
-def export_run_to_scout(
-    run_dir: Path,
-    output_dir: Path | None = None,
-    format: str = "scout",
-) -> dict[str, Any]:
-    if format not in {"scout", "json", "jsonl"}:
-        raise ValueError(f"Unsupported format '{format}'; choose 'scout', 'json', or 'jsonl'")
-
+def collect_run_transcripts(run_dir: Path) -> tuple[dict[str, Any], Path, list[dict[str, Any]]]:
+    """Load results.json and one skilldiff transcript object per saved agent run."""
     resolved = run_dir.resolve()
     if resolved.is_file():
         results_file = resolved
@@ -377,14 +371,7 @@ def export_run_to_scout(
             if isinstance(run_list, list):
                 all_runs.extend(run_list)
 
-    if output_dir is None:
-        target_dir = root_dir / "scout" if format == "scout" else root_dir
-    else:
-        target_dir = output_dir.resolve()
-    target_dir.mkdir(parents=True, exist_ok=True)
-
     transcripts: list[dict[str, Any]] = []
-    exported_ids: list[str] = []
 
     for rec in all_runs:
         if not isinstance(rec, dict):
@@ -400,7 +387,6 @@ def export_run_to_scout(
                 try:
                     scout_obj = json.loads(j_file.read_text(encoding="utf-8"))
                     transcripts.append(scout_obj)
-                    exported_ids.append(scout_obj["id"])
                     continue
                 except (json.JSONDecodeError, OSError):
                     pass
@@ -419,7 +405,29 @@ def export_run_to_scout(
 
         scout_obj = build_scout_transcript(rec, transcript_text, diff_text)
         transcripts.append(scout_obj)
-        exported_ids.append(scout_obj["id"])
+
+    return data, root_dir, transcripts
+
+
+def export_run_to_scout(
+    run_dir: Path,
+    output_dir: Path | None = None,
+    format: str = "scout",
+) -> dict[str, Any]:
+    if format == "scout-db":
+        return export_run_to_scout_db(run_dir, output_dir)
+    if format not in {"scout", "json", "jsonl"}:
+        raise ValueError(
+            f"Unsupported format '{format}'; choose 'scout', 'scout-db', 'json', or 'jsonl'"
+        )
+    data, root_dir, transcripts = collect_run_transcripts(run_dir)
+    exported_ids = [str(t["id"]) for t in transcripts]
+
+    if output_dir is None:
+        target_dir = root_dir / "scout" if format == "scout" else root_dir
+    else:
+        target_dir = output_dir.resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
 
     if format == "scout":
         for t in transcripts:
@@ -455,4 +463,193 @@ def export_run_to_scout(
         "format": format,
         "count": len(transcripts),
         "transcripts": exported_ids,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Inspect Scout transcript database (requires the optional `scout` extra)
+# ---------------------------------------------------------------------------
+
+SKILL_BODY_LIMIT = 12000
+_TRANSCRIPT_FIELDS = frozenset({
+    "transcript_id", "source_type", "source_id", "source_uri", "date", "task_set", "task_id",
+    "task_repeat", "agent", "agent_args", "model", "model_options", "score",
+    "score_explanation", "success", "message_count", "total_time", "total_tokens", "error",
+    "limit", "trust_content", "metadata", "messages", "events", "timelines",
+})
+
+
+def _require_scout() -> None:
+    try:
+        import inspect_scout  # noqa: F401
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise RuntimeError(
+            "Inspect Scout is not installed; install skilldiff with the 'scout' extra "
+            "(for example `uv tool install 'skilldiff[scout] @ git+https://github.com/"
+            "karangattu/skilldiff'`)"
+        ) from exc
+
+
+def to_inspect_messages(messages: list[dict[str, Any]]) -> list[Any]:
+    """Convert skilldiff transcript messages into inspect_ai chat messages.
+
+    Tool calls keep their ids so a tool message can be matched to the call it
+    answers; an error on a tool message becomes a ToolCallError.
+    """
+    from inspect_ai.model import (
+        ChatMessageAssistant,
+        ChatMessageSystem,
+        ChatMessageTool,
+        ChatMessageUser,
+    )
+    from inspect_ai.tool import ToolCall, ToolCallError
+
+    out: list[Any] = []
+    for msg in messages:
+        role = msg.get("role")
+        content = str(msg.get("content") or "")
+        if role == "user":
+            out.append(ChatMessageUser(content=content))
+        elif role == "system":
+            out.append(ChatMessageSystem(content=content))
+        elif role == "assistant":
+            calls = []
+            for tc in msg.get("tool_calls") or []:
+                arguments = tc.get("arguments")
+                if not isinstance(arguments, dict):
+                    arguments = {"input": arguments}
+                calls.append(
+                    ToolCall(
+                        id=str(tc.get("id") or ""),
+                        function=str(tc.get("function") or "tool"),
+                        arguments=arguments,
+                    )
+                )
+            out.append(ChatMessageAssistant(content=content, tool_calls=calls or None))
+        elif role == "tool":
+            error = msg.get("error")
+            out.append(
+                ChatMessageTool(
+                    content=content,
+                    tool_call_id=str(msg.get("tool_call_id") or "") or None,
+                    error=ToolCallError(type="unknown", message=str(error)) if error else None,
+                )
+            )
+    return out
+
+
+def _skill_bodies(root_dir: Path, skill_names: list[str]) -> dict[str, str]:
+    """SKILL.md text of each target skill from the run's frozen inputs, truncated."""
+    bodies: dict[str, str] = {}
+    inputs = root_dir / "inputs"
+    if not inputs.is_dir():
+        return bodies
+    for name in skill_names:
+        for path in sorted(inputs.glob(f"*/{name}/SKILL.md")):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if len(text) > SKILL_BODY_LIMIT:
+                text = text[:SKILL_BODY_LIMIT] + "\n[truncated]"
+            bodies[name] = text
+            break
+    return bodies
+
+
+def build_inspect_transcript(
+    scout_obj: dict[str, Any],
+    results: dict[str, Any],
+    skill_bodies: dict[str, str] | None = None,
+) -> Any:
+    """An inspect_scout Transcript for one saved agent run."""
+    from inspect_scout import Transcript
+
+    meta = dict(scout_obj.get("metadata") or {})
+    tokens = meta.get("tokens") or {}
+    total_tokens = None
+    if any(tokens.get(k) is not None for k in ("input", "output")):
+        total_tokens = int(tokens.get("input") or 0) + int(tokens.get("output") or 0)
+    skill_names = [str(n) for n in (results.get("skill_names") or [])]
+    metadata: dict[str, Any] = {
+        **meta,
+        "experiment": results.get("name"),
+        "run_dir": results.get("run_dir"),
+        "skill_names": skill_names,
+        "skill_invocation": results.get("skill_invocation", "implicit"),
+        "preset": results.get("preset"),
+        "arm_label": (results.get("arm_labels") or {}).get(str(scout_obj.get("arm") or "")),
+    }
+    if skill_bodies:
+        metadata["skill_bodies"] = skill_bodies
+    # Transcript fields are database columns; metadata may not reuse their names.
+    metadata = {k: v for k, v in metadata.items()
+                if v is not None and k not in _TRANSCRIPT_FIELDS}
+    error = None
+    if meta.get("status") not in (None, "ok"):
+        error = f"{meta.get('status')}: {meta.get('failure_kind') or 'agent run failed'}"
+    score = scout_obj.get("score")
+    return Transcript(
+        transcript_id=str(scout_obj["id"]),
+        source_type="skilldiff",
+        source_id=str(results.get("run_dir") or ""),
+        task_set=str(results.get("name") or "skilldiff"),
+        task_id=str(scout_obj.get("task") or ""),
+        task_repeat=meta.get("repetition"),
+        agent=str(meta.get("harness") or results.get("harness") or ""),
+        model=str(scout_obj.get("model") or ""),
+        score=score,
+        success=scout_obj.get("success"),
+        total_time=scout_obj.get("duration"),
+        total_tokens=total_tokens,
+        error=error,
+        metadata=metadata,
+        messages=to_inspect_messages(list(scout_obj.get("messages") or [])),
+    )
+
+
+def iter_inspect_transcripts(run_dir: Path) -> tuple[dict[str, Any], Path, list[Any]]:
+    data, root_dir, objects = collect_run_transcripts(run_dir)
+    skill_names = [str(n) for n in (data.get("skill_names") or [])]
+    bodies = _skill_bodies(root_dir, skill_names)
+    harness = data.get("harness")
+    transcripts = []
+    for obj in objects:
+        obj.setdefault("metadata", {})
+        obj["metadata"].setdefault("harness", harness)
+        transcripts.append(build_inspect_transcript(obj, data, bodies))
+    return data, root_dir, transcripts
+
+
+def scout_db_location(run_dir: Path) -> Path:
+    return run_dir.resolve() / "scout" / "db"
+
+
+def export_run_to_scout_db(run_dir: Path, output_dir: Path | None = None) -> dict[str, Any]:
+    """Write the run's agent transcripts to an Inspect Scout transcripts database.
+
+    The database (Parquet files) is what `transcripts_from`, `scout scan`, and
+    `scout view` read. Inserts are idempotent per transcript id, so re-exporting
+    a run adds nothing. Requires the `scout` extra.
+    """
+    import asyncio
+
+    _require_scout()
+    from inspect_scout import transcripts_db
+
+    data, root_dir, transcripts = iter_inspect_transcripts(run_dir)
+    location = (output_dir.resolve() if output_dir else scout_db_location(root_dir))
+    location.mkdir(parents=True, exist_ok=True)
+
+    async def insert() -> None:
+        async with transcripts_db(str(location)) as db:
+            await db.insert(transcripts)
+
+    asyncio.run(insert())
+    return {
+        "run_dir": str(root_dir),
+        "output_dir": str(location),
+        "format": "scout-db",
+        "count": len(transcripts),
+        "transcripts": [t.transcript_id for t in transcripts],
     }

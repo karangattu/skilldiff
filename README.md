@@ -49,6 +49,16 @@ Use skilldiff to compare ~/skills/v1/my-skill with ~/skills/v2/my-skill.
 Start with a small trial and tell me whether there is enough evidence to choose a version.
 ```
 
+To test one skill on several agents, run the same experiment per CLI you are
+signed in to and ask for the summary:
+
+```text
+Use skilldiff to test ~/code/my-project/skills/my-skill on Claude Code, Codex, and OpenCode,
+then summarize the runs side by side.
+```
+
+Each run keeps its own decision. The summary warns when the runs are not comparable.
+
 Tests use your agent account or API credits. The agent asks before a larger paid
 evaluation unless you already authorized it.
 

@@ -7,9 +7,10 @@ Availability and actual loading are separate measurements. Custom wrappers must
 support `app-server --stdio`; disable `codex.verify_skills` only if discovery is
 unsupported and explicitly disclose that availability was not verified.
 
-On macOS, use `isolation: macos` with Codex or Claude and specific `codex.read_paths`
-or `claude.read_paths` for external runtimes or editable packages. Native discovery
-and agent execution share the sandbox policy; a sibling-read probe verifies the boundary.
+On macOS, use `isolation: macos` with any harness and specific `<harness>.read_paths`
+(`claude`, `codex`, `opencode`, or `antigravity`) for external runtimes or editable
+packages. Native discovery and agent execution share the sandbox policy; a
+sibling-read probe verifies the boundary.
 Host user files and temporary siblings are blocked; own workspace and scratch are usable.
 Pytest may list the common session directory and stat its immediate entries;
 that does not permit reading sibling file contents. Package metadata may stat
@@ -19,7 +20,11 @@ through a shell; declare both the virtual environment and its Python runtime.
 Target sources, conventional grader/solution/run directories, host skills and
 plugins, and skills bundled in allowed runtimes remain blocked. Native sessions
 use private `CODEX_HOME` with only the login's `auth.json` copied; host config,
-sessions, and plugins are omitted. Graders remain on the host. Review allowed
+sessions, and plugins are omitted. OpenCode gets private config, data, cache, and
+state directories holding only its stored credentials, and may open (not read
+into) `~/.claude`, `~/.agents`, and the per-user temp directory node, which its
+config discovery requires. AGY keeps `~/.gemini` writable and the user keychain
+readable, since its login lives there. Graders remain on the host. Review allowed
 roots; OS library paths remain readable and networking is not isolated. Use
 Docker/Podman for a complete filesystem boundary or non-macOS execution.
 
@@ -156,7 +161,7 @@ not a warning.
 
 Claude's sandbox keeps commands, but not its Read tool, away from grader and skill
 sources. OpenCode and Antigravity do not confine commands. Use `isolation: docker`/`podman`
-(or `macos` for Claude and Codex) when reads outside the workspace must be blocked.
+(or `macos` on any harness) when reads outside the workspace must be blocked.
 Codex single-turn sessions require `--ephemeral`; multi-turn sessions require an
 ephemeral app-server thread, so they do not feed memories that a later control
 session could read. Unsupported interfaces fail before paid work.
